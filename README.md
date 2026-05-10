@@ -5,7 +5,7 @@ Standalone TypeScript worker: **Binance** public REST/WebSocket for signals, **C
 ## Binance
 
 - REST: USD-M futures klines (`/fapi/v1/klines`) or spot (`/api/v3/klines`) via `BINANCE_PRODUCT`.
-- WebSocket: combined stream on `fstream.binance.com` (USDM) per [Binance Developers](https://developers.binance.com/docs).
+- WebSocket: combined stream on `fstream.binance.com` (USDM) per [Binance Developers](https://developers.binance.com/docs). Some networks allow `fapi` HTTPS but not `fstream` push frames; the worker then uses **`USDM_MARK_REST_POLL_SEC`** (default 5s) to read the same mark from **`GET /fapi/v1/premiumIndex`** and logs `ltp_connected` with `source: mark_rest`.
 
 ## CoinDCX
 
@@ -98,6 +98,7 @@ PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now
 | `TAKER_FEE` / `MAKER_FEE` / `FUNDING_FEE_EST` | `0.0005` / `0.0002` / `0.0001` | Fee model |
 | `MARGIN_CURRENCY` | `USDT` | Per CoinDCX field |
 | `TRADE_LOG_PATH` | `./logs/trades.csv` | Per-trade audit CSV |
+| `USDM_MARK_REST_POLL_SEC` | `5` | USD-M only: poll `premiumIndex` for mark/LTP; `0` = WebSocket only |
 
 ## Where logs go
 
@@ -111,8 +112,8 @@ PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now
 Startup order:
 
 1. **`binance_ws_connected`** — WebSocket is open.
-2. **`ltp_connected`** — First live price arrived: **`mark`** (USD-M mark price stream) or **`ticker`** (spot `24hrTicker` last price). Until this line appears, LTP is not flowing yet.
-3. If neither arrives within **`LTP_CONNECT_WARN_SEC`** (default 15s), you get **`ltp_connect_timeout`**. Set `LTP_CONNECT_WARN_SEC=0` to disable that warning.
+2. **`ltp_connected`** — First live price arrived: **`mark`** (USD-M mark WebSocket), **`mark_rest`** (same mark from `GET /fapi/v1/premiumIndex` when WS is silent), or **`ticker`** (spot `24hrTicker` last price).
+3. If nothing confirms LTP within **`LTP_CONNECT_WARN_SEC`** (default 15s), you get **`ltp_connect_timeout`**. With **`USDM_MARK_REST_POLL_SEC` > 0** (default 5), REST usually clears the watchdog even when `fstream` sends no `markPriceUpdate`. Set `LTP_CONNECT_WARN_SEC=0` to disable that warning.
 
 Spot mode subscribes to `kline` + `@ticker` on the same combined stream so LTP uses the ticker’s last price.
 
@@ -124,8 +125,9 @@ After seeding, the process stays open on the Binance WebSocket. Log lines (stdou
 | ------ | ------- |
 | `runtime_help` | What to expect next (bar logs, signals, heartbeat). |
 | `binance_ws_connected` | WS is up; streaming klines + mark (USDM) or klines + ticker (spot). |
-| `ltp_connected` | First live price tick (`source`: `mark` or `ticker`) — confirms LTP feed. |
-| `ltp_connect_timeout` | No LTP within `LTP_CONNECT_WARN_SEC` after open/reconnect. |
+| `ltp_connected` | First live price (`source`: `mark`, `mark_rest`, or `ticker`) — confirms LTP feed. |
+| `ltp_connect_timeout` | No LTP within `LTP_CONNECT_WARN_SEC` after open/reconnect (REST poll disabled or `fapi` unreachable). |
+| `usdm_mark_rest_failed` / `usdm_mark_rest_empty` | First REST poll failure or empty mark (then throttled). |
 | `heartbeat` | Every `LOG_HEARTBEAT_SEC` seconds (default 60): last Binance mark, HTF/LTF EMA bias, aligned signal, bar counts. Set `LOG_HEARTBEAT_SEC=0` to disable. |
 | `ltf_bar_closed` | Each **closed** LTF candle (e.g. every 15m): close, `htfBias` / `ltfBias`, `aligned` (would-trade direction if HTF/LTF agree). |
 | `signal` / `paper_or_readonly_skip_order` | Only when the **aligned** signal **changes** from the previous value and is tradeable; paper mode logs intent instead of sending an order. |

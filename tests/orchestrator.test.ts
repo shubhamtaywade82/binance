@@ -45,6 +45,7 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     PAPER_LEDGER_DIR: '/tmp/orch-paper',
     PAPER_FUNDING_POLL_SEC: 300,
     PAPER_EQUITY_SNAPSHOT_SEC: 5,
+    USDM_MARK_REST_POLL_SEC: 0,
     ...over,
   } as AppConfig;
 }
@@ -189,5 +190,26 @@ describe('HybridOrchestrator entry gating', () => {
     orch.setPrecision({ tickSize: 0.01, stepSize: 0.001, minQty: 0.001 });
     await orch.evaluateBar(c[c.length - 1]);
     expect(orch.hasPosition()).toBe(false);
+  });
+
+  it('confirms LTP from USD-M REST mark poll when WebSocket sends no mark', async () => {
+    const cfg = makeCfg({ USDM_MARK_REST_POLL_SEC: 60 });
+    const info = vi.fn();
+    const fetchUsdmMarkRest = vi.fn().mockResolvedValue({ markPrice: 100.25, eventTime: 999 });
+    const orch = new HybridOrchestrator(cfg, { info, warn: vi.fn() }, {
+      cdcx: fakeCdcx(),
+      ws: fakeWs(),
+      seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
+      fetchUsdmMarkRest,
+    });
+    await orch.start();
+    await vi.waitUntil(() => fetchUsdmMarkRest.mock.calls.length > 0);
+    await vi.waitUntil(() => info.mock.calls.some((c) => c[0] === 'ltp_connected'));
+    expect(info).toHaveBeenCalledWith(
+      'ltp_connected',
+      expect.objectContaining({ source: 'mark_rest', price: 100.25 }),
+    );
+    orch.stop();
   });
 });

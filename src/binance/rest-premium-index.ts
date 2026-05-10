@@ -1,0 +1,32 @@
+import axios from 'axios';
+import type { AppConfig } from '../config';
+import { binanceRestBase } from '../config';
+
+/** Binance USD-M `GET /fapi/v1/premiumIndex` single-symbol row. */
+export interface PremiumIndexRow {
+  symbol?: string;
+  markPrice?: string;
+  time?: number;
+}
+
+/**
+ * Mark price from public REST (same source family as WS mark).
+ * Use when `fstream` WebSocket connects but delivers no frames (common on some networks).
+ */
+export async function fetchUsdmMarkFromRest(
+  cfg: AppConfig,
+  symbolUpper: string,
+): Promise<{ markPrice: number; eventTime: number } | null> {
+  if (cfg.BINANCE_PRODUCT !== 'usdm') return null;
+  const base = binanceRestBase(cfg);
+  const url = `${base}/fapi/v1/premiumIndex`;
+  const { data } = await axios.get<PremiumIndexRow>(url, {
+    params: { symbol: symbolUpper.toUpperCase() },
+    timeout: 10_000,
+    validateStatus: (s) => s === 200,
+  });
+  const markPrice = Number(data.markPrice);
+  const eventTime = typeof data.time === 'number' ? data.time : Date.now();
+  if (!Number.isFinite(markPrice)) return null;
+  return { markPrice, eventTime };
+}

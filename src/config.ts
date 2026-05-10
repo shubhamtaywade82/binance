@@ -62,6 +62,20 @@ export const AppConfigSchema = z.object({
       return Math.min(120, n);
     }),
 
+  /**
+   * USD-M only: poll `GET /fapi/v1/premiumIndex` for mark/LTP when WS is silent.
+   * 0 = disable (WS only). Default 5s — REST often works when `fstream` push is blocked.
+   */
+  USDM_MARK_REST_POLL_SEC: z
+    .string()
+    .optional()
+    .default('5')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 5;
+      return Math.min(600, n);
+    }),
+
   LEVERAGE: numFromString(10),
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),

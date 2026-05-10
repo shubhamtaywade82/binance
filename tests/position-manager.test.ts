@@ -46,6 +46,7 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     PAPER_LEDGER_DIR: './paper',
     PAPER_FUNDING_POLL_SEC: 300,
     PAPER_EQUITY_SNAPSHOT_SEC: 5,
+    USDM_MARK_REST_POLL_SEC: 0,
     ...over,
   } as AppConfig;
 }

@@ -1,5 +1,6 @@
 import { binanceWsBase, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
+import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
 import { extractPrecisionFromInstrument, type InstrumentPrecision } from './mapping/precision';
@@ -36,11 +37,18 @@ const consoleLogger: OrchestratorLogger = {
   },
 };
 
+export type UsdmMarkRestFetch = (
+  cfg: AppConfig,
+  symbolUpper: string,
+) => Promise<{ markPrice: number; eventTime: number } | null>;
+
 export interface OrchestratorDeps {
   cdcx?: CoinDcxFuturesClient;
   ws?: BinanceMarketWs;
   seedKlines?: typeof fetchBinanceKlines;
   execution?: ExecutionRuntime;
+  /** Override for tests; default polls Binance `premiumIndex`. */
+  fetchUsdmMarkRest?: UsdmMarkRestFetch;
 }
 
 export class HybridOrchestrator {
@@ -59,6 +67,9 @@ export class HybridOrchestrator {
   private ltpConfirmed = false;
   private ltpWatchdog: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private restMarkTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly fetchUsdmMarkRest: UsdmMarkRestFetch;
+  private restMarkWarned = false;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -77,6 +88,7 @@ export class HybridOrchestrator {
     this.risk = new RiskManager(cfg);
     this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
+    this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
     this.ws = deps.ws ?? new BinanceMarketWs(cfg, {
       onOpen: () => this.onWsOpen(),
       onKline: (c, fin) => this.onKline(c, fin),
@@ -92,19 +104,23 @@ export class HybridOrchestrator {
     await this.loadPrecision();
     this.ws.start();
     this.scheduleLtpWatchdog();
+    this.scheduleRestMarkPoll();
     this.scheduleHeartbeat();
     this.log.info('orchestrator_started', {
       binance: this.pairs.binanceSymbol,
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
       executionEnabled: this.cfg.EXECUTION_ENABLED,
-      ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark or ticker).',
+      usdmMarkRestPollSec:
+        this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
+      ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',
       logFile: this.cfg.APP_LOG_PATH.trim() || '(stdout only — set APP_LOG_PATH for NDJSON file)',
     });
   }
 
   stop(): void {
     this.clearHeartbeat();
+    this.clearRestMarkPoll();
     this.clearLtpWatchdog();
     this.execution.stopFunding?.();
     this.ws.stop();
@@ -163,9 +179,12 @@ export class HybridOrchestrator {
       this.log.warn('ltp_connect_timeout', {
         waitedSec: sec,
         symbol: this.pairs.binanceSymbol,
+        usdmMarkRestPollSec: this.cfg.USDM_MARK_REST_POLL_SEC,
         hint:
           this.cfg.BINANCE_PRODUCT === 'usdm'
-            ? 'No markPriceUpdate yet — check network, symbol, or BINANCE_WS_BASE.'
+            ? this.cfg.USDM_MARK_REST_POLL_SEC > 0
+              ? 'No mark on WS yet; if fapi REST is blocked too, mark REST poll will also fail. Else expect ltp_connected (mark_rest) on next poll.'
+              : 'No markPriceUpdate yet — enable USDM_MARK_REST_POLL_SEC (default 5) or check BINANCE_WS_BASE / network.'
             : 'No 24hrTicker yet — check network, symbol, or BINANCE_WS_BASE.',
       });
     }, sec * 1000);
@@ -178,17 +197,23 @@ export class HybridOrchestrator {
     }
   }
 
-  private confirmLtp(source: 'mark' | 'ticker', price: number, eventTime: number): void {
+  private confirmLtp(source: 'mark' | 'mark_rest' | 'ticker', price: number, eventTime: number): void {
     if (this.ltpConfirmed) return;
     if (!Number.isFinite(price)) return;
     this.ltpConfirmed = true;
     this.clearLtpWatchdog();
+    const note =
+      source === 'mark'
+        ? 'USD-M mark from WebSocket'
+        : source === 'mark_rest'
+          ? 'USD-M mark from GET /fapi/v1/premiumIndex (WS silent or slow)'
+          : 'Spot last price from ticker';
     this.log.info('ltp_connected', {
       source,
       price,
       eventTime,
       symbol: this.pairs.binanceSymbol,
-      note: source === 'mark' ? 'USD-M mark (used as ref price)' : 'Spot last price from ticker',
+      note,
     });
   }
 
@@ -240,24 +265,68 @@ export class HybridOrchestrator {
 
   private onMark(u: MarkPriceUpdate): void {
     if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.lastMark = u.markPrice;
-    this.confirmLtp('mark', u.markPrice, u.eventTime);
-    this.feedSyntheticBook(u.markPrice);
-    const sym = this.pairs.binanceSymbol.toUpperCase();
-    this.execution.adapter.onMark?.(sym, u.markPrice);
-    const htfBias = biasFromCandles(this.c1h);
-    void this.positionManager.onMark(u.markPrice, htfBias);
+    this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
   }
 
   private onTickerLtp(u: TickerLtpUpdate): void {
     if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.lastMark = u.lastPrice;
-    this.confirmLtp('ticker', u.lastPrice, u.eventTime);
-    this.feedSyntheticBook(u.lastPrice);
+    this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
+  }
+
+  private applyMarkReference(
+    price: number,
+    eventTime: number,
+    ltpSource: 'mark' | 'mark_rest' | 'ticker',
+  ): void {
+    if (!Number.isFinite(price)) return;
+    this.lastMark = price;
+    if (ltpSource === 'ticker') this.confirmLtp('ticker', price, eventTime);
+    else this.confirmLtp(ltpSource, price, eventTime);
+    this.feedSyntheticBook(price);
     const sym = this.pairs.binanceSymbol.toUpperCase();
-    this.execution.adapter.onMark?.(sym, u.lastPrice);
+    this.execution.adapter.onMark?.(sym, price);
     const htfBias = biasFromCandles(this.c1h);
-    void this.positionManager.onMark(u.lastPrice, htfBias);
+    void this.positionManager.onMark(price, htfBias);
+  }
+
+  private scheduleRestMarkPoll(): void {
+    this.clearRestMarkPoll();
+    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    const sec = this.cfg.USDM_MARK_REST_POLL_SEC;
+    if (sec <= 0) return;
+    void this.pollRestMarkOnce();
+    this.restMarkTimer = setInterval(() => void this.pollRestMarkOnce(), sec * 1000);
+  }
+
+  private clearRestMarkPoll(): void {
+    if (this.restMarkTimer) {
+      clearInterval(this.restMarkTimer);
+      this.restMarkTimer = null;
+    }
+  }
+
+  private async pollRestMarkOnce(): Promise<void> {
+    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    try {
+      const row = await this.fetchUsdmMarkRest(this.cfg, this.pairs.binanceSymbol);
+      if (!row) {
+        if (!this.restMarkWarned) {
+          this.restMarkWarned = true;
+          this.log.warn('usdm_mark_rest_empty', { symbol: this.pairs.binanceSymbol });
+        }
+        return;
+      }
+      this.restMarkWarned = false;
+      this.applyMarkReference(row.markPrice, row.eventTime, 'mark_rest');
+    } catch (e) {
+      if (!this.restMarkWarned) {
+        this.restMarkWarned = true;
+        this.log.warn('usdm_mark_rest_failed', {
+          symbol: this.pairs.binanceSymbol,
+          err: (e as Error).message,
+        });
+      }
+    }
   }
 
   /** Paper fills use `BookTickerFeed`; without a second WS we mirror mid from mark/ticker. */
