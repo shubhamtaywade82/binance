@@ -50,6 +50,17 @@ export const AppConfigSchema = z.object({
       return Math.min(3600, n);
     }),
 
+  /** After WS open, warn if no LTP/mark yet (seconds). 0 = disable. */
+  LTP_CONNECT_WARN_SEC: z
+    .string()
+    .optional()
+    .default('15')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 15;
+      return Math.min(120, n);
+    }),
+
   LEVERAGE: numFromString(10),
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),

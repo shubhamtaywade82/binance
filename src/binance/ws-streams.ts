@@ -10,9 +10,18 @@ export interface MarkPriceUpdate {
   eventTime: number;
 }
 
+/** Spot @ticker — last traded price (`c` in Binance payload). */
+export interface TickerLtpUpdate {
+  symbol: string;
+  lastPrice: number;
+  eventTime: number;
+}
+
 export interface BinanceStreamCallbacks {
   onKline?: (candle: Candle, isFinal: boolean) => void;
   onMarkPrice?: (u: MarkPriceUpdate) => void;
+  /** Spot LTP from 24hrTicker stream. */
+  onTickerLtp?: (u: TickerLtpUpdate) => void;
   onOpen?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
@@ -20,10 +29,11 @@ export interface BinanceStreamCallbacks {
 
 function streamPath(cfg: AppConfig, symbolLower: string, klineInterval: string): string {
   const klineStream = `${symbolLower}@kline_${klineInterval}`;
-  const markStream = `${symbolLower}@markPrice@1s`;
   if (cfg.BINANCE_PRODUCT === 'spot') {
-    return `/ws/${klineStream}`;
+    const tickerStream = `${symbolLower}@ticker`;
+    return `/stream?streams=${klineStream}/${tickerStream}`;
   }
+  const markStream = `${symbolLower}@markPrice@1s`;
   const streams = `${klineStream}/${markStream}`;
   return `/stream?streams=${streams}`;
 }
@@ -97,18 +107,22 @@ export class BinanceMarketWs {
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
-    if (this.cfg.BINANCE_PRODUCT === 'usdm' && msg.stream && msg.data) {
+    if (msg.stream && msg.data) {
       const data = msg.data as Record<string, unknown>;
       if (data.e === 'kline') {
         this.dispatchKline(data as Record<string, unknown>);
       } else if (data.e === 'markPriceUpdate') {
         this.dispatchMark(data);
+      } else if (data.e === '24hrTicker') {
+        this.dispatchTickerLtp(data);
       }
       return;
     }
 
     if (msg.e === 'kline') {
       this.dispatchKline(msg as Record<string, unknown>);
+    } else if (msg.e === '24hrTicker') {
+      this.dispatchTickerLtp(msg as Record<string, unknown>);
     }
   }
 
@@ -136,6 +150,14 @@ export class BinanceMarketWs {
     const eventTime = Number(data.E ?? data.T ?? Date.now());
     if (!symbol || !Number.isFinite(markPrice)) return;
     this.callbacks.onMarkPrice?.({ symbol, markPrice, eventTime });
+  }
+
+  private dispatchTickerLtp(data: Record<string, unknown>): void {
+    const symbol = String(data.s ?? '');
+    const lastPrice = Number(data.c);
+    const eventTime = Number(data.E ?? Date.now());
+    if (!symbol || !Number.isFinite(lastPrice)) return;
+    this.callbacks.onTickerLtp?.({ symbol, lastPrice, eventTime });
   }
 
   private scheduleReconnect(): void {

@@ -17,7 +17,8 @@ Standalone TypeScript worker: **Binance** public REST/WebSocket for signals, **C
 ```bash
 cp .env.example .env
 npm install
-npm run dev
+npm run dev          # restarts on changes under src/
+npm run dev:once     # single run, no file watcher
 ```
 
 ```bash
@@ -28,14 +29,63 @@ npm run check
 
 `BINANCE_SYMBOL` (e.g. `SOLUSDT`) must align with `COINDCX_PAIR` (e.g. `B-SOL_USDT`). Adjust both in `.env`.
 
+## Strategy
+
+Per LTF candle close:
+
+1. **HTF bias** from 1h EMA(9/21) stack.
+2. **LTF `analyzeTrend`** scoring 6 indicators — EMA fast vs slow, MACD hist sign+slope, RSI > 45 (long) / < 55 (short), Supertrend direction, swing structure HH+HL or LH+LL, volume ≥ 0.8× 20-bar avg. Direction set when ≥4 align AND volume confirms; `confidence = aligned/6`.
+3. **SMC overlay** (`USE_SMC=true`) — liquidity sweep, order block (last opposite candle before ≥1.5×ATR impulse), 3-candle FVG, BOS/CHoCH from swings. `score` counts concepts agreeing with HTF.
+4. Enter only when `htf.direction === ltf.direction !== 'NONE'` AND `confidence >= MIN_CONFIDENCE` AND `(!USE_SMC || smc.score >= MIN_SMC_SCORE)`.
+
+## Risk math
+
+- Margin = `CAPITAL_PER_TRADE_INR`. Notional USDT = `margin / INR_PER_USDT * LEVERAGE`. Quantity = floor-to-step(`notional / entry`).
+- TP price move = `TARGET_PNL_PCT / LEVERAGE`; SL move = `STOP_LOSS_PCT / LEVERAGE`. At 10× a 1% price move = 10% PnL on margin.
+- Net PnL USDT = `(exit-entry) * qty * dir - (entryNotional + exitNotional) * TAKER_FEE - entryNotional * FUNDING_FEE_EST`. INR via `INR_PER_USDT`.
+
+## Modes
+
+| Mode | `READ_ONLY` | `EXECUTION_ENABLED` | Behavior |
+| ---- | ----------- | ------------------- | -------- |
+| Paper (default) | `true` | `false` | Strategy fully evaluated, position tracked locally, CSV trade log written, no API writes. |
+| Live | `false` | `true` | Sends create/exit/TP-SL/leverage updates to CoinDCX. |
+
+## Env reference
+
+| Var | Default | Purpose |
+| --- | ------- | ------- |
+| `LEVERAGE` | `10` | Position leverage |
+| `CAPITAL_PER_TRADE_INR` | `20000` | Margin per trade in INR |
+| `INR_PER_USDT` | `85` | FX for sizing |
+| `TARGET_PNL_PCT` / `STOP_LOSS_PCT` | `0.10` / `0.05` | TP/SL on margin |
+| `MIN_CONFIDENCE` | `0.65` | Min trend confidence to enter |
+| `MIN_SMC_SCORE` | `2` | Min SMC concepts agreeing |
+| `USE_SMC` | `true` | Toggle SMC gate |
+| `TAKER_FEE` / `MAKER_FEE` / `FUNDING_FEE_EST` | `0.0005` / `0.0002` / `0.0001` | Fee model |
+| `MARGIN_CURRENCY` | `USDT` | Per CoinDCX field |
+| `TRADE_LOG_PATH` | `./logs/trades.csv` | Per-trade audit CSV |
+
+## LTP (live price) check
+
+Startup order:
+
+1. **`binance_ws_connected`** — WebSocket is open.
+2. **`ltp_connected`** — First live price arrived: **`mark`** (USD-M mark price stream) or **`ticker`** (spot `24hrTicker` last price). Until this line appears, LTP is not flowing yet.
+3. If neither arrives within **`LTP_CONNECT_WARN_SEC`** (default 15s), you get **`ltp_connect_timeout`**. Set `LTP_CONNECT_WARN_SEC=0` to disable that warning.
+
+Spot mode subscribes to `kline` + `@ticker` on the same combined stream so LTP uses the ticker’s last price.
+
 ## What you see while it runs
 
 After seeding, the process stays open on the Binance WebSocket. Log lines (stdout):
 
 | Event | Meaning |
-|--------|--------|
+| ------ | ------- |
 | `runtime_help` | What to expect next (bar logs, signals, heartbeat). |
-| `binance_ws_connected` | WS is up; streaming klines (+ mark on USDM). |
+| `binance_ws_connected` | WS is up; streaming klines + mark (USDM) or klines + ticker (spot). |
+| `ltp_connected` | First live price tick (`source`: `mark` or `ticker`) — confirms LTP feed. |
+| `ltp_connect_timeout` | No LTP within `LTP_CONNECT_WARN_SEC` after open/reconnect. |
 | `heartbeat` | Every `LOG_HEARTBEAT_SEC` seconds (default 60): last Binance mark, HTF/LTF EMA bias, aligned signal, bar counts. Set `LOG_HEARTBEAT_SEC=0` to disable. |
 | `ltf_bar_closed` | Each **closed** LTF candle (e.g. every 15m): close, `htfBias` / `ltfBias`, `aligned` (would-trade direction if HTF/LTF agree). |
 | `signal` / `paper_or_readonly_skip_order` | Only when the **aligned** signal **changes** from the previous value and is tradeable; paper mode logs intent instead of sending an order. |
