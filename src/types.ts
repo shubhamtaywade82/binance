@@ -13,7 +13,7 @@ export type TrendBias = 'LONG' | 'SHORT' | 'NONE';
 
 export type Side = 'LONG' | 'SHORT';
 
-export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'MANUAL';
+export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL';
 
 export interface Position {
   side: Side;

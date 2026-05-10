@@ -4,8 +4,8 @@ import path from 'path';
 import os from 'os';
 import { PositionManager } from '../src/strategy/position-manager';
 import { RiskManager } from '../src/strategy/risk';
-import { CoinDcxFuturesClient } from '../src/coindcx/futures-client';
 import type { AppConfig } from '../src/config';
+import { createStubExecutionAdapter } from './stub-execution-adapter';
 
 function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -37,6 +37,15 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     USE_SMC: true,
     TRADES_CSV_PATH: './logs/trades.csv',
     TRADE_LOG_PATH: './logs/trades.csv',
+    APP_LOG_PATH: '',
+    EXECUTION_MODE: 'paper',
+    PAPER_INITIAL_BALANCE_USDT: 10_000,
+    PAPER_MAINT_MARGIN: 0.005,
+    PAPER_BASE_SLIPPAGE_BPS: 2,
+    PAPER_LATENCY_MS: 0,
+    PAPER_LEDGER_DIR: './paper',
+    PAPER_FUNDING_POLL_SEC: 300,
+    PAPER_EQUITY_SNAPSHOT_SEC: 5,
     ...over,
   } as AppConfig;
 }
@@ -55,10 +64,7 @@ afterEach(() => {
 
 function buildPm(over: Partial<AppConfig> = {}): PositionManager {
   const cfg = makeCfg({ TRADE_LOG_PATH: tmpCsv, TRADES_CSV_PATH: tmpCsv, ...over });
-  const cdcx = new CoinDcxFuturesClient({
-    apiKey: '', apiSecret: '', apiBaseUrl: cfg.API_BASE_URL, readOnly: true,
-  });
-  return new PositionManager(cfg, cdcx, new RiskManager(cfg), noopLog);
+  return new PositionManager(cfg, createStubExecutionAdapter(), new RiskManager(cfg), noopLog);
 }
 
 describe('PositionManager paper mode', () => {

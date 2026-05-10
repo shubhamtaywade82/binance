@@ -1,10 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import type { AppConfig } from '../config';
-import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
 import type { InstrumentPrecision } from '../mapping/precision';
 import type { CloseReason, Position, Side, TrendBias } from '../types';
 import type { RiskManager } from './risk';
+import type { ExecutionAdapter } from '../execution/types';
 
 export interface PositionLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -19,11 +19,11 @@ export interface CloseEvent {
 }
 
 export class PositionManager {
-  private current: Position | null = null;
+  private current: (Position & { orderId: string }) | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
-    private readonly cdcx: CoinDcxFuturesClient,
+    private readonly adapter: ExecutionAdapter,
     private readonly risk: RiskManager,
     private readonly log: PositionLogger,
   ) {}
@@ -36,15 +36,6 @@ export class PositionManager {
     return this.current !== null;
   }
 
-  private canExecute(): boolean {
-    return (
-      this.cfg.EXECUTION_ENABLED &&
-      !this.cfg.READ_ONLY &&
-      Boolean(this.cfg.COINDCX_API_KEY.trim()) &&
-      Boolean(this.cfg.COINDCX_API_SECRET.trim())
-    );
-  }
-
   async open(side: Side, price: number, precision: InstrumentPrecision, pair: string): Promise<Position | null> {
     if (this.current) return this.current;
     const sized = this.risk.sizePosition(price, precision.stepSize);
@@ -53,64 +44,39 @@ export class PositionManager {
       return null;
     }
     const { takeProfit, stopLoss } = this.risk.targets(price, side);
-    const pos: Position = {
+
+    const result = await this.adapter.placeOrder({
+      pair,
       side,
-      entryPrice: price,
       quantity: sized.quantity,
+      leverage: this.cfg.LEVERAGE,
+      marginCurrency: this.cfg.MARGIN_CURRENCY,
+      referencePrice: price,
       takeProfit,
       stopLoss,
-      openedAt: Date.now(),
-      pair,
-      notionalUsdt: sized.notionalUsdt,
-      marginInr: sized.marginInr,
-    };
+    });
 
-    if (!this.canExecute()) {
-      this.current = pos;
-      this.log.info('paper_open', {
-        side, price, qty: pos.quantity, tp: takeProfit, sl: stopLoss, pair,
-      });
-      return pos;
-    }
-
-    try {
-      await this.cdcx.updatePositionLeverage({ pair, leverage: this.cfg.LEVERAGE });
-    } catch (e) {
-      this.log.warn('leverage_update_failed', { err: (e as Error).message });
-    }
-
-    try {
-      await this.cdcx.createFuturesOrder({
-        pair,
-        side: side === 'LONG' ? 'buy' : 'sell',
-        order_type: 'market',
-        price: null,
-        stop_price: null,
-        total_quantity: pos.quantity,
-        notification: 'no_notification',
-        margin_currency_short_name: this.cfg.MARGIN_CURRENCY,
-      });
-    } catch (e) {
-      this.log.warn('open_order_failed', { err: (e as Error).message });
+    if (!result.ok) {
+      this.log.warn('open_order_failed', { mode: this.adapter.name, error: result.error });
       return null;
     }
 
-    try {
-      await this.cdcx.createFuturesTpSlOrders({
-        pair,
-        side: side === 'LONG' ? 'sell' : 'buy',
-        total_quantity: pos.quantity,
-        take_profit_price: takeProfit,
-        stop_loss_price: stopLoss,
-        margin_currency_short_name: this.cfg.MARGIN_CURRENCY,
-      });
-    } catch (e) {
-      this.log.warn('tpsl_failed', { err: (e as Error).message });
-    }
-
+    const pos: Position & { orderId: string } = {
+      side,
+      entryPrice: result.fill.price,
+      quantity: sized.quantity,
+      takeProfit,
+      stopLoss,
+      openedAt: result.fill.timestamp,
+      pair,
+      notionalUsdt: sized.notionalUsdt,
+      marginInr: sized.marginInr,
+      orderId: result.orderId,
+    };
     this.current = pos;
-    this.log.info('live_open', {
-      side, price, qty: pos.quantity, tp: takeProfit, sl: stopLoss, pair,
+    this.log.info(this.adapter.name === 'live' ? 'live_open' : 'paper_open', {
+      side, price: pos.entryPrice, qty: pos.quantity, tp: takeProfit, sl: stopLoss, pair,
+      orderId: result.orderId,
     });
     return pos;
   }
@@ -137,12 +103,10 @@ export class PositionManager {
     const pos = this.current;
     if (!pos) return null;
 
-    if (this.canExecute()) {
-      try {
-        await this.cdcx.exitFuturesPosition({ pair: pos.pair, quantity: pos.quantity });
-      } catch (e) {
-        this.log.warn('exit_order_failed', { err: (e as Error).message });
-      }
+    try {
+      await this.adapter.closePosition(pos.orderId, reason);
+    } catch (e) {
+      this.log.warn('exit_order_failed', { err: (e as Error).message });
     }
 
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);

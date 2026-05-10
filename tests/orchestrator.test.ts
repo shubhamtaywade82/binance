@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { HybridOrchestrator } from '../src/orchestrator';
 import type { AppConfig } from '../src/config';
 import type { Candle } from '../src/types';
+import { BookTickerFeed } from '../src/execution/paper/book-ticker-feed';
+import type { ExecutionRuntime } from '../src/execution/create-runtime';
+import { createStubExecutionAdapter } from './stub-execution-adapter';
 
 function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -33,8 +36,25 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     USE_SMC: false,
     TRADES_CSV_PATH: '/tmp/orch-trades.csv',
     TRADE_LOG_PATH: '/tmp/orch-trades.csv',
+    APP_LOG_PATH: '',
+    EXECUTION_MODE: 'paper',
+    PAPER_INITIAL_BALANCE_USDT: 10_000,
+    PAPER_MAINT_MARGIN: 0.005,
+    PAPER_BASE_SLIPPAGE_BPS: 2,
+    PAPER_LATENCY_MS: 0,
+    PAPER_LEDGER_DIR: '/tmp/orch-paper',
+    PAPER_FUNDING_POLL_SEC: 300,
+    PAPER_EQUITY_SNAPSHOT_SEC: 5,
     ...over,
   } as AppConfig;
+}
+
+function stubRuntime(cfg: AppConfig): ExecutionRuntime {
+  const book = new BookTickerFeed({
+    wsBase: 'wss://fstream.binance.com',
+    symbols: [cfg.BINANCE_SYMBOL.toUpperCase()],
+  });
+  return { adapter: createStubExecutionAdapter(), book };
 }
 
 const noopLog = { info: () => undefined, warn: () => undefined };
@@ -77,6 +97,7 @@ describe('HybridOrchestrator entry gating', () => {
       cdcx: fakeCdcx(),
       ws: fakeWs(),
       seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
     });
     const c = trendingCandles(80);
     orch.injectCandles(c, c);
@@ -91,6 +112,7 @@ describe('HybridOrchestrator entry gating', () => {
       cdcx: fakeCdcx(),
       ws: fakeWs(),
       seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
     });
     const up = trendingCandles(80);
     const down = trendingCandles(80, 200, -0.5);
@@ -106,6 +128,7 @@ describe('HybridOrchestrator entry gating', () => {
       cdcx: fakeCdcx(),
       ws: fakeWs(),
       seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
     });
     const c = trendingCandles(80);
     orch.injectCandles(c, c);
@@ -114,12 +137,52 @@ describe('HybridOrchestrator entry gating', () => {
     expect(orch.hasPosition()).toBe(false);
   });
 
+  it('paper mode does not place CoinDCX order on entry', async () => {
+    const cfg = makeCfg();
+    const cdcx = fakeCdcx();
+    const orch = new HybridOrchestrator(cfg, noopLog, {
+      cdcx,
+      ws: fakeWs(),
+      seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
+    });
+    const c = trendingCandles(80);
+    orch.injectCandles(c, c);
+    orch.setPrecision({ tickSize: 0.01, stepSize: 0.001, minQty: 0.001 });
+    await orch.evaluateBar(c[c.length - 1]);
+    expect(cdcx.createFuturesOrder).not.toHaveBeenCalled();
+    expect(cdcx.exitFuturesPosition).not.toHaveBeenCalled();
+  });
+
+  it('live mode requires READ_ONLY=false and API keys', () => {
+    expect(() =>
+      new HybridOrchestrator(makeCfg({ EXECUTION_MODE: 'live', READ_ONLY: true }), noopLog, {
+        cdcx: fakeCdcx(),
+        ws: fakeWs(),
+        seedKlines: vi.fn().mockResolvedValue([]),
+      }),
+    ).toThrow(/READ_ONLY=true/);
+
+    expect(() =>
+      new HybridOrchestrator(
+        makeCfg({ EXECUTION_MODE: 'live', READ_ONLY: false, COINDCX_API_KEY: '', COINDCX_API_SECRET: '' }),
+        noopLog,
+        {
+          cdcx: fakeCdcx(),
+          ws: fakeWs(),
+          seedKlines: vi.fn().mockResolvedValue([]),
+        },
+      ),
+    ).toThrow(/COINDCX_API_KEY/);
+  });
+
   it('skips entry when SMC required but score insufficient', async () => {
     const cfg = makeCfg({ USE_SMC: true, MIN_SMC_SCORE: 99 });
     const orch = new HybridOrchestrator(cfg, noopLog, {
       cdcx: fakeCdcx(),
       ws: fakeWs(),
       seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
     });
     const c = trendingCandles(80);
     orch.injectCandles(c, c);

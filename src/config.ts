@@ -4,6 +4,7 @@ import { z } from 'zod';
 loadDotenv();
 
 const BinanceProduct = z.enum(['usdm', 'spot']);
+const ExecutionModeEnum = z.enum(['paper', 'live']);
 
 const numFromString = (def: number) =>
   z
@@ -76,6 +77,25 @@ export const AppConfigSchema = z.object({
   USE_SMC: boolFromString(true),
   TRADES_CSV_PATH: z.string().default('./logs/trades.csv'),
   TRADE_LOG_PATH: z.string().default('./logs/trades.csv'),
+
+  /** Append NDJSON log lines (empty = no log file, stdout/stderr only). */
+  APP_LOG_PATH: z.string().default(''),
+
+  EXECUTION_MODE: z
+    .union([ExecutionModeEnum, z.string()])
+    .default('paper')
+    .transform((v) => {
+      const s = String(v).toLowerCase();
+      return s === 'live' ? 'live' : 'paper';
+    })
+    .pipe(ExecutionModeEnum),
+  PAPER_INITIAL_BALANCE_USDT: numFromString(10_000),
+  PAPER_MAINT_MARGIN: numFromString(0.005),
+  PAPER_BASE_SLIPPAGE_BPS: numFromString(2),
+  PAPER_LATENCY_MS: numFromString(150),
+  PAPER_LEDGER_DIR: z.string().default('./paper'),
+  PAPER_FUNDING_POLL_SEC: numFromString(300),
+  PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

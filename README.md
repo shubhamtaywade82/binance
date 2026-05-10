@@ -51,6 +51,39 @@ Per LTF candle close:
 | Paper (default) | `true` | `false` | Strategy fully evaluated, position tracked locally, CSV trade log written, no API writes. |
 | Live | `false` | `true` | Sends create/exit/TP-SL/leverage updates to CoinDCX. |
 
+## Execution Modes
+
+`EXECUTION_MODE` selects the order-execution adapter. The strategy / `PositionManager` layer is adapter-agnostic.
+
+| Value | Adapter | Side effects |
+| ----- | ------- | ------------ |
+| `paper` (default) | `PaperExecutionAdapter` | Simulated fills against Binance bookTicker (or synthetic mid from mark), wallet/PnL kept locally, JSONL ledger under `PAPER_LEDGER_DIR`. **No CoinDCX writes.** |
+| `live` | `CoinDcxExecutionAdapter` | Real CoinDCX `create`, `tpsl`, `exit`, `update_leverage`. Requires `READ_ONLY=false` AND both API keys; throws at startup otherwise. |
+
+### Paper engine components
+
+- **`PaperWallet`** — balance / used margin / unrealized / realized; atomic `wallet.json` persistence.
+- **`SlippageEngine`** — pure: `0.5*spread + 0.15*volPct + 1e-5*qty + bps/1e4`.
+- **`computeFee` / fees** — taker/maker on notional.
+- **`FundingEngine`** — polls `GET /fapi/v1/premiumIndex` every `PAPER_FUNDING_POLL_SEC`, charges open positions on each `nextFundingTime` crossing (idempotent).
+- **`LiquidationEngine`** — `entry * (1 ∓ 1/lev ± maint)`; auto-closes via `onMark`.
+- **`Ledger`** — append-only JSONL trades + equity snapshots.
+
+### Paper output layout (`PAPER_LEDGER_DIR`, default `./paper`)
+
+```text
+paper/
+├── wallet.json     # current wallet state (atomic write)
+├── trades.jsonl    # one ClosedPosition per line
+└── equity.jsonl    # periodic equity snapshots (PAPER_EQUITY_SNAPSHOT_SEC)
+```
+
+### Safety
+
+Live execution requires **all three**: `EXECUTION_MODE=live` AND `READ_ONLY=false` AND non-empty `COINDCX_API_KEY` + `COINDCX_API_SECRET`. Missing any throws at startup. Default config (`paper`) is fully safe.
+
+PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now.
+
 ## Env reference
 
 | Var | Default | Purpose |
@@ -65,6 +98,13 @@ Per LTF candle close:
 | `TAKER_FEE` / `MAKER_FEE` / `FUNDING_FEE_EST` | `0.0005` / `0.0002` / `0.0001` | Fee model |
 | `MARGIN_CURRENCY` | `USDT` | Per CoinDCX field |
 | `TRADE_LOG_PATH` | `./logs/trades.csv` | Per-trade audit CSV |
+
+## Where logs go
+
+- **Terminal:** every `log.info` / `log.warn` line is still printed to stdout/stderr.
+- **Optional NDJSON file:** set `APP_LOG_PATH` (e.g. `./logs/app.ndjson`). Each line is one JSON object: `ts`, `level`, `msg`, plus any metadata fields.
+- **Trades only:** closed trades are also appended to **`TRADE_LOG_PATH`** / `TRADES_CSV_PATH` as CSV (see `PositionManager`).
+- **Heartbeat:** every `LOG_HEARTBEAT_SEC` (default 60) an `heartbeat` event is logged (and mirrored to the file when set).
 
 ## LTP (live price) check
 

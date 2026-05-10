@@ -1,0 +1,5 @@
+{"ts":"2026-05-10T20:54:20.233Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
+{"ts":"2026-05-10T20:54:20.344Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
+{"ts":"2026-05-10T20:54:20.347Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark or ticker).","logFile":"./logs/app.ndjson"}
+{"ts":"2026-05-10T20:54:20.709Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
+{"ts":"2026-05-10T20:54:35.347Z","level":"warn","msg":"ltp_connect_timeout","waitedSec":15,"symbol":"SOLUSDT","hint":"No markPriceUpdate yet — check network, symbol, or BINANCE_WS_BASE."}

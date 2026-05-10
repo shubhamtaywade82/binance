@@ -10,6 +10,8 @@ import { analyzeSmc } from './strategy/smc';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
 import type { Candle, Side, TrendBias } from './types';
+import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
+import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
 
 function upsertCandle(series: Candle[], bar: Candle): void {
   const idx = series.findIndex((c) => c.openTime === bar.openTime);
@@ -38,6 +40,7 @@ export interface OrchestratorDeps {
   cdcx?: CoinDcxFuturesClient;
   ws?: BinanceMarketWs;
   seedKlines?: typeof fetchBinanceKlines;
+  execution?: ExecutionRuntime;
 }
 
 export class HybridOrchestrator {
@@ -46,6 +49,8 @@ export class HybridOrchestrator {
   private readonly c1h: Candle[] = [];
   private readonly ws: BinanceMarketWs;
   private readonly cdcx: CoinDcxFuturesClient;
+  private readonly book: BookTickerFeed;
+  private readonly execution: ExecutionRuntime;
   private readonly risk: RiskManager;
   private readonly positionManager: PositionManager;
   private readonly seed: typeof fetchBinanceKlines;
@@ -53,6 +58,7 @@ export class HybridOrchestrator {
   private precision: InstrumentPrecision | null = null;
   private ltpConfirmed = false;
   private ltpWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -66,8 +72,10 @@ export class HybridOrchestrator {
       apiBaseUrl: cfg.API_BASE_URL,
       readOnly: cfg.READ_ONLY,
     });
+    this.execution = deps.execution ?? createExecutionRuntime(cfg, this.cdcx);
+    this.book = this.execution.book;
     this.risk = new RiskManager(cfg);
-    this.positionManager = new PositionManager(cfg, this.cdcx, this.risk, this.log);
+    this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
     this.ws = deps.ws ?? new BinanceMarketWs(cfg, {
       onOpen: () => this.onWsOpen(),
@@ -84,18 +92,50 @@ export class HybridOrchestrator {
     await this.loadPrecision();
     this.ws.start();
     this.scheduleLtpWatchdog();
+    this.scheduleHeartbeat();
     this.log.info('orchestrator_started', {
       binance: this.pairs.binanceSymbol,
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
       executionEnabled: this.cfg.EXECUTION_ENABLED,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark or ticker).',
+      logFile: this.cfg.APP_LOG_PATH.trim() || '(stdout only — set APP_LOG_PATH for NDJSON file)',
     });
   }
 
   stop(): void {
+    this.clearHeartbeat();
     this.clearLtpWatchdog();
+    this.execution.stopFunding?.();
     this.ws.stop();
+  }
+
+  private scheduleHeartbeat(): void {
+    this.clearHeartbeat();
+    const sec = this.cfg.LOG_HEARTBEAT_SEC;
+    if (sec <= 0) return;
+    this.heartbeatTimer = setInterval(() => this.logHeartbeat(), sec * 1000);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private logHeartbeat(): void {
+    const htfBias = biasFromCandles(this.c1h);
+    const ltfBias = biasFromCandles(this.c15);
+    this.log.info('heartbeat', {
+      binanceMark: this.lastMark,
+      ltpConfirmed: this.ltpConfirmed,
+      htfBias,
+      ltfBias,
+      bars15m: this.c15.length,
+      bars1h: this.c1h.length,
+      inPosition: this.positionManager.hasPosition(),
+    });
   }
 
   private onWsOpen(): void {
@@ -202,6 +242,9 @@ export class HybridOrchestrator {
     if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
     this.lastMark = u.markPrice;
     this.confirmLtp('mark', u.markPrice, u.eventTime);
+    this.feedSyntheticBook(u.markPrice);
+    const sym = this.pairs.binanceSymbol.toUpperCase();
+    this.execution.adapter.onMark?.(sym, u.markPrice);
     const htfBias = biasFromCandles(this.c1h);
     void this.positionManager.onMark(u.markPrice, htfBias);
   }
@@ -210,6 +253,25 @@ export class HybridOrchestrator {
     if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
     this.lastMark = u.lastPrice;
     this.confirmLtp('ticker', u.lastPrice, u.eventTime);
+    this.feedSyntheticBook(u.lastPrice);
+    const sym = this.pairs.binanceSymbol.toUpperCase();
+    this.execution.adapter.onMark?.(sym, u.lastPrice);
+    const htfBias = biasFromCandles(this.c1h);
+    void this.positionManager.onMark(u.lastPrice, htfBias);
+  }
+
+  /** Paper fills use `BookTickerFeed`; without a second WS we mirror mid from mark/ticker. */
+  private feedSyntheticBook(mid: number): void {
+    const sym = this.pairs.binanceSymbol.toUpperCase();
+    const half = Math.max(mid * 0.00005, 0.0001);
+    this.book.ingest({
+      symbol: sym,
+      bestBid: mid - half,
+      bestAsk: mid + half,
+      spread: half * 2,
+      ts: Date.now(),
+    });
+    this.book.ingestTrade(sym, mid);
   }
 
   private onKline(c: Candle, isFinal: boolean): void {
