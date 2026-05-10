@@ -1,5 +1,9 @@
 import type { Candle } from '../types';
 
+export function emaSeries(values: number[], period: number): number[] {
+  return ema(values, period);
+}
+
 export function ema(values: number[], period: number): number[] {
   const out: number[] = [];
   if (values.length === 0 || period <= 0) return out;
@@ -174,6 +178,31 @@ export function swingStructure(candles: Candle[], lookback = 10): SwingStructure
     lh: lastHigh < priorHigh,
     ll: lastLow < priorLow,
   };
+}
+
+export interface SwingPoints {
+  highs: { index: number; price: number }[];
+  lows: { index: number; price: number }[];
+}
+
+export function swingHighsLows(candles: Candle[], lookback = 5): SwingPoints {
+  const highs: { index: number; price: number }[] = [];
+  const lows: { index: number; price: number }[] = [];
+  const n = candles.length;
+  if (n < lookback * 2 + 1) return { highs, lows };
+  for (let i = lookback; i < n - lookback; i++) {
+    const c = candles[i];
+    let isHigh = true;
+    let isLow = true;
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j === i) continue;
+      if (candles[j].high >= c.high) isHigh = false;
+      if (candles[j].low <= c.low) isLow = false;
+    }
+    if (isHigh) highs.push({ index: i, price: c.high });
+    if (isLow) lows.push({ index: i, price: c.low });
+  }
+  return { highs, lows };
 }
 
 export function volumeConfirms(

@@ -9,6 +9,9 @@ const PATH_CREATE = '/exchange/v1/derivatives/futures/orders/create';
 const PATH_CANCEL = '/exchange/v1/derivatives/futures/orders/cancel';
 const PATH_POSITIONS = '/exchange/v1/derivatives/futures/positions';
 const PATH_INSTRUMENT = '/exchange/v1/derivatives/futures/data/instrument';
+const PATH_EXIT = '/exchange/v1/derivatives/futures/positions/exit';
+const PATH_TPSL = '/exchange/v1/derivatives/futures/positions/create_tpsl';
+const PATH_LEVERAGE = '/exchange/v1/derivatives/futures/positions/update_leverage';
 
 export interface CoinDcxClientOptions {
   apiKey: string;
@@ -149,6 +152,77 @@ export class CoinDcxFuturesClient {
       (timestamp) => ({ timestamp, id }),
       async ({ body, headers }) => {
         const { data } = await this.http.post(PATH_CANCEL, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async getFuturesPositions(): Promise<unknown> {
+    return this.withClockSkewRetry(
+      'FuturesPositions',
+      (timestamp) => ({ timestamp }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_POSITIONS, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async exitFuturesPosition(opts: {
+    positionId?: string;
+    pair?: string;
+    quantity?: number;
+  }): Promise<unknown> {
+    const positionId = opts.positionId?.trim();
+    const pair = opts.pair?.trim();
+    const quantity = opts.quantity;
+    if (!positionId && !pair) {
+      throw new Error('exitFuturesPosition requires positionId or pair');
+    }
+    if (quantity !== undefined && (!Number.isFinite(quantity) || quantity <= 0)) {
+      throw new Error('exitFuturesPosition quantity must be > 0 when provided');
+    }
+    this.guardWrite('exitFuturesPosition');
+    return this.withClockSkewRetry(
+      'FuturesExitPosition',
+      (timestamp) => ({
+        timestamp,
+        ...(positionId ? { position_id: positionId } : {}),
+        ...(pair ? { pair } : {}),
+        ...(quantity !== undefined ? { quantity } : {}),
+      }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_EXIT, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async createFuturesTpSlOrders(payload: Record<string, unknown>): Promise<unknown> {
+    this.guardWrite('createFuturesTpSlOrders');
+    return this.withClockSkewRetry(
+      'FuturesCreateTpSl',
+      (timestamp) => ({ timestamp, status: 'untriggered', ...payload }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_TPSL, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async updatePositionLeverage(opts: { pair: string; leverage: number }): Promise<unknown> {
+    const pair = opts.pair?.trim();
+    const leverage = Number(opts.leverage);
+    if (!pair) throw new Error('updatePositionLeverage requires pair');
+    if (!Number.isFinite(leverage) || leverage <= 0) {
+      throw new Error('updatePositionLeverage requires leverage > 0');
+    }
+    this.guardWrite('updatePositionLeverage');
+    return this.withClockSkewRetry(
+      'FuturesUpdateLeverage',
+      (timestamp) => ({ timestamp, pair, leverage }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_LEVERAGE, body, { headers });
         return data;
       },
     );

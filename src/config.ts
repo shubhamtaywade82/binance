@@ -39,8 +39,21 @@ export const AppConfigSchema = z.object({
     .default('false')
     .transform((s) => s.toLowerCase() === 'true'),
 
+  /** Seconds between heartbeat logs (mark + biases). 0 = disable. */
+  LOG_HEARTBEAT_SEC: z
+    .string()
+    .optional()
+    .default('60')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 60;
+      return Math.min(3600, n);
+    }),
+
   LEVERAGE: numFromString(10),
   CAPITAL_PER_TRADE: numFromString(20000),
+  CAPITAL_PER_TRADE_INR: numFromString(20000),
+  INR_PER_USDT: numFromString(85),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
   MIN_CONFIDENCE: numFromString(0.65),
@@ -51,6 +64,7 @@ export const AppConfigSchema = z.object({
   MARGIN_CURRENCY: z.string().default('USDT'),
   USE_SMC: boolFromString(true),
   TRADES_CSV_PATH: z.string().default('./logs/trades.csv'),
+  TRADE_LOG_PATH: z.string().default('./logs/trades.csv'),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

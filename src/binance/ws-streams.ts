@@ -13,6 +13,7 @@ export interface MarkPriceUpdate {
 export interface BinanceStreamCallbacks {
   onKline?: (candle: Candle, isFinal: boolean) => void;
   onMarkPrice?: (u: MarkPriceUpdate) => void;
+  onOpen?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
 }
@@ -82,6 +83,7 @@ export class BinanceMarketWs {
 
     socket.on('open', () => {
       this.attempt = 0;
+      this.callbacks.onOpen?.();
     });
 
     socket.on('close', () => {

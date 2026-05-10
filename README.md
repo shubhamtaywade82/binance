@@ -27,3 +27,18 @@ npm run check
 ## Symbol map
 
 `BINANCE_SYMBOL` (e.g. `SOLUSDT`) must align with `COINDCX_PAIR` (e.g. `B-SOL_USDT`). Adjust both in `.env`.
+
+## What you see while it runs
+
+After seeding, the process stays open on the Binance WebSocket. Log lines (stdout):
+
+| Event | Meaning |
+|--------|--------|
+| `runtime_help` | What to expect next (bar logs, signals, heartbeat). |
+| `binance_ws_connected` | WS is up; streaming klines (+ mark on USDM). |
+| `heartbeat` | Every `LOG_HEARTBEAT_SEC` seconds (default 60): last Binance mark, HTF/LTF EMA bias, aligned signal, bar counts. Set `LOG_HEARTBEAT_SEC=0` to disable. |
+| `ltf_bar_closed` | Each **closed** LTF candle (e.g. every 15m): close, `htfBias` / `ltfBias`, `aligned` (would-trade direction if HTF/LTF agree). |
+| `signal` / `paper_or_readonly_skip_order` | Only when the **aligned** signal **changes** from the previous value and is tradeable; paper mode logs intent instead of sending an order. |
+| `binance_ws_reconnect` / `binance_ws_error` | Feed issues. |
+
+So: if nothing changes for a long time, you should still see **`heartbeat`** once a minute and **`ltf_bar_closed`** every LTF interval.

@@ -1,4 +1,4 @@
-import type { AppConfig } from './config';
+import { binanceWsBase, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { BinanceMarketWs, type MarkPriceUpdate } from './binance/ws-streams';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
@@ -37,8 +37,10 @@ export class HybridOrchestrator {
   private readonly ws: BinanceMarketWs;
   private readonly cdcx: CoinDcxFuturesClient;
   private lastMark: number | null = null;
+  private lastMarkAt: number | null = null;
   private lastSignal: TrendBias = 'NONE';
   private precision: ReturnType<typeof extractPrecisionFromInstrument> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -54,6 +56,7 @@ export class HybridOrchestrator {
     this.ws = new BinanceMarketWs(cfg, {
       onKline: (c, fin) => this.onKline(c, fin),
       onMarkPrice: (u) => this.onMark(u),
+      onOpen: () => this.logWsConnected(),
       onError: (err) => this.log.warn('binance_ws_error', { err: err.message }),
       onReconnect: (n) => this.log.warn('binance_ws_reconnect', { attempt: n }),
     });
@@ -69,10 +72,52 @@ export class HybridOrchestrator {
       readOnly: this.cfg.READ_ONLY,
       executionEnabled: this.cfg.EXECUTION_ENABLED,
     });
+    this.log.info('runtime_help', {
+      next: 'Wait for binance_ws_connected, then mark/klines flow.',
+      barLog: `Each closed ${this.cfg.BINANCE_KLINE_INTERVAL} bar logs ltf_bar_closed (bias + aligned signal).`,
+      signalLog: 'Aligned HTF/LTF change logs signal + paper_or_readonly_skip_order when not trading.',
+      heartbeatSec: this.cfg.LOG_HEARTBEAT_SEC,
+    });
+    if (this.cfg.LOG_HEARTBEAT_SEC > 0) {
+      this.heartbeatTimer = setInterval(() => this.logHeartbeat(), this.cfg.LOG_HEARTBEAT_SEC * 1000);
+    }
   }
 
   stop(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     this.ws.stop();
+  }
+
+  private logWsConnected(): void {
+    const base = binanceWsBase(this.cfg);
+    this.log.info('binance_ws_connected', {
+      wsBase: base,
+      symbol: this.pairs.binanceSymbol,
+      ltf: this.cfg.BINANCE_KLINE_INTERVAL,
+      htfPoll: this.cfg.BINANCE_HTF_INTERVAL,
+    });
+  }
+
+  private logHeartbeat(): void {
+    const htfBias = biasFromCandles(this.c1h);
+    const ltfBias = biasFromCandles(this.c15);
+    const aligned = alignedTrend(htfBias, ltfBias);
+    const last15 = this.c15.length ? this.c15[this.c15.length - 1] : null;
+    this.log.info('heartbeat', {
+      binanceMark: this.lastMark,
+      markEventMs: this.lastMarkAt,
+      htfBias,
+      ltfBias,
+      alignedSignal: aligned,
+      lastEmittedSignal: this.lastSignal,
+      last15mOpenTime: last15?.openTime,
+      last15mClose: last15?.close,
+      bars15m: this.c15.length,
+      bars1h: this.c1h.length,
+    });
   }
 
   private async seedCandles(): Promise<void> {
@@ -107,14 +152,30 @@ export class HybridOrchestrator {
   private onMark(u: MarkPriceUpdate): void {
     if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
     this.lastMark = u.markPrice;
+    this.lastMarkAt = u.eventTime;
   }
 
   private onKline(c: Candle, isFinal: boolean): void {
     upsertCandle(this.c15, c);
     if (isFinal) {
-      void this.maybeRefreshHtf();
-      this.evaluate(c);
+      void this.onLtfBarFinal(c);
     }
+  }
+
+  private async onLtfBarFinal(c: Candle): Promise<void> {
+    await this.maybeRefreshHtf();
+    const htfBias = biasFromCandles(this.c1h);
+    const ltfBias = biasFromCandles(this.c15);
+    const aligned = alignedTrend(htfBias, ltfBias);
+    this.log.info('ltf_bar_closed', {
+      openTime: c.openTime,
+      close: c.close,
+      htfBias,
+      ltfBias,
+      aligned,
+      binanceMark: this.lastMark,
+    });
+    this.evaluate(c);
   }
 
   /** Refresh 1h series periodically on LTF close (cheap vs streaming two WS). */

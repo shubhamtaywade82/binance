@@ -10,3 +10,19 @@ export interface Candle {
 }
 
 export type TrendBias = 'LONG' | 'SHORT' | 'NONE';
+
+export type Side = 'LONG' | 'SHORT';
+
+export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'MANUAL';
+
+export interface Position {
+  side: Side;
+  entryPrice: number;
+  quantity: number;
+  takeProfit: number;
+  stopLoss: number;
+  openedAt: number;
+  pair: string;
+  notionalUsdt: number;
+  marginInr: number;
+}
