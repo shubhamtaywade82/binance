@@ -19,7 +19,9 @@
     "ws:ltp:spot": "USE_SPOT=1 ts-node scripts/ws-ltp-solusdt.ts",
     "futures:ltp": "ts-node scripts/futures-ltp-ws.ts",
     "futures:ltp:rest": "ts-node scripts/futures-ltp-rest.ts",
-    "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts"
+    "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts",
+    "dashboard": "ts-node src/dashboard/server.ts",
+    "ui:dev": "vite"
   },
   "engines": {
     "node": ">=20"
