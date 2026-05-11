@@ -14,7 +14,11 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "ws:ltp": "ts-node scripts/ws-ltp-solusdt.ts",
+    "ws:ltp:spot": "USE_SPOT=1 ts-node scripts/ws-ltp-solusdt.ts",
+    "futures:ltp": "ts-node scripts/futures-ltp-ws.ts",
+    "futures:ltp:rest": "ts-node scripts/futures-ltp-rest.ts"
   },
   "engines": {
     "node": ">=20"

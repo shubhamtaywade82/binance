@@ -1,41 +1,13 @@
-{"ts":"2026-05-10T20:54:20.233Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
-{"ts":"2026-05-10T20:54:20.344Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
-{"ts":"2026-05-10T20:54:20.347Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark or ticker).","logFile":"./logs/app.ndjson"}
-{"ts":"2026-05-10T20:54:20.709Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
-{"ts":"2026-05-10T20:54:35.347Z","level":"warn","msg":"ltp_connect_timeout","waitedSec":15,"symbol":"SOLUSDT","hint":"No markPriceUpdate yet — check network, symbol, or BINANCE_WS_BASE."}
-{"ts":"2026-05-10T20:55:21.423Z","level":"info","msg":"heartbeat","binanceMark":null,"ltpConfirmed":false,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T20:56:22.601Z","level":"info","msg":"heartbeat","binanceMark":null,"ltpConfirmed":false,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T20:57:23.128Z","level":"info","msg":"heartbeat","binanceMark":null,"ltpConfirmed":false,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T20:57:56.988Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
-{"ts":"2026-05-10T20:57:57.094Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
-{"ts":"2026-05-10T20:57:57.098Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark or ticker).","logFile":"./logs/app.ndjson"}
-{"ts":"2026-05-10T20:57:57.465Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
-{"ts":"2026-05-10T20:58:02.271Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
-{"ts":"2026-05-10T20:58:02.379Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
-{"ts":"2026-05-10T20:58:02.382Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark or ticker).","logFile":"./logs/app.ndjson"}
-{"ts":"2026-05-10T20:58:02.747Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
-{"ts":"2026-05-10T20:58:20.685Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
-{"ts":"2026-05-10T20:58:20.795Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
-{"ts":"2026-05-10T20:58:20.801Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark or ticker).","logFile":"./logs/app.ndjson"}
-{"ts":"2026-05-10T20:58:20.944Z","level":"info","msg":"ltp_connected","source":"mark_rest","price":94.41,"eventTime":1778446701000,"symbol":"SOLUSDT","note":"USD-M mark from GET /fapi/v1/premiumIndex (WS silent or slow)"}
-{"ts":"2026-05-10T20:58:21.164Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
-{"ts":"2026-05-10T20:58:38.356Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
-{"ts":"2026-05-10T20:58:38.470Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
-{"ts":"2026-05-10T20:58:38.474Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"usdmMarkRestPollSec":5,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).","logFile":"./logs/app.ndjson"}
-{"ts":"2026-05-10T20:58:38.618Z","level":"info","msg":"ltp_connected","source":"mark_rest","price":94.41,"eventTime":1778446718000,"symbol":"SOLUSDT","note":"USD-M mark from GET /fapi/v1/premiumIndex (WS silent or slow)"}
-{"ts":"2026-05-10T20:58:38.837Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
-{"ts":"2026-05-10T20:59:39.554Z","level":"info","msg":"heartbeat","binanceMark":94.44,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:00:40.092Z","level":"info","msg":"heartbeat","binanceMark":94.51,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:01:41.180Z","level":"info","msg":"heartbeat","binanceMark":94.64,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:02:42.295Z","level":"info","msg":"heartbeat","binanceMark":94.77,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:03:43.401Z","level":"info","msg":"heartbeat","binanceMark":94.8611383,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:04:44.550Z","level":"info","msg":"heartbeat","binanceMark":94.78,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:05:45.714Z","level":"info","msg":"heartbeat","binanceMark":94.83872974,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:06:46.891Z","level":"info","msg":"heartbeat","binanceMark":94.92,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:07:47.505Z","level":"info","msg":"heartbeat","binanceMark":95.13,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:08:48.722Z","level":"info","msg":"heartbeat","binanceMark":95.17,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:09:49.889Z","level":"info","msg":"heartbeat","binanceMark":95.09224402,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:10:51.053Z","level":"info","msg":"heartbeat","binanceMark":95.16044959,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:11:52.226Z","level":"info","msg":"heartbeat","binanceMark":94.86527807,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:12:53.391Z","level":"info","msg":"heartbeat","binanceMark":94.7,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
-{"ts":"2026-05-10T21:13:54.565Z","level":"info","msg":"heartbeat","binanceMark":94.77,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-10T21:24:05.093Z","level":"info","msg":"heartbeat","binanceMark":95.11084895,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-10T21:25:06.247Z","level":"info","msg":"heartbeat","binanceMark":95.03805607,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-10T21:26:07.422Z","level":"info","msg":"heartbeat","binanceMark":94.96,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"LONG","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-10T21:26:39.786Z","level":"info","msg":"candles_seeded","n15":200,"n1h":120}
+{"ts":"2026-05-10T21:26:39.902Z","level":"info","msg":"instrument_precision","tickSize":0.01,"stepSize":0.001,"minQty":0.001}
+{"ts":"2026-05-10T21:26:39.905Z","level":"info","msg":"orchestrator_started","binance":"SOLUSDT","coindcx":"B-SOL_USDT","readOnly":true,"executionEnabled":false,"usdmMarkRestPollSec":5,"ltpCheck":"Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).","logFile":"./logs/app.ndjson"}
+{"ts":"2026-05-10T21:26:40.054Z","level":"info","msg":"ltp_connected","source":"mark_rest","price":95.01,"eventTime":1778448400000,"symbol":"SOLUSDT","note":"USD-M mark from GET /fapi/v1/premiumIndex (WS silent or slow)"}
+{"ts":"2026-05-10T21:26:40.264Z","level":"info","msg":"binance_ws_connected","wsBase":"wss://fstream.binance.com","product":"usdm","symbol":"SOLUSDT","ltf":"15m"}
+{"ts":"2026-05-10T21:27:41.119Z","level":"info","msg":"heartbeat","binanceMark":95.09059738,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"SHORT","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-11T03:21:35.353Z","level":"warn","msg":"usdm_mark_rest_failed","symbol":"SOLUSDT","err":"timeout of 10000ms exceeded"}
+{"ts":"2026-05-11T03:22:16.036Z","level":"info","msg":"heartbeat","binanceMark":94.80383991,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"SHORT","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-11T03:23:17.689Z","level":"info","msg":"heartbeat","binanceMark":94.85,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"SHORT","bars15m":200,"bars1h":120,"inPosition":false}
+{"ts":"2026-05-11T03:24:19.578Z","level":"info","msg":"heartbeat","binanceMark":94.87,"ltpConfirmed":true,"htfBias":"LONG","ltfBias":"SHORT","bars15m":200,"bars1h":120,"inPosition":false}
