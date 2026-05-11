@@ -27,6 +27,8 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
+    TP_PRICE_PCT: 0.01,
+    SL_PRICE_PCT: 0.005,
     MIN_CONFIDENCE: 0.4,
     MIN_SMC_SCORE: 0,
     TAKER_FEE: 0.0005,
@@ -46,6 +48,28 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     PAPER_FUNDING_POLL_SEC: 300,
     PAPER_EQUITY_SNAPSHOT_SEC: 5,
     USDM_MARK_REST_POLL_SEC: 0,
+    USE_SOL_MTF_STRATEGY: false,
+    USE_SMC_CONFLUENCE: false,
+    SMC_CONFLUENCE_MODE: 'standard',
+    SMC_CONFLUENCE_MIN_STANDARD: 3,
+    SMC_CONFLUENCE_MIN_SNIPER: 4,
+    SMC_CONFLUENCE_TARGET_PCT: 0.015,
+    BINANCE_TIMEFRAMES: ['15m', '1h'],
+    BINANCE_HISTORY_BARS: 500,
+    BINANCE_DEPTH_LEVELS: 0 as 0 | 5 | 10 | 20,
+    BINANCE_DEPTH_SPEED: '100ms',
+    BINANCE_USE_AGGTRADE: true,
+    BINANCE_USE_BOOKTICKER: true,
+    BINANCE_USE_MARK_PRICE: true,
+    BINANCE_WS_RECONNECT_HOURS: 23,
+    BINANCE_FUTURES_TESTNET: false,
+    BINANCE_FAPI_WS_ENABLED: false,
+    BINANCE_FAPI_API_KEY: '',
+    BINANCE_FAPI_ED25519_PRIVATE_KEY_PATH: '',
+    BINANCE_FAPI_WS_REQUEST_TIMEOUT_MS: 30_000,
+    BINANCE_FAPI_WS_HIDE_RATELIMITS: false,
+    SHUTDOWN_TIMEOUT_MS: 5000,
+    SHUTDOWN_FORCE_EXIT_MS: 10000,
     ...over,
   } as AppConfig;
 }
@@ -54,6 +78,9 @@ function stubRuntime(cfg: AppConfig): ExecutionRuntime {
   const book = new BookTickerFeed({
     wsBase: 'wss://fstream.binance.com',
     symbols: [cfg.BINANCE_SYMBOL.toUpperCase()],
+  });
+  vi.spyOn(book, 'stop').mockImplementation(() => {
+    /* Avoid ws.close() throwing when the socket never connected (Vitest teardown). */
   });
   return { adapter: createStubExecutionAdapter(), book };
 }
@@ -92,6 +119,22 @@ function fakeCdcx() {
 }
 
 describe('HybridOrchestrator entry gating', () => {
+  it('throws when USE_SOL_MTF_STRATEGY is set but a required timeframe is missing', () => {
+    const badCfg = makeCfg({
+      USE_SOL_MTF_STRATEGY: true,
+      BINANCE_TIMEFRAMES: ['5m', '15m'],
+    });
+    expect(
+      () =>
+        new HybridOrchestrator(badCfg, noopLog, {
+          cdcx: fakeCdcx(),
+          ws: fakeWs(),
+          seedKlines: vi.fn().mockResolvedValue([]),
+          execution: stubRuntime(badCfg),
+        }),
+    ).toThrow(/USE_SOL_MTF_STRATEGY requires/);
+  });
+
   it('opens position when HTF and LTF both LONG with confidence and SMC pass', async () => {
     const cfg = makeCfg();
     const orch = new HybridOrchestrator(cfg, noopLog, {

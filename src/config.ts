@@ -82,6 +82,10 @@ export const AppConfigSchema = z.object({
   INR_PER_USDT: numFromString(85),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
+  /** Take-profit distance as underlying price move (e.g. 0.015 = 1.5%). Replaces TARGET_PNL_PCT/LEVERAGE for exits. */
+  TP_PRICE_PCT: numFromString(0.01),
+  /** Stop-loss distance as underlying price move (e.g. 0.01 = 1%). */
+  SL_PRICE_PCT: numFromString(0.005),
   MIN_CONFIDENCE: numFromString(0.65),
   MIN_SMC_SCORE: numFromString(2),
   TAKER_FEE: numFromString(0.0005),
@@ -99,6 +103,12 @@ export const AppConfigSchema = z.object({
   SMC_CONFLUENCE_MIN_STANDARD: numFromString(3),
   SMC_CONFLUENCE_MIN_SNIPER: numFromString(4),
   SMC_CONFLUENCE_TARGET_PCT: numFromString(0.015),
+
+  /**
+   * SOL USD-M: multi-timeframe SMC stack (5m execution close, 15m/1h/4h/1d filters).
+   * Set `BINANCE_TIMEFRAMES=5m,15m,1h,4h,1d` (5m first). Binance data → CoinDCX orders unchanged.
+   */
+  USE_SOL_MTF_STRATEGY: boolFromString(false),
   TRADES_CSV_PATH: z.string().default('./logs/trades.csv'),
   TRADE_LOG_PATH: z.string().default('./logs/trades.csv'),
 

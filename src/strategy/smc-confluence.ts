@@ -20,7 +20,7 @@ export interface SmcConfluenceResult {
   reasons: string[];
 }
 
-function emaTrend(c: Candle[]): TrendBias {
+export function emaTrend(c: Candle[]): TrendBias {
   if (c.length < 30) return 'NONE';
   const closes = c.map((x) => x.close);
   const c9 = ema(closes, 9);

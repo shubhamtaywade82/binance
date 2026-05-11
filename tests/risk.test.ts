@@ -23,6 +23,8 @@ function cfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
+    TP_PRICE_PCT: 0.01,
+    SL_PRICE_PCT: 0.005,
     MIN_CONFIDENCE: 0.65,
     MIN_SMC_SCORE: 2,
     TAKER_FEE: 0.0005,
@@ -63,7 +65,7 @@ describe('RiskManager.sizePosition', () => {
 });
 
 describe('RiskManager.targets', () => {
-  it('1% price move = 10% PnL at 10x leverage (long)', () => {
+  it('uses TP_PRICE_PCT / SL_PRICE_PCT as underlying price distances (long)', () => {
     const rm = new RiskManager(cfg());
     const t = rm.targets(100, 'LONG');
     expect(t.takeProfit).toBeCloseTo(101, 6);

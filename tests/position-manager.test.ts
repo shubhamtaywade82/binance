@@ -28,6 +28,8 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
+    TP_PRICE_PCT: 0.01,
+    SL_PRICE_PCT: 0.005,
     MIN_CONFIDENCE: 0.65,
     MIN_SMC_SCORE: 2,
     TAKER_FEE: 0.0005,

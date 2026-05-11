@@ -38,8 +38,8 @@ export class RiskManager {
   }
 
   targets(entryPrice: number, side: Side): TargetResult {
-    const tpMove = this.cfg.TARGET_PNL_PCT / this.cfg.LEVERAGE;
-    const slMove = this.cfg.STOP_LOSS_PCT / this.cfg.LEVERAGE;
+    const tpMove = this.cfg.TP_PRICE_PCT;
+    const slMove = this.cfg.SL_PRICE_PCT;
     if (side === 'LONG') {
       return {
         takeProfit: entryPrice * (1 + tpMove),

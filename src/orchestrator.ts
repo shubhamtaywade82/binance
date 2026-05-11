@@ -22,6 +22,7 @@ import { biasFromCandles } from './strategy/htf-ltf';
 import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
 import { evaluateSmcConfluence } from './strategy/smc-confluence';
+import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
 import type { Candle, Side, TrendBias } from './types';
@@ -125,6 +126,16 @@ export class HybridOrchestrator {
     this.timeframes = [...new Set(tfs)];
     this.ltfTf = this.timeframes[0] ?? cfg.BINANCE_KLINE_INTERVAL;
     this.htfTf = this.timeframes[1] ?? cfg.BINANCE_HTF_INTERVAL;
+    if (cfg.USE_SOL_MTF_STRATEGY) {
+      const subscribed = new Set(this.timeframes.map((t) => t.toLowerCase()));
+      for (const req of SOL_MTF_TIMEFRAMES) {
+        if (!subscribed.has(req)) {
+          throw new Error(
+            `USE_SOL_MTF_STRATEGY requires BINANCE_TIMEFRAMES to include ${req} (example: 5m,15m,1h,4h,1d).`,
+          );
+        }
+      }
+    }
     this.tradeTape = deps.tradeTape ?? new AggTradeTape(1000);
     this.orderbook = deps.orderbook ?? new LocalOrderBook();
 
@@ -312,17 +323,26 @@ export class HybridOrchestrator {
   }
 
   private logHeartbeat(): void {
-    const htfBias = biasFromCandles(this.c1h);
+    const htfBias = this.reversalTrendBias();
     const ltfBias = biasFromCandles(this.c15);
     this.log.info('heartbeat', {
       binanceMark: this.lastMark,
       ltpConfirmed: this.ltpConfirmed,
       htfBias,
       ltfBias,
-      bars15m: this.c15.length,
-      bars1h: this.c1h.length,
+      execTf: this.ltfTf,
+      barsExec: this.c15.length,
+      barsHTF: this.c1h.length,
       inPosition: this.positionManager.hasPosition(),
     });
+  }
+
+  /** Daily bias when SOL MTF strategy is on; else HTF EMA bias from the secondary candle buffer. */
+  private reversalTrendBias(): TrendBias {
+    if (this.cfg.USE_SOL_MTF_STRATEGY) {
+      return biasFromCandles(this.store.getSeries(this.pairs.binanceSymbol, '1d'));
+    }
+    return biasFromCandles(this.c1h);
   }
 
   private onWsOpen(route?: string, url?: string): void {
@@ -384,9 +404,26 @@ export class HybridOrchestrator {
     });
   }
 
-  injectCandles(c15: Candle[], c1h: Candle[]): void {
-    this.c15.splice(0, this.c15.length, ...c15);
-    this.c1h.splice(0, this.c1h.length, ...c1h);
+  injectCandles(ltf: Candle[], htf: Candle[]): void {
+    const sym = this.pairs.binanceSymbol;
+    this.store.seed(sym, this.ltfTf, ltf);
+    this.store.seed(sym, this.htfTf, htf);
+    this.refreshLegacyBuffers();
+  }
+
+  /** Seed any intervals (e.g. SOL MTF harness). Keys must match Binance interval strings (`5m`, `1d`, …). */
+  injectMultiTimeframeSeries(series: Partial<Record<string, Candle[]>>): void {
+    const sym = this.pairs.binanceSymbol;
+    for (const [tf, candles] of Object.entries(series)) {
+      if (candles?.length) this.store.seed(sym, tf.toLowerCase(), candles);
+    }
+    this.refreshLegacyBuffers();
+  }
+
+  private refreshLegacyBuffers(): void {
+    const sym = this.pairs.binanceSymbol;
+    this.c15.splice(0, this.c15.length, ...this.store.getSeries(sym, this.ltfTf));
+    this.c1h.splice(0, this.c1h.length, ...this.store.getSeries(sym, this.htfTf));
   }
 
   hasPosition(): boolean {
@@ -486,8 +523,7 @@ export class HybridOrchestrator {
     if (!liveBook) this.feedSyntheticBook(price);
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
-    const htfBias = biasFromCandles(this.c1h);
-    void this.positionManager.onMark(price, htfBias);
+    void this.positionManager.onMark(price, this.reversalTrendBias());
   }
 
   private scheduleRestMarkPoll(): void {
@@ -545,9 +581,64 @@ export class HybridOrchestrator {
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {
+    if (this.positionManager.hasPosition()) return;
+
+    const refPrice = this.lastMark ?? ltfBar.close;
+    const sym = this.pairs.binanceSymbol;
+
+    if (this.cfg.USE_SOL_MTF_STRATEGY) {
+      const sol = evaluateSolMtfStrategy({
+        candles: {
+          '1d': this.store.getSeries(sym, '1d'),
+          '4h': this.store.getSeries(sym, '4h'),
+          '1h': this.store.getSeries(sym, '1h'),
+          '15m': this.store.getSeries(sym, '15m'),
+          '5m': this.store.getSeries(sym, '5m'),
+        },
+        refPrice,
+        minConfidence: this.cfg.MIN_CONFIDENCE,
+      });
+
+      this.log.info('sol_mtf_strategy', {
+        pass: sol.pass,
+        direction: sol.direction,
+        reasons: sol.reasons,
+      });
+
+      if (!sol.pass) return;
+
+      const confluence = evaluateSmcConfluence(
+        this.store.getSeries(sym, '5m'),
+        this.store.getSeries(sym, '1h'),
+        sol.direction,
+        refPrice,
+        {
+          enabled: this.cfg.USE_SMC_CONFLUENCE,
+          mode: this.cfg.SMC_CONFLUENCE_MODE,
+          standardMinScore: this.cfg.SMC_CONFLUENCE_MIN_STANDARD,
+          sniperMinScore: this.cfg.SMC_CONFLUENCE_MIN_SNIPER,
+          targetPct: this.cfg.SMC_CONFLUENCE_TARGET_PCT,
+        },
+      );
+
+      this.log.info('smc_confluence', {
+        enabled: this.cfg.USE_SMC_CONFLUENCE,
+        pass: confluence.pass,
+        score: Number(confluence.score.toFixed(2)),
+        threshold: confluence.threshold,
+        reasons: confluence.reasons,
+      });
+
+      if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
+
+      const side: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
+      const prec = this.precision ?? extractPrecisionFromInstrument(null);
+      await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+      return;
+    }
+
     const htfBias: TrendBias = biasFromCandles(this.c1h);
     const ltf = analyzeTrend(this.c15);
-    const refPrice = this.lastMark ?? ltfBar.close;
     const smc = analyzeSmc(this.c15, refPrice, htfBias);
 
     this.log.info('signal_evaluated', {
@@ -557,8 +648,6 @@ export class HybridOrchestrator {
       smcScore: smc.score,
       refPrice,
     });
-
-    if (this.positionManager.hasPosition()) return;
 
     const aligned =
       htfBias !== 'NONE' &&
