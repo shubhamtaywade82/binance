@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -72,6 +72,16 @@ function buildPm(over: Partial<AppConfig> = {}): PositionManager {
 }
 
 describe('PositionManager paper mode', () => {
+  it('does not call the adapter when PLACE_ORDER is false', async () => {
+    const adapter = createStubExecutionAdapter();
+    const spy = vi.spyOn(adapter, 'placeOrder');
+    const cfg = makeCfg({ PLACE_ORDER: false, TRADE_LOG_PATH: tmpCsv, TRADES_CSV_PATH: tmpCsv });
+    const pm = new PositionManager(cfg, adapter, new RiskManager(cfg), noopLog);
+    await pm.open('LONG', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');
+    expect(spy).not.toHaveBeenCalled();
+    expect(pm.hasPosition()).toBe(false);
+  });
+
   it('opens then closes on TP', async () => {
     const pm = buildPm();
     const pos = await pm.open('LONG', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');

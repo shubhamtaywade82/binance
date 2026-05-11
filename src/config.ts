@@ -48,9 +48,10 @@ export const AppConfigSchema = z.object({
     .transform((s) => s.toLowerCase() !== 'false'),
 
   /**
-   * When false (default), strategy runs but **no orders** are sent — neither CoinDCX nor paper fills.
-   * Set `PLACE_ORDER=true` to enable `PaperExecutionAdapter` or live broker calls (still gated by `EXECUTION_MODE` / `READ_ONLY`).
-   * Legacy: `EXECUTION_ENABLED=true` is honored if `PLACE_ORDER` is unset.
+   * Master switch for `PositionManager` → execution adapter (paper or live).
+   * Default **true**: with **`EXECUTION_MODE=paper`** (default), fills are **simulated locally** — no CoinDCX order API and no Binance trading API.
+   * Set **false** for signals-only (no paper positions). Live exchange orders still require **`EXECUTION_MODE=live`**, **`READ_ONLY=false`**, and API keys.
+   * Legacy: `EXECUTION_ENABLED` is honored if `PLACE_ORDER` is unset.
    */
   PLACE_ORDER: z.preprocess((val: unknown) => {
     if (val !== undefined && val !== '') return val;
@@ -58,8 +59,8 @@ export const AppConfigSchema = z.object({
     if (process.env.EXECUTION_ENABLED !== undefined && process.env.EXECUTION_ENABLED !== '') {
       return process.env.EXECUTION_ENABLED;
     }
-    return 'false';
-  }, boolFromString(false)),
+    return 'true';
+  }, boolFromString(true)),
 
   /** Seconds between heartbeat logs (mark + biases). 0 = disable. */
   LOG_HEARTBEAT_SEC: z
@@ -115,7 +116,7 @@ export const AppConfigSchema = z.object({
   MARGIN_CURRENCY: z.string().default('USDT'),
   USE_SMC: boolFromString(true),
 
-  USE_SMC_CONFLUENCE: boolFromString(false),
+  USE_SMC_CONFLUENCE: boolFromString(true),
   SMC_CONFLUENCE_MODE: z
     .union([z.enum(['standard', 'sniper']), z.string()])
     .default('standard')

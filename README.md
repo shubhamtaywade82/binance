@@ -26,7 +26,7 @@ npm run fapi:ws:status
 ## CoinDCX
 
 - Environment variables match `coindcx-bot` (`API_BASE_URL`, `COINDCX_API_KEY`, `COINDCX_API_SECRET`, …).
-- Default: **`PLACE_ORDER=false`** — strategy runs and logs signals; **no orders** (paper or live). Set **`PLACE_ORDER=true`** to allow `PositionManager` to call the execution adapter. Defaults also include `READ_ONLY=true` (CoinDCX REST writes blocked at the client).
+- Default: **`PLACE_ORDER=true`** + **`EXECUTION_MODE=paper`** — strategy runs, **paper wallet / simulated fills** run locally; **nothing is sent to CoinDCX or Binance trading APIs**. Set **`PLACE_ORDER=false`** for signals-only (no simulated positions). Live CoinDCX orders require **`EXECUTION_MODE=live`**, **`READ_ONLY=false`**, keys, and **`PLACE_ORDER=true`**.
 
 ## Quick start
 
@@ -55,7 +55,7 @@ Per LTF candle close:
 2. **LTF `analyzeTrend`** scoring 6 indicators — EMA fast vs slow, MACD hist sign+slope, RSI > 45 (long) / < 55 (short), Supertrend direction, swing structure HH+HL or LH+LL, volume ≥ 0.8× 20-bar avg. Direction set when ≥4 align AND volume confirms; `confidence = aligned/6`.
 3. **SMC overlay** (`USE_SMC=true`) — liquidity sweep, order block (last opposite candle before ≥1.5×ATR impulse), 3-candle FVG, BOS/CHoCH from swings. `score` counts concepts agreeing with HTF.
 4. Enter only when `htf.direction === ltf.direction !== 'NONE'` AND `confidence >= MIN_CONFIDENCE` AND `(!USE_SMC || smc.score >= MIN_SMC_SCORE)`.
-5. Optional strict gate: `USE_SMC_CONFLUENCE=true` enforces weighted SMC confluence thresholds (standard/sniper).
+5. **SMC confluence** (`USE_SMC_CONFLUENCE`, default **on**) — weighted thresholds (standard/sniper). With **`USE_SOL_MTF_STRATEGY`**, this layers on top of the MTF stack when enabled.
 
 ## Risk math
 
@@ -65,11 +65,11 @@ Per LTF candle close:
 
 ## Modes
 
-| Mode | `PLACE_ORDER` | `READ_ONLY` | Behavior |
-| ---- | ------------- | ----------- | -------- |
-| Signals-only (default) | `false` | `true` | Strategy evaluated; **no** paper fills and **no** CoinDCX orders. |
-| Paper trading | `true` | `true` | Simulated fills via `PaperExecutionAdapter`; CSV trade log; **no** CoinDCX writes. |
-| Live | `true` | `false` | Real CoinDCX orders when `EXECUTION_MODE=live` and API keys set. |
+| Mode | `EXECUTION_MODE` | `PLACE_ORDER` | `READ_ONLY` | Behavior |
+| ---- | ---------------- | ------------- | ----------- | -------- |
+| Paper (default) | `paper` | `true` | `true` | Full strategy + **simulated** fills/ledger; **no** exchange order APIs. |
+| Signals-only | `paper` | `false` | `true` | Strategy + logs; **no** positions. |
+| Live CoinDCX | `live` | `true` | `false` | Real orders (requires API keys). |
 
 ## Execution Modes
 
@@ -100,7 +100,7 @@ paper/
 
 ### Safety
 
-Live CoinDCX execution requires **`PLACE_ORDER=true`** AND `EXECUTION_MODE=live` AND `READ_ONLY=false` AND non-empty `COINDCX_API_KEY` + `COINDCX_API_SECRET`. Startup throws if `live` is requested without keys/read-write. With **`PLACE_ORDER=false`** (default), no broker calls occur regardless of mode.
+**Exchange order placement** (CoinDCX REST) happens only when **`EXECUTION_MODE=live`** AND **`READ_ONLY=false`** AND API keys are set AND **`PLACE_ORDER=true`**. Default **`EXECUTION_MODE=paper`** keeps all fills simulated. **`PLACE_ORDER=false`** disables adapter calls entirely (signals-only).
 
 PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now.
 
@@ -139,7 +139,8 @@ Components:
 | Var | Default | Purpose |
 | --- | ------- | ------- |
 | `TRADING_ASSET` | `sol` | `sol` / `eth` / `btc` → preset Binance + CoinDCX pair; `custom` → use `BINANCE_SYMBOL` + `COINDCX_PAIR` |
-| `PLACE_ORDER` | `false` | **`true`** required for any adapter order (paper simulation or live). Legacy: `EXECUTION_ENABLED` if `PLACE_ORDER` unset |
+| `PLACE_ORDER` | `true` | **`false`** = signals-only. **`true`** + `paper` = simulated fills (no exchange orders). **`true`** + `live` + keys = CoinDCX orders. |
+| `USE_SMC_CONFLUENCE` | `true` | Weighted SMC confluence gate (with MTF strategy when enabled) |
 | `LEVERAGE` | `10` | Position leverage |
 | `CAPITAL_PER_TRADE_INR` | `20000` | Margin per trade in INR |
 | `INR_PER_USDT` | `85` | FX for sizing |

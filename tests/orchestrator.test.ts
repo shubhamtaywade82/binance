@@ -136,6 +136,21 @@ describe('HybridOrchestrator entry gating', () => {
     ).toThrow(/USE_SOL_MTF_STRATEGY requires/);
   });
 
+  it('does not open a position when PLACE_ORDER is false', async () => {
+    const cfg = makeCfg({ PLACE_ORDER: false });
+    const orch = new HybridOrchestrator(cfg, noopLog, {
+      cdcx: fakeCdcx(),
+      ws: fakeWs(),
+      seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
+    });
+    const c = trendingCandles(80);
+    orch.injectCandles(c, c);
+    orch.setPrecision({ tickSize: 0.01, stepSize: 0.001, minQty: 0.001 });
+    await orch.evaluateBar(c[c.length - 1]);
+    expect(orch.hasPosition()).toBe(false);
+  });
+
   it('opens position when HTF and LTF both LONG with confidence and SMC pass', async () => {
     const cfg = makeCfg();
     const orch = new HybridOrchestrator(cfg, noopLog, {

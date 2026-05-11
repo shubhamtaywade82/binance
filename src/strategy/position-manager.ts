@@ -42,7 +42,8 @@ export class PositionManager {
       if (!this.placeOrderDisabledLogged) {
         this.placeOrderDisabledLogged = true;
         this.log.warn('place_order_disabled', {
-          hint: 'Set PLACE_ORDER=true to send paper or live orders (still subject to EXECUTION_MODE and READ_ONLY).',
+          hint:
+            'Set PLACE_ORDER=true for simulated (paper) or live adapter fills. Exchange REST orders only when EXECUTION_MODE=live, READ_ONLY=false, and API keys are set.',
         });
       }
       return null;
