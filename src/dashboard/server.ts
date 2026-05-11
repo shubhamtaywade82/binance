@@ -22,6 +22,8 @@ const cfg = loadConfig();
 const PORT = 4001;
 const SYMBOL = cfg.BINANCE_SYMBOL.toUpperCase();
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
+/** Must match UI candle buffer (`buildSnapshot` slice) so MACD/EMA align with price bars. */
+const CHART_BARS_5M = 300;
 const DEPTH_LEVELS = 20;
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -77,7 +79,7 @@ function buildSnapshot() {
     bestBid,
     bestAsk,
     candles: {
-      '5m': candles5m.slice(-300),
+      '5m': candles5m.slice(-CHART_BARS_5M),
       '15m': candles15m.slice(-200),
       '1h': candles1h.slice(-100),
       '4h': candles4h.slice(-60),
@@ -90,9 +92,15 @@ function buildSnapshot() {
 }
 
 // ─── Indicator Computation ───────────────────────────────────────────────────
-function computeIndicators(c5m: Candle[], c15m: Candle[], c1h: Candle[]) {
-  const closes5m = c5m.map((c) => c.close);
-  const closes15m = c15m.map((c) => c.close);
+/** JSON-safe numbers (NaN → null) so the client keeps index alignment with candles. */
+function finiteSeries(arr: number[]): (number | null)[] {
+  return arr.map((v) => (Number.isFinite(v) ? v : null));
+}
+
+function computeIndicators(c5m: Candle[], _c15m: Candle[], c1h: Candle[]) {
+  const cap = CHART_BARS_5M;
+  const c5 = c5m.slice(-cap);
+  const closes5m = c5.map((c) => c.close);
   const closes1h = c1h.map((c) => c.close);
 
   const ema9_5m = ema(closes5m, 9);
@@ -102,30 +110,27 @@ function computeIndicators(c5m: Candle[], c15m: Candle[], c1h: Candle[]) {
   const ema21_1h = ema(closes1h, 21);
 
   const rsi14_5m = rsi(closes5m, 14);
-  const rsi14_15m = rsi(closes15m, 14);
 
   const macd5m = macd(closes5m);
-  const st5m = supertrend(c5m, 10, 3);
-
-  const lastN = (arr: number[], n = 50) => arr.slice(-n).filter(Number.isFinite);
+  const st5m = supertrend(c5, 10, 3);
 
   return {
     '5m': {
-      ema9: lastN(ema9_5m),
-      ema21: lastN(ema21_5m),
-      ema50: lastN(ema50_5m),
-      rsi: lastN(rsi14_5m),
-      macdHist: lastN(macd5m.hist),
-      macdLine: lastN(macd5m.macd),
-      macdSignal: lastN(macd5m.signal),
+      ema9: finiteSeries(ema9_5m),
+      ema21: finiteSeries(ema21_5m),
+      ema50: finiteSeries(ema50_5m),
+      rsi: finiteSeries(rsi14_5m),
+      macdHist: finiteSeries(macd5m.hist),
+      macdLine: finiteSeries(macd5m.macd),
+      macdSignal: finiteSeries(macd5m.signal),
       supertrend: {
-        value: lastN(st5m.value),
-        dir: st5m.dir.slice(-50),
+        value: finiteSeries(st5m.value),
+        dir: st5m.dir,
       },
     },
     '1h': {
-      ema9: lastN(ema9_1h),
-      ema21: lastN(ema21_1h),
+      ema9: finiteSeries(ema9_1h).slice(-100),
+      ema21: finiteSeries(ema21_1h).slice(-100),
     },
   };
 }
@@ -222,17 +227,19 @@ const multiplex = new BinanceMultiplexWs(
 
       broadcast({ type: 'kline', tf, candle, isFinal });
 
-      if (isFinal && (tf === '5m' || tf === '15m')) {
-        // Recompute signals & indicators on each LTF close
-        const signals = computeSignals();
-        broadcast({ type: 'signals', ...signals });
-
-        // Send fresh indicators
+      // MACD/EMA must track the same 5m series as the price chart — refresh on every 5m tick
+      // (partial + final), not only on bar close, or the lower panel freezes while candles move.
+      if (tf === '5m') {
         const c5m = store.getSeries(SYMBOL, '5m');
         const c15m = store.getSeries(SYMBOL, '15m');
         const c1h = store.getSeries(SYMBOL, '1h');
         const indicators = computeIndicators(c5m, c15m, c1h);
         broadcast({ type: 'indicators', ...indicators });
+      }
+
+      if (isFinal && (tf === '5m' || tf === '15m')) {
+        const signals = computeSignals();
+        broadcast({ type: 'signals', ...signals });
       }
     },
 

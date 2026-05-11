@@ -247,38 +247,56 @@ export class ChartManager {
     if (!candles) return;
     const n = candles.length;
 
+    /** Map indicator points to candle times (server sends same length as candles for 5m, or tail-aligned). */
+    const candleTime = (idx) => Math.floor(candles[idx].openTime / 1000);
+
     const toLine = (arr) => {
-      if (!arr) return [];
-      const offset = n - arr.length;
-      return arr.map((v, i) => {
-        if (!Number.isFinite(v)) return null;
-        return { time: Math.floor(candles[offset + i].openTime / 1000), value: v };
-      }).filter(Boolean);
+      if (!arr || arr.length === 0) return [];
+      const aligned =
+        arr.length === n
+          ? arr.map((v, i) => ({ v, i }))
+          : arr.map((v, j) => ({ v, i: n - arr.length + j }));
+      return aligned
+        .map(({ v, i }) => {
+          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
+          if (i < 0 || i >= n) return null;
+          return { time: candleTime(i), value: v };
+        })
+        .filter(Boolean);
     };
 
-    if (ind.ema9)  this.ema9Series.setData(toLine(ind.ema9));
+    if (ind.ema9) this.ema9Series.setData(toLine(ind.ema9));
     if (ind.ema21) this.ema21Series.setData(toLine(ind.ema21));
     if (ind.ema50) this.ema50Series.setData(toLine(ind.ema50));
 
-    // Supertrend with color per direction
+    // Supertrend — dir/value aligned to same indices as candles when lengths match
     if (ind.supertrend?.value && ind.supertrend?.dir) {
-      const stData = ind.supertrend.value.map((v, i) => {
-        if (!Number.isFinite(v)) return null;
-        const offset = n - ind.supertrend.value.length;
-        const col = ind.supertrend.dir[i] === 'LONG' ? COLORS.bull : COLORS.bear;
-        return { time: Math.floor(candles[offset + i].openTime / 1000), value: v, color: col };
-      }).filter(Boolean);
+      const vals = ind.supertrend.value;
+      const dirs = ind.supertrend.dir;
+      const stData = vals
+        .map((v, j) => {
+          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
+          const i = vals.length === n ? j : n - vals.length + j;
+          if (i < 0 || i >= n) return null;
+          const col = dirs[j] === 'LONG' ? COLORS.bull : COLORS.bear;
+          return { time: candleTime(i), value: v, color: col };
+        })
+        .filter(Boolean);
       this.stSeries.setData(stData);
     }
 
-    // MACD
+    // MACD — must share candle indices or the lower pane lags / leaves a blank gap on the right
     if (ind.macdHist) {
-      const histData = ind.macdHist.map((v, i) => {
-        if (!Number.isFinite(v)) return null;
-        const offset = n - ind.macdHist.length;
-        const col = v >= 0 ? 'rgba(0,230,118,0.7)' : 'rgba(255,23,68,0.7)';
-        return { time: Math.floor(candles[offset + i].openTime / 1000), value: v, color: col };
-      }).filter(Boolean);
+      const mh = ind.macdHist;
+      const histData = mh
+        .map((v, j) => {
+          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
+          const i = mh.length === n ? j : n - mh.length + j;
+          if (i < 0 || i >= n) return null;
+          const col = v >= 0 ? 'rgba(0,230,118,0.7)' : 'rgba(255,23,68,0.7)';
+          return { time: candleTime(i), value: v, color: col };
+        })
+        .filter(Boolean);
       this.macdHistSeries.setData(histData);
 
       const lastHist = histData[histData.length - 1];
@@ -287,10 +305,9 @@ export class ChartManager {
         if (el) el.textContent = `${lastHist.value >= 0 ? '+' : ''}${lastHist.value.toFixed(4)}`;
       }
     }
-    if (ind.macdLine)   this.macdLineSeries.setData(toLine(ind.macdLine));
+    if (ind.macdLine) this.macdLineSeries.setData(toLine(ind.macdLine));
     if (ind.macdSignal) this.macdSignalSeries.setData(toLine(ind.macdSignal));
 
-    // Sync MACD time scale
     const mainRange = this.chart.timeScale().getVisibleLogicalRange();
     if (mainRange) this.macdChart.timeScale().setVisibleLogicalRange(mainRange);
   }
