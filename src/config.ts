@@ -89,6 +89,16 @@ export const AppConfigSchema = z.object({
   FUNDING_FEE_EST: numFromString(0.0001),
   MARGIN_CURRENCY: z.string().default('USDT'),
   USE_SMC: boolFromString(true),
+
+  USE_SMC_CONFLUENCE: boolFromString(false),
+  SMC_CONFLUENCE_MODE: z
+    .union([z.enum(['standard', 'sniper']), z.string()])
+    .default('standard')
+    .transform((v) => (String(v).toLowerCase() === 'sniper' ? 'sniper' : 'standard'))
+    .pipe(z.enum(['standard', 'sniper'])),
+  SMC_CONFLUENCE_MIN_STANDARD: numFromString(3),
+  SMC_CONFLUENCE_MIN_SNIPER: numFromString(4),
+  SMC_CONFLUENCE_TARGET_PCT: numFromString(0.015),
   TRADES_CSV_PATH: z.string().default('./logs/trades.csv'),
   TRADE_LOG_PATH: z.string().default('./logs/trades.csv'),
 
