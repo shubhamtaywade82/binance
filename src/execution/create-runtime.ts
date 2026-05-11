@@ -27,6 +27,7 @@ export function createExecutionRuntime(cfg: AppConfig, cdcx: CoinDcxFuturesClien
   const book = new BookTickerFeed({
     wsBase: binanceWsBase(cfg),
     symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
+    product: cfg.BINANCE_PRODUCT,
   });
 
   if (cfg.EXECUTION_MODE === 'live') {

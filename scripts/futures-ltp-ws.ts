@@ -3,19 +3,17 @@
  *
  * **Two different products / hosts** (do not mix the docs):
  * - **Spot** (Binance “General WSS” you quoted): `wss://stream.binance.com:9443` or `:443`
- * - **USD-M futures**: `wss://fstream.binance.com` (separate futures WebSocket docs)
+ * - **USD-M futures**: `wss://fstream.binance.com/market` for @aggTrade
  *
- * Defaults target **USD-M** (`fstream`). If `fstream` opens but never sends frames on your
- * network, set `BINANCE_WS_BASE=wss://stream.binance.com:9443` for **spot** SOLUSDT tape
- * (same symbol name, **not** the perp contract).
+ * Defaults target **USD-M perpetuals** (`fstream` routed through `/market`).
  *
  * Usage:
  *   npm run futures:ltp
  *   npm run futures:ltp -- ETHUSDT
  *
  * Env:
- *   BINANCE_WS_BASE   — default `wss://fstream.binance.com`
- *   FUTURES_LTP_WS_PATH — `raw` (default `/ws/<stream>`), `combined` (`/stream?streams=`), or `subscribe` (connect `/ws` then JSON SUBSCRIBE)
+ *   BINANCE_WS_BASE   — default root `wss://fstream.binance.com`
+ *   FUTURES_LTP_WS_PATH — `raw` (default `/market/ws/<stream>`), `combined` (`/market/stream?streams=`), or `subscribe` (connect `/market/ws` then JSON SUBSCRIBE)
  *
  * Implements Binance guidance: reply to **ping** with **pong** (same payload), reconnect on **serverShutdown**.
  *
@@ -23,7 +21,9 @@
  */
 import WebSocket from 'ws';
 
-const WS_BASE = (process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com').replace(/\/$/, '');
+const WS_BASE = (process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com')
+  .replace(/\/$/, '')
+  .replace(/\/(market|public|private)(\/(ws|stream))?$/, '');
 const pathRaw = (process.env.FUTURES_LTP_WS_PATH ?? 'raw').toLowerCase();
 const pathMode = pathRaw === 'combined' || pathRaw === 'subscribe' ? pathRaw : 'raw';
 const symbolArg = process.argv[2] ?? 'SOLUSDT';
@@ -72,20 +72,18 @@ function parseIncoming(raw: WebSocket.RawData): { kind: 'aggTrade'; row: AggTrad
 
 function buildUrl(): string {
   if (pathMode === 'subscribe') {
-    return `${WS_BASE}/ws`;
+    return `${WS_BASE}/market/ws`;
   }
   if (pathMode === 'combined') {
-    return `${WS_BASE}/stream?streams=${streamName}`;
+    return `${WS_BASE}/market/stream?streams=${streamName}`;
   }
-  return `${WS_BASE}/ws/${streamName}`;
+  return `${WS_BASE}/market/ws/${streamName}`;
 }
 
 const productHint =
-  WS_BASE.includes('fstream') || WS_BASE.includes('dstream')
-    ? 'USD-M futures host'
-    : WS_BASE.includes('stream.binance.com') || WS_BASE.includes('data-stream')
-      ? 'Spot / generic stream host (see script header — not fstream)'
-      : 'custom WS_BASE';
+  WS_BASE.includes('fstream') || WS_BASE.includes('binancefuture.com')
+    ? 'USD-M perpetual futures host'
+    : 'custom WS_BASE (expected USD-M futures root)';
 
 let stopping = false;
 let attempt = 0;
@@ -103,10 +101,9 @@ function scheduleNoDataHint(url: string): void {
   clearNoDataTimer();
   noDataTimer = setTimeout(() => {
     console.warn(
-      `\nStill no aggTrade after 15s (open OK). ${productHint}\n` +
+        `\nStill no aggTrade after 15s (open OK). ${productHint}\n` +
         `  URL: ${url}\n` +
         `  Try: FUTURES_LTP_WS_PATH=combined  or  FUTURES_LTP_WS_PATH=subscribe\n` +
-        `  Or spot host (WSS only): BINANCE_WS_BASE=wss://stream.binance.com:9443 npm run futures:ltp\n` +
         `  REST fallback: npm run futures:ltp:rest\n`,
     );
   }, 15_000);
@@ -155,7 +152,7 @@ function connect(): void {
     const eventTime = typeof d.E === 'number' ? d.E : Date.now();
     if (!Number.isFinite(price)) return;
     const iso = new Date(eventTime).toISOString();
-    const hostTag = WS_BASE.includes('fstream') ? 'wss fstream' : 'wss stream';
+    const hostTag = WS_BASE.includes('fstream') ? 'wss fstream/market' : 'custom ws/market';
     console.log(`[${iso}] LTP ${sym} = ${price}  qty=${Number.isFinite(qty) ? qty : 0}  (${hostTag})`);
   });
 

@@ -1,4 +1,10 @@
 import WebSocket from 'ws';
+import {
+  buildCombinedStreamUrl,
+  groupStreamsByRoute,
+  type BinanceProductWs,
+  type BinanceWsRoute,
+} from '../../binance/ws-routing';
 
 export interface BookTick {
   symbol: string;
@@ -11,20 +17,27 @@ export interface BookTick {
 export interface BookTickerFeedOptions {
   wsBase: string;
   symbols: string[];
+  product?: BinanceProductWs;
   /** Override constructor for tests. */
   wsFactory?: (url: string) => WebSocket;
 }
 
 type Listener = (t: BookTick) => void;
 
+interface FeedConnection {
+  route: BinanceWsRoute;
+  ws: WebSocket | null;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  attempt: number;
+  streams: string[];
+}
+
 export class BookTickerFeed {
-  private ws: WebSocket | null = null;
+  private connections = new Map<BinanceWsRoute, FeedConnection>();
   private latestMap = new Map<string, BookTick>();
   private lastTradeMap = new Map<string, number>();
   private listeners: Listener[] = [];
   private closed = false;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private attempt = 0;
 
   constructor(private readonly opts: BookTickerFeedOptions) {}
 
@@ -35,14 +48,16 @@ export class BookTickerFeed {
 
   stop(): void {
     this.closed = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      this.ws.close();
-      this.ws = null;
+    for (const conn of this.connections.values()) {
+      if (conn.reconnectTimer) {
+        clearTimeout(conn.reconnectTimer);
+        conn.reconnectTimer = null;
+      }
+      if (!conn.ws) continue;
+      const sock = conn.ws;
+      conn.ws = null;
+      sock.removeAllListeners();
+      sock.close();
     }
   }
 
@@ -69,25 +84,55 @@ export class BookTickerFeed {
     this.lastTradeMap.set(symbol.toUpperCase(), price);
   }
 
-  private streams(): string {
+  private streams(): string[] {
     const parts: string[] = [];
     for (const s of this.opts.symbols) {
       const lower = s.toLowerCase();
       parts.push(`${lower}@bookTicker`, `${lower}@aggTrade`);
     }
-    return parts.join('/');
+    return parts;
   }
 
   private connect(): void {
     if (this.closed) return;
-    const base = this.opts.wsBase.replace(/\/$/, '');
-    const url = `${base}/stream?streams=${this.streams()}`;
+    const grouped = groupStreamsByRoute(this.product(), this.streams());
+    for (const [route, streams] of grouped) {
+      this.connectRoute(this.ensureConnection(route, streams));
+    }
+  }
+
+  private product(): BinanceProductWs {
+    return this.opts.product ?? 'usdm';
+  }
+
+  private ensureConnection(route: BinanceWsRoute, streams: string[]): FeedConnection {
+    let conn = this.connections.get(route);
+    if (!conn) {
+      conn = { route, ws: null, reconnectTimer: null, attempt: 0, streams };
+      this.connections.set(route, conn);
+    } else {
+      conn.streams = streams;
+    }
+    return conn;
+  }
+
+  private connectRoute(conn: FeedConnection): void {
+    if (this.closed || conn.ws || conn.streams.length === 0) return;
+    const url = buildCombinedStreamUrl(this.opts.wsBase, this.product(), conn.route, conn.streams);
     const factory = this.opts.wsFactory ?? ((u: string) => new WebSocket(u));
     const socket = factory(url);
-    this.ws = socket;
+    conn.ws = socket;
 
     socket.on('open', () => {
-      this.attempt = 0;
+      conn.attempt = 0;
+    });
+
+    socket.on('ping', (payload: Buffer) => {
+      try {
+        socket.pong(payload);
+      } catch {
+        // ws normally auto-pongs; ignore manual pong failures
+      }
     });
 
     socket.on('message', (raw: WebSocket.RawData) => {
@@ -129,8 +174,8 @@ export class BookTickerFeed {
     });
 
     socket.on('close', () => {
-      this.ws = null;
-      if (!this.closed) this.scheduleReconnect();
+      if (conn.ws === socket) conn.ws = null;
+      if (!this.closed) this.scheduleReconnect(conn);
     });
 
     socket.on('error', () => {
@@ -138,13 +183,13 @@ export class BookTickerFeed {
     });
   }
 
-  private scheduleReconnect(): void {
-    if (this.closed || this.reconnectTimer) return;
-    this.attempt += 1;
-    const delayMs = Math.min(60_000, 500 * 2 ** Math.min(this.attempt, 10));
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
+  private scheduleReconnect(conn: FeedConnection): void {
+    if (this.closed || conn.reconnectTimer) return;
+    conn.attempt += 1;
+    const delayMs = Math.min(60_000, 500 * 2 ** Math.min(conn.attempt, 10));
+    conn.reconnectTimer = setTimeout(() => {
+      conn.reconnectTimer = null;
+      this.connectRoute(conn);
     }, delayMs);
   }
 }

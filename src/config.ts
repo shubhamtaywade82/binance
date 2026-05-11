@@ -132,11 +132,33 @@ export const AppConfigSchema = z.object({
     .default(20)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(v, 10)))
     .pipe(z.union([z.literal(0), z.literal(5), z.literal(10), z.literal(20)])),
-  BINANCE_DEPTH_SPEED: z.enum(['100ms', '1000ms']).default('100ms'),
+  BINANCE_DEPTH_SPEED: z.enum(['100ms', '500ms']).default('100ms'),
   BINANCE_USE_AGGTRADE: boolFromString(true),
   BINANCE_USE_BOOKTICKER: boolFromString(true),
   BINANCE_USE_MARK_PRICE: boolFromString(true),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
+
+  /**
+   * USD-M Futures **testnet** (derivatives demo): REST `demo-fapi.binance.com`, WS `fstream.binancefuture.com`.
+   * Ignored when `BINANCE_PRODUCT=spot`. Overrides ignored if `BINANCE_REST_BASE` / `BINANCE_WS_BASE` are set.
+   * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
+   */
+  BINANCE_FUTURES_TESTNET: boolFromString(false),
+
+  /**
+   * Binance USD-M **WebSocket trading API** (`ws-fapi`) — session.logon / order.place (Ed25519).
+   * Separate from public `fstream` market streams. Does not replace CoinDCX execution unless you wire it yourself.
+   * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-api-general-info
+   */
+  BINANCE_FAPI_WS_ENABLED: boolFromString(false),
+  BINANCE_FAPI_API_KEY: z.string().default(''),
+  /** PEM file path for Binance API Ed25519 private key (PKCS#8). */
+  BINANCE_FAPI_ED25519_PRIVATE_KEY_PATH: z.string().default(''),
+  BINANCE_FAPI_WS_URL: z.string().url().optional(),
+  BINANCE_FAPI_WS_REQUEST_TIMEOUT_MS: numFromString(30_000),
+  /** When true, handshake uses `?returnRateLimits=false`. */
+  BINANCE_FAPI_WS_HIDE_RATELIMITS: boolFromString(false),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 });
@@ -147,16 +169,22 @@ export function loadConfig(): AppConfig {
   return AppConfigSchema.parse(process.env);
 }
 
+/** USD-M REST per https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info */
 export function binanceRestBase(cfg: AppConfig): string {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
-  return cfg.BINANCE_PRODUCT === 'spot'
-    ? 'https://api.binance.com'
-    : 'https://fapi.binance.com';
+  if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
+  if (cfg.BINANCE_FUTURES_TESTNET) return 'https://demo-fapi.binance.com';
+  return 'https://fapi.binance.com';
 }
 
+/**
+ * Stream host root (no `/market` or `/public` suffix). For USD-M, multiplex builds
+ * `…/market/stream` vs `…/public/stream` per Binance routed WebSocket docs.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams
+ */
 export function binanceWsBase(cfg: AppConfig): string {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
-  return cfg.BINANCE_PRODUCT === 'spot'
-    ? 'wss://stream.binance.com:9443'
-    : 'wss://fstream.binance.com';
+  if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
+  if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';
+  return 'wss://fstream.binance.com';
 }

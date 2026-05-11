@@ -2,10 +2,16 @@ import WebSocket from 'ws';
 import type { Candle } from '../types';
 import { normalizeBinanceKlineRow } from './rest-klines';
 import type { DepthDiff } from './orderbook';
+import {
+  buildCombinedStreamUrl,
+  groupStreamsByRoute,
+  type BinanceProductWs,
+  type BinanceWsRoute,
+} from './ws-routing';
 
 export type DepthLevels = 0 | 5 | 10 | 20;
-export type DepthSpeed = '100ms' | '1000ms';
-export type BinanceProductWs = 'usdm' | 'spot';
+export type DepthSpeed = '100ms' | '500ms';
+export type { BinanceProductWs } from './ws-routing';
 
 export interface BookTickerEvent {
   symbol: string;
@@ -52,7 +58,7 @@ export interface MultiplexCallbacks {
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number, reason: string) => void;
   onServerShutdown?: () => void;
-  onOpen?: () => void;
+  onOpen?: (route: BinanceWsRoute, url: string) => void;
   onClose?: (code: number, reason: string) => void;
 }
 
@@ -78,6 +84,19 @@ interface SubscriptionMessage {
   id: number;
 }
 
+interface RouteConnection {
+  route: BinanceWsRoute;
+  ws: WebSocket | null;
+  attempt: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  rotateTimer: ReturnType<typeof setTimeout> | null;
+  subscriptions: Set<string>;
+}
+
+function isPartialDepthStream(stream: string | undefined): boolean {
+  return stream !== undefined && /@depth(5|10|20)(@|$)/.test(stream.toLowerCase());
+}
+
 export function buildStreamList(opts: MultiplexOptions): string[] {
   const out: string[] = [];
   for (const s of opts.symbols) {
@@ -94,12 +113,10 @@ export function buildStreamList(opts: MultiplexOptions): string[] {
 }
 
 export class BinanceMultiplexWs {
-  private ws: WebSocket | null = null;
   private closed = false;
-  private attempt = 0;
+  private started = false;
   private nextId = 1;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private rotateTimer: ReturnType<typeof setTimeout> | null = null;
+  private connections = new Map<BinanceWsRoute, RouteConnection>();
   private subscriptions: Set<string>;
   private readonly reconnectAfterMs: number;
 
@@ -118,16 +135,19 @@ export class BinanceMultiplexWs {
 
   start(): void {
     this.closed = false;
-    this.connect('initial');
+    this.started = true;
+    this.connectAll('initial');
   }
 
   async stop(): Promise<void> {
     this.closed = true;
-    this.clearReconnectTimer();
-    this.clearRotateTimer();
-    if (this.ws) {
-      const sock = this.ws;
-      this.ws = null;
+    this.started = false;
+    for (const conn of this.connections.values()) {
+      this.clearReconnectTimer(conn);
+      this.clearRotateTimer(conn);
+      if (!conn.ws) continue;
+      const sock = conn.ws;
+      conn.ws = null;
       sock.removeAllListeners();
       try {
         sock.close(1000, 'shutdown');
@@ -141,17 +161,28 @@ export class BinanceMultiplexWs {
   subscribe(streams: string[]): void {
     if (streams.length === 0) return;
     for (const s of streams) this.subscriptions.add(s);
-    this.send({ method: 'SUBSCRIBE', params: streams, id: this.nextId++ });
+    for (const [route, routeStreams] of groupStreamsByRoute(this.opts.product, streams)) {
+      const conn = this.ensureConnection(route);
+      for (const stream of routeStreams) conn.subscriptions.add(stream);
+      if (this.started && !conn.ws) this.connectRoute(conn, 'subscribe');
+      this.send(conn, { method: 'SUBSCRIBE', params: routeStreams, id: this.nextId++ });
+    }
   }
 
   unsubscribe(streams: string[]): void {
     if (streams.length === 0) return;
     for (const s of streams) this.subscriptions.delete(s);
-    this.send({ method: 'UNSUBSCRIBE', params: streams, id: this.nextId++ });
+    for (const [route, routeStreams] of groupStreamsByRoute(this.opts.product, streams)) {
+      const conn = this.ensureConnection(route);
+      for (const stream of routeStreams) conn.subscriptions.delete(stream);
+      this.send(conn, { method: 'UNSUBSCRIBE', params: routeStreams, id: this.nextId++ });
+    }
   }
 
   listSubscriptions(): void {
-    this.send({ method: 'LIST_SUBSCRIPTIONS', id: this.nextId++ });
+    for (const conn of this.connections.values()) {
+      this.send(conn, { method: 'LIST_SUBSCRIPTIONS', id: this.nextId++ });
+    }
   }
 
   /** Currently configured stream names. */
@@ -159,36 +190,61 @@ export class BinanceMultiplexWs {
     return [...this.subscriptions];
   }
 
-  private send(msg: SubscriptionMessage): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  private send(conn: RouteConnection, msg: SubscriptionMessage): void {
+    if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
     try {
-      this.ws.send(JSON.stringify(msg));
+      conn.ws.send(JSON.stringify(msg));
     } catch (e) {
       this.cb.onError?.(e instanceof Error ? e : new Error(String(e)));
     }
   }
 
-  private connect(reason: string): void {
+  private connectAll(reason: string): void {
     if (this.closed) return;
-    this.clearReconnectTimer();
-    const base = this.opts.baseWsUrl.replace(/\/$/, '');
-    const list = [...this.subscriptions].join('/');
-    const url = `${base}/stream?streams=${list}`;
+    const grouped = groupStreamsByRoute(this.opts.product, this.subscriptions);
+    for (const [route, streams] of grouped) {
+      const conn = this.ensureConnection(route);
+      conn.subscriptions = new Set(streams);
+      this.connectRoute(conn, reason);
+    }
+  }
+
+  private ensureConnection(route: BinanceWsRoute): RouteConnection {
+    let conn = this.connections.get(route);
+    if (!conn) {
+      conn = {
+        route,
+        ws: null,
+        attempt: 0,
+        reconnectTimer: null,
+        rotateTimer: null,
+        subscriptions: new Set<string>(),
+      };
+      this.connections.set(route, conn);
+    }
+    return conn;
+  }
+
+  private connectRoute(conn: RouteConnection, reason: string): void {
+    if (this.closed || conn.ws || conn.subscriptions.size === 0) return;
+    this.clearReconnectTimer(conn);
+    const list = [...conn.subscriptions];
+    const url = buildCombinedStreamUrl(this.opts.baseWsUrl, this.opts.product, conn.route, list);
     const factory = this.opts.wsFactory ?? ((u: string) => new WebSocket(u));
     let socket: WebSocket;
     try {
       socket = factory(url);
     } catch (e) {
       this.cb.onError?.(e instanceof Error ? e : new Error(String(e)));
-      this.scheduleReconnect('factory_error');
+      this.scheduleReconnect(conn, 'factory_error');
       return;
     }
-    this.ws = socket;
+    conn.ws = socket;
 
     socket.on('open', () => {
-      this.attempt = 0;
-      this.scheduleRotate();
-      this.cb.onOpen?.();
+      conn.attempt = 0;
+      this.scheduleRotate(conn);
+      this.cb.onOpen?.(conn.route, url);
     });
 
     socket.on('ping', (payload: Buffer) => {
@@ -203,27 +259,29 @@ export class BinanceMultiplexWs {
       try {
         const text = typeof raw === 'string' ? raw : raw.toString();
         const parsed = JSON.parse(text) as Record<string, unknown>;
-        this.handle(parsed);
+        this.handle(parsed, conn);
       } catch (e) {
         this.cb.onError?.(e instanceof Error ? e : new Error(String(e)));
       }
     });
 
     socket.on('close', (code: number, buf: Buffer) => {
-      this.ws = null;
-      this.clearRotateTimer();
+      if (conn.ws === socket) conn.ws = null;
+      this.clearRotateTimer(conn);
       this.cb.onClose?.(code, buf?.toString() ?? '');
-      if (!this.closed) this.scheduleReconnect(`close_${code}`);
+      if (!this.closed && conn.subscriptions.size > 0) {
+        this.scheduleReconnect(conn, `close_${code}`);
+      }
     });
 
     socket.on('error', (err: Error) => {
       this.cb.onError?.(err);
     });
 
-    if (reason !== 'initial') this.cb.onReconnect?.(this.attempt, reason);
+    if (reason !== 'initial') this.cb.onReconnect?.(conn.attempt, `${conn.route}:${reason}`);
   }
 
-  private handle(msg: Record<string, unknown>): void {
+  private handle(msg: Record<string, unknown>, conn: RouteConnection): void {
     if (typeof msg.id === 'number' && (msg.result === null || Array.isArray(msg.result))) {
       // sub/unsub ack or LIST_SUBSCRIPTIONS response
       return;
@@ -251,6 +309,10 @@ export class BinanceMultiplexWs {
       this.dispatch24hrTicker(data);
       return;
     }
+    if (evt === 'depthUpdate' && isPartialDepthStream(msg.stream as string | undefined)) {
+      this.dispatchFuturesPartial(data);
+      return;
+    }
     if (evt === 'depthUpdate') {
       this.dispatchDiff(data);
       return;
@@ -262,7 +324,7 @@ export class BinanceMultiplexWs {
     // Server-shutdown signal: per Binance docs, sent ~10 min before maintenance.
     if (data.event === 'serverShutdown' || evt === 'serverShutdown') {
       this.cb.onServerShutdown?.();
-      this.forceReconnect('serverShutdown');
+      this.forceReconnect(conn, 'serverShutdown');
       return;
     }
     // bookTicker may omit "e".
@@ -357,11 +419,22 @@ export class BinanceMultiplexWs {
     });
   }
 
-  private forceReconnect(reason: string): void {
+  private dispatchFuturesPartial(data: Record<string, unknown>): void {
+    const symbol = String(data.s ?? '').toUpperCase();
+    if (!symbol) return;
+    this.cb.onDepthPartial?.({
+      symbol,
+      lastUpdateId: Number(data.u),
+      bids: (data.b as [string, string][]) ?? [],
+      asks: (data.a as [string, string][]) ?? [],
+    });
+  }
+
+  private forceReconnect(conn: RouteConnection, reason: string): void {
     if (this.closed) return;
-    if (this.ws) {
-      const sock = this.ws;
-      this.ws = null;
+    if (conn.ws) {
+      const sock = conn.ws;
+      conn.ws = null;
       sock.removeAllListeners();
       try {
         sock.close(1012, reason);
@@ -369,41 +442,41 @@ export class BinanceMultiplexWs {
         // ignore
       }
     }
-    this.scheduleReconnect(reason, 0);
+    this.scheduleReconnect(conn, reason, 0);
   }
 
-  private scheduleReconnect(reason: string, overrideMs?: number): void {
-    if (this.closed || this.reconnectTimer) return;
-    this.attempt += 1;
-    const delayMs = overrideMs ?? Math.min(60_000, 500 * 2 ** Math.min(this.attempt, 10));
-    this.cb.onReconnect?.(this.attempt, reason);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect(reason);
+  private scheduleReconnect(conn: RouteConnection, reason: string, overrideMs?: number): void {
+    if (this.closed || conn.reconnectTimer || conn.subscriptions.size === 0) return;
+    conn.attempt += 1;
+    const delayMs = overrideMs ?? Math.min(60_000, 500 * 2 ** Math.min(conn.attempt, 10));
+    this.cb.onReconnect?.(conn.attempt, `${conn.route}:${reason}`);
+    conn.reconnectTimer = setTimeout(() => {
+      conn.reconnectTimer = null;
+      this.connectRoute(conn, reason);
     }, delayMs);
-    if (typeof this.reconnectTimer.unref === 'function') this.reconnectTimer.unref();
+    if (typeof conn.reconnectTimer.unref === 'function') conn.reconnectTimer.unref();
   }
 
-  private clearReconnectTimer(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+  private clearReconnectTimer(conn: RouteConnection): void {
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
     }
   }
 
-  private scheduleRotate(): void {
-    this.clearRotateTimer();
-    this.rotateTimer = setTimeout(() => {
-      this.rotateTimer = null;
-      this.forceReconnect('rotate_24h');
+  private scheduleRotate(conn: RouteConnection): void {
+    this.clearRotateTimer(conn);
+    conn.rotateTimer = setTimeout(() => {
+      conn.rotateTimer = null;
+      this.forceReconnect(conn, 'rotate_24h');
     }, this.reconnectAfterMs);
-    if (typeof this.rotateTimer.unref === 'function') this.rotateTimer.unref();
+    if (typeof conn.rotateTimer.unref === 'function') conn.rotateTimer.unref();
   }
 
-  private clearRotateTimer(): void {
-    if (this.rotateTimer) {
-      clearTimeout(this.rotateTimer);
-      this.rotateTimer = null;
+  private clearRotateTimer(conn: RouteConnection): void {
+    if (conn.rotateTimer) {
+      clearTimeout(conn.rotateTimer);
+      conn.rotateTimer = null;
     }
   }
 }

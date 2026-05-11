@@ -1,0 +1,70 @@
+/**
+ * Routes USD-M Futures WebSocket streams to Binance `/public` vs `/market` hosts.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
+ */
+export type BinanceProductWs = 'usdm' | 'spot';
+export type BinanceUsdmWsRoute = 'market' | 'public';
+export type BinanceWsRoute = BinanceUsdmWsRoute | 'spot';
+
+const ROUTED_SUFFIX = /\/(market|public|private)(\/(ws|stream))?$/;
+const STREAM_SUFFIX = /\/(ws|stream)$/;
+
+export function normalizeWsRoot(baseWsUrl: string, product: BinanceProductWs): string {
+  let root = baseWsUrl.replace(/\/$/, '');
+  if (product === 'usdm') {
+    root = root.replace(ROUTED_SUFFIX, '');
+  } else {
+    root = root.replace(STREAM_SUFFIX, '');
+  }
+  return root;
+}
+
+export function routeForStream(product: BinanceProductWs, stream: string): BinanceWsRoute {
+  if (product === 'spot') return 'spot';
+  const lower = stream.toLowerCase();
+  if (
+    lower === '!bookticker' ||
+    lower.includes('@bookticker') ||
+    lower.includes('@depth')
+  ) {
+    return 'public';
+  }
+  return 'market';
+}
+
+export function groupStreamsByRoute(
+  product: BinanceProductWs,
+  streams: Iterable<string>,
+): Map<BinanceWsRoute, string[]> {
+  const grouped = new Map<BinanceWsRoute, string[]>();
+  for (const stream of streams) {
+    const route = routeForStream(product, stream);
+    const list = grouped.get(route) ?? [];
+    list.push(stream);
+    grouped.set(route, list);
+  }
+  return grouped;
+}
+
+export function buildCombinedStreamUrl(
+  baseWsUrl: string,
+  product: BinanceProductWs,
+  route: BinanceWsRoute,
+  streams: string[],
+): string {
+  const root = normalizeWsRoot(baseWsUrl, product);
+  const joined = streams.join('/');
+  if (product === 'spot') return `${root}/stream?streams=${joined}`;
+  return `${root}/${route}/stream?streams=${joined}`;
+}
+
+export function buildRawStreamUrl(
+  baseWsUrl: string,
+  product: BinanceProductWs,
+  route: BinanceWsRoute,
+  stream: string,
+): string {
+  const root = normalizeWsRoot(baseWsUrl, product);
+  if (product === 'spot') return `${root}/ws/${stream}`;
+  return `${root}/${route}/ws/${stream}`;
+}

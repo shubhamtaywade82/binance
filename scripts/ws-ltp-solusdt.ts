@@ -1,5 +1,5 @@
 /**
- * Connects to Binance USD-M public WebSocket and logs last traded price (LTP)
+ * Connects to Binance USD-M perpetual WebSocket and logs last traded price (LTP)
  * from the aggregate trade stream (@aggTrade). No API keys required.
  *
  * Usage:
@@ -7,7 +7,7 @@
  *   npm run ws:ltp -- ETHUSDT
  *
  * Env:
- *   BINANCE_WS_BASE=wss://fstream.binance.com  (default for USD-M)
+ *   BINANCE_WS_BASE=wss://fstream.binance.com  (default root for USD-M)
  *   USE_SPOT=1  — use spot stream host (good check if fstream receives no frames)
  */
 import WebSocket from 'ws';
@@ -17,7 +17,9 @@ const WS_BASE = (
   useSpot
     ? 'wss://stream.binance.com:9443'
     : (process.env.BINANCE_WS_BASE ?? 'wss://fstream.binance.com')
-).replace(/\/$/, '');
+)
+  .replace(/\/$/, '')
+  .replace(/\/(market|public|private)(\/(ws|stream))?$/, '');
 const symbolArg = process.argv[2] ?? 'SOLUSDT';
 const streamSymbol = symbolArg.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
@@ -26,7 +28,9 @@ if (!streamSymbol) {
   process.exit(1);
 }
 
-const url = `${WS_BASE}/ws/${streamSymbol}@aggTrade`;
+const url = useSpot
+  ? `${WS_BASE}/ws/${streamSymbol}@aggTrade`
+  : `${WS_BASE}/market/ws/${streamSymbol}@aggTrade`;
 
 interface AggTradePayload {
   e?: string;
@@ -69,7 +73,7 @@ ws.on('open', () => {
   setTimeout(() => {
     if (!sawMessage && ws.readyState === WebSocket.OPEN) {
       console.warn(
-        'No trades received yet (12s). If this stays silent, futures WS push may be blocked — try: USE_SPOT=1 npm run ws:ltp\n',
+        'No trades received yet (12s). If this stays silent, try npm run futures:ltp:rest to verify REST mark/ticker access.\n',
       );
     }
   }, 12_000);
@@ -81,6 +85,10 @@ ws.on('message', (raw) => {
   sawMessage = true;
   const iso = new Date(row.eventTime).toISOString();
   console.log(`[${iso}] LTP ${row.symbol} = ${row.price}  (qty ${row.qty})`);
+});
+
+ws.on('ping', (payload) => {
+  ws.pong(payload, true);
 });
 
 ws.on('error', (err) => {

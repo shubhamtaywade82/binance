@@ -9,8 +9,9 @@ export interface DepthSnapshot {
 }
 
 /**
- * REST order book snapshot (spot or USD-M) for depth WebSocket sync.
- * @see https://developers.binance.com/docs/binance-spot-api-docs/rest-api#order-book
+ * REST order book snapshot (spot or USD-M Futures) for depth WebSocket sync.
+ * Spot: `/api/v3/depth`. USD-M: `/fapi/v1/depth`.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api
  */
 export async function fetchBinanceDepthSnapshot(
   cfg: AppConfig,
@@ -19,7 +20,8 @@ export async function fetchBinanceDepthSnapshot(
 ): Promise<DepthSnapshot | null> {
   const base = binanceRestBase(cfg);
   const path = cfg.BINANCE_PRODUCT === 'spot' ? '/api/v3/depth' : '/fapi/v1/depth';
-  const cap = Math.min(5000, Math.max(5, limit));
+  const maxLimit = cfg.BINANCE_PRODUCT === 'spot' ? 5000 : 1000;
+  const cap = Math.min(maxLimit, Math.max(5, limit));
   const url = `${base}${path}`;
   try {
     const { data } = await axios.get<{

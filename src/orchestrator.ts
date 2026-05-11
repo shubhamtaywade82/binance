@@ -205,7 +205,7 @@ export class HybridOrchestrator {
       onDepthDiff: (d) => this.onDepthDiffEvent(d),
       onDepthPartial: (p) => this.onDepthPartialEvent(p),
       onServerShutdown: () => this.log.warn('binance_ws_server_shutdown', {}),
-      onOpen: () => this.onWsOpen(),
+      onOpen: (route, url) => this.onWsOpen(route, url),
       onError: (e) => this.log.warn('binance_ws_error', { err: e.message }),
       onReconnect: (n, reason) => this.onWsReconnectMx(n, reason),
     };
@@ -324,9 +324,11 @@ export class HybridOrchestrator {
     });
   }
 
-  private onWsOpen(): void {
+  private onWsOpen(route?: string, url?: string): void {
     this.log.info('binance_ws_connected', {
       wsBase: binanceWsBase(this.cfg),
+      route,
+      url,
       product: this.cfg.BINANCE_PRODUCT,
       symbol: this.pairs.binanceSymbol,
       ltf: this.cfg.BINANCE_KLINE_INTERVAL,

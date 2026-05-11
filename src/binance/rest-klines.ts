@@ -28,8 +28,8 @@ export interface FetchKlinesParams {
 }
 
 /**
- * Public klines from Binance (spot or USD-M futures).
- * @see https://developers.binance.com/docs
+ * Public klines: spot `/api/v3/klines`, USD-M `/fapi/v1/klines`.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api
  */
 export async function fetchBinanceKlines(
   cfg: AppConfig,
