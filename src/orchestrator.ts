@@ -2,6 +2,19 @@ import { binanceWsBase, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
+import {
+  BinanceMultiplexWs,
+  type AggTradeEvent,
+  type BookTickerEvent,
+  type DepthLevels,
+  type DepthSpeed,
+  type MultiplexCallbacks,
+} from './binance/ws-multiplex';
+import { MultiTimeframeStore } from './binance/multi-tf-store';
+import { LocalOrderBook } from './binance/orderbook';
+import { AggTradeTape } from './binance/trade-tape';
+import { fetchHistoricalKlines } from './binance/historical';
+import { fetchBinanceDepthSnapshot } from './binance/rest-depth';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
 import { extractPrecisionFromInstrument, type InstrumentPrecision } from './mapping/precision';
 import { resolvePairMap, type ResolvedPairMap } from './mapping/symbol-map';
@@ -13,15 +26,6 @@ import { PositionManager } from './strategy/position-manager';
 import type { Candle, Side, TrendBias } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
-
-function upsertCandle(series: Candle[], bar: Candle): void {
-  const idx = series.findIndex((c) => c.openTime === bar.openTime);
-  if (idx >= 0) series[idx] = bar;
-  else series.push(bar);
-  series.sort((a, b) => a.openTime - b.openTime);
-  const max = 600;
-  if (series.length > max) series.splice(0, series.length - max);
-}
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -45,17 +49,38 @@ export type UsdmMarkRestFetch = (
 export interface OrchestratorDeps {
   cdcx?: CoinDcxFuturesClient;
   ws?: BinanceMarketWs;
+  /** New multiplex feed; when provided replaces single-symbol `ws`. */
+  multiplex?: BinanceMultiplexWs;
   seedKlines?: typeof fetchBinanceKlines;
+  /** Historical fetcher (multi-page). Defaults to `fetchHistoricalKlines`. */
+  fetchHistorical?: typeof fetchHistoricalKlines;
+  /** REST depth snapshot for orderbook bootstrap. */
+  fetchDepth?: typeof fetchBinanceDepthSnapshot;
   execution?: ExecutionRuntime;
   /** Override for tests; default polls Binance `premiumIndex`. */
   fetchUsdmMarkRest?: UsdmMarkRestFetch;
+  /** Optional shared store; orchestrator builds one if absent. */
+  store?: MultiTimeframeStore;
+  /** Optional per-symbol orderbook (only when diff stream selected). */
+  orderbook?: LocalOrderBook;
+  /** Optional aggTrade ring buffer. */
+  tradeTape?: AggTradeTape;
 }
 
 export class HybridOrchestrator {
   private readonly pairs: ResolvedPairMap;
   private readonly c15: Candle[] = [];
   private readonly c1h: Candle[] = [];
-  private readonly ws: BinanceMarketWs;
+  private readonly ws: BinanceMarketWs | null;
+  private readonly multiplex: BinanceMultiplexWs | null;
+  private readonly store: MultiTimeframeStore;
+  private readonly orderbook: LocalOrderBook;
+  private readonly tradeTape: AggTradeTape;
+  private readonly fetchHistorical: typeof fetchHistoricalKlines;
+  private readonly fetchDepth: typeof fetchBinanceDepthSnapshot;
+  private readonly ltfTf: string;
+  private readonly htfTf: string;
+  private readonly timeframes: string[];
   private readonly cdcx: CoinDcxFuturesClient;
   private readonly book: BookTickerFeed;
   private readonly execution: ExecutionRuntime;
@@ -70,6 +95,7 @@ export class HybridOrchestrator {
   private restMarkTimer: ReturnType<typeof setInterval> | null = null;
   private readonly fetchUsdmMarkRest: UsdmMarkRestFetch;
   private restMarkWarned = false;
+  private orderbookBootstrapInflight = false;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -89,20 +115,55 @@ export class HybridOrchestrator {
     this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
-    this.ws = deps.ws ?? new BinanceMarketWs(cfg, {
-      onOpen: () => this.onWsOpen(),
-      onKline: (c, fin) => this.onKline(c, fin),
-      onMarkPrice: (u) => this.onMark(u),
-      onTickerLtp: (u) => this.onTickerLtp(u),
-      onError: (err) => this.log.warn('binance_ws_error', { err: err.message }),
-      onReconnect: (n) => this.onWsReconnect(n),
-    });
+    this.fetchHistorical = deps.fetchHistorical ?? fetchHistoricalKlines;
+    this.fetchDepth = deps.fetchDepth ?? fetchBinanceDepthSnapshot;
+    this.store = deps.store ?? new MultiTimeframeStore({ maxBars: 1000 });
+    const tfs = (cfg.BINANCE_TIMEFRAMES && cfg.BINANCE_TIMEFRAMES.length > 0)
+      ? cfg.BINANCE_TIMEFRAMES
+      : [cfg.BINANCE_KLINE_INTERVAL, cfg.BINANCE_HTF_INTERVAL];
+    this.timeframes = [...new Set(tfs)];
+    this.ltfTf = this.timeframes[0] ?? cfg.BINANCE_KLINE_INTERVAL;
+    this.htfTf = this.timeframes[1] ?? cfg.BINANCE_HTF_INTERVAL;
+    this.tradeTape = deps.tradeTape ?? new AggTradeTape(1000);
+    this.orderbook = deps.orderbook ?? new LocalOrderBook();
+
+    if (deps.multiplex) {
+      this.multiplex = deps.multiplex;
+      this.ws = null;
+    } else if (deps.ws) {
+      this.ws = deps.ws;
+      this.multiplex = null;
+    } else {
+      this.ws = null;
+      this.multiplex = new BinanceMultiplexWs(
+        {
+          baseWsUrl: binanceWsBase(cfg),
+          symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
+          timeframes: this.timeframes,
+          product: cfg.BINANCE_PRODUCT,
+          useBookTicker: cfg.BINANCE_USE_BOOKTICKER,
+          useAggTrade: cfg.BINANCE_USE_AGGTRADE,
+          depthLevels: cfg.BINANCE_DEPTH_LEVELS as DepthLevels,
+          depthSpeed: cfg.BINANCE_DEPTH_SPEED as DepthSpeed,
+          useMarkPrice: cfg.BINANCE_USE_MARK_PRICE,
+          reconnectAfterHours: cfg.BINANCE_WS_RECONNECT_HOURS,
+        },
+        this.bindMultiplexCallbacks(),
+      );
+    }
   }
 
   async start(): Promise<void> {
     await this.seedCandles();
     await this.loadPrecision();
-    this.ws.start();
+    if (this.multiplex) {
+      this.multiplex.start();
+    } else if (this.ws) {
+      this.ws.start();
+    }
+    if (this.multiplex === null && this.cfg.BINANCE_USE_BOOKTICKER) {
+      this.book.start();
+    }
     this.scheduleLtpWatchdog();
     this.scheduleRestMarkPoll();
     this.scheduleHeartbeat();
@@ -123,7 +184,116 @@ export class HybridOrchestrator {
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
     this.execution.stopFunding?.();
-    this.ws.stop();
+    this.book.stop();
+    if (this.ws) this.ws.stop();
+    if (this.multiplex) void this.multiplex.stop();
+  }
+
+  /** Non-null when the orchestrator owns or was given a multiplex connection. */
+  getMultiplexWs(): BinanceMultiplexWs | null {
+    return this.multiplex;
+  }
+
+  /** Wire callbacks into a caller-provided multiplex; useful for index.ts wiring. */
+  bindMultiplexCallbacks(): MultiplexCallbacks {
+    return {
+      onKline: (sym, tf, c, fin) => this.onMultiplexKline(sym, tf, c, fin),
+      onBookTicker: (t) => this.onBookTicker(t),
+      onAggTrade: (t) => this.onAggTradeEvent(t),
+      onMarkPrice: (u) => this.onMark({ symbol: u.symbol, markPrice: u.markPrice, eventTime: u.eventTime }),
+      on24hrTicker: (u) => this.onTickerLtp({ symbol: u.symbol, lastPrice: u.lastPrice, eventTime: u.eventTime }),
+      onDepthDiff: (d) => this.onDepthDiffEvent(d),
+      onDepthPartial: (p) => this.onDepthPartialEvent(p),
+      onServerShutdown: () => this.log.warn('binance_ws_server_shutdown', {}),
+      onOpen: () => this.onWsOpen(),
+      onError: (e) => this.log.warn('binance_ws_error', { err: e.message }),
+      onReconnect: (n, reason) => this.onWsReconnectMx(n, reason),
+    };
+  }
+
+  private onWsReconnectMx(attempt: number, reason: string): void {
+    this.log.warn('binance_ws_reconnect', { attempt, reason });
+    this.ltpConfirmed = false;
+    this.scheduleLtpWatchdog();
+  }
+
+  private onMultiplexKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): void {
+    if (symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
+    this.store.applyKline(symbol, tf, candle, isFinal);
+    if (tf === this.ltfTf) {
+      const series = this.store.getSeries(symbol, this.ltfTf);
+      this.c15.splice(0, this.c15.length, ...series);
+    } else if (tf === this.htfTf) {
+      const series = this.store.getSeries(symbol, this.htfTf);
+      this.c1h.splice(0, this.c1h.length, ...series);
+    }
+    if (isFinal && tf === this.ltfTf) void this.evaluate(candle);
+  }
+
+  private onBookTicker(t: BookTickerEvent): void {
+    if (t.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
+    this.book.ingest({
+      symbol: t.symbol.toUpperCase(),
+      bestBid: t.bestBid,
+      bestAsk: t.bestAsk,
+      spread: t.bestAsk - t.bestBid,
+      ts: t.ts,
+    });
+  }
+
+  private onAggTradeEvent(t: AggTradeEvent): void {
+    if (t.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
+    this.tradeTape.push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
+    this.book.ingestTrade(t.symbol.toUpperCase(), t.price);
+  }
+
+  private onDepthDiffEvent(d: import('./binance/orderbook').DepthDiff & { s: string }): void {
+    if (d.s.toUpperCase() !== this.pairs.binanceSymbol) return;
+    if (this.cfg.BINANCE_DEPTH_LEVELS > 0) return;
+    if (!this.orderbook.isBootstrapped()) {
+      this.orderbook.buffer(d);
+      if (!this.orderbookBootstrapInflight) {
+        this.orderbookBootstrapInflight = true;
+        void this.finishDiffDepthBootstrap();
+      }
+      return;
+    }
+    this.orderbook.applyDiff(d);
+  }
+
+  private onDepthPartialEvent(p: import('./binance/ws-multiplex').DepthPartialEvent): void {
+    const symU = this.pairs.binanceSymbol.toUpperCase();
+    if (p.symbol && p.symbol.toUpperCase() !== symU) return;
+    this.orderbook.replaceFromPartial({ bids: p.bids, asks: p.asks });
+  }
+
+  /** After buffering diff events, align REST snapshot then replay (Binance depth procedure). */
+  private async finishDiffDepthBootstrap(): Promise<void> {
+    try {
+      if (this.orderbook.isBootstrapped()) return;
+      const snap = await this.fetchDepth(this.cfg, this.pairs.binanceSymbol, 1000);
+      if (snap) {
+        this.orderbook.bootstrap(snap);
+        this.log.info('orderbook_bootstrapped', { lastUpdateId: snap.lastUpdateId });
+      } else {
+        this.log.warn('orderbook_bootstrap_empty', { symbol: this.pairs.binanceSymbol });
+      }
+    } catch (e) {
+      this.log.warn('orderbook_bootstrap_failed', { err: (e as Error).message });
+    } finally {
+      this.orderbookBootstrapInflight = false;
+    }
+  }
+
+  /** Multiplex helpers exposed for index.ts/tests. */
+  getMultiTimeframeStore(): MultiTimeframeStore {
+    return this.store;
+  }
+  getOrderbook(): LocalOrderBook {
+    return this.orderbook;
+  }
+  getTradeTape(): AggTradeTape {
+    return this.tradeTape;
   }
 
   private scheduleHeartbeat(): void {
@@ -161,12 +331,6 @@ export class HybridOrchestrator {
       symbol: this.pairs.binanceSymbol,
       ltf: this.cfg.BINANCE_KLINE_INTERVAL,
     });
-  }
-
-  private onWsReconnect(attempt: number): void {
-    this.log.warn('binance_ws_reconnect', { attempt });
-    this.ltpConfirmed = false;
-    this.scheduleLtpWatchdog();
   }
 
   private scheduleLtpWatchdog(): void {
@@ -235,6 +399,30 @@ export class HybridOrchestrator {
   }
 
   private async seedCandles(): Promise<void> {
+    if (this.multiplex) {
+      const limit = this.cfg.BINANCE_HISTORY_BARS ?? 500;
+      const sym = this.pairs.binanceSymbol;
+      for (const tf of this.timeframes) {
+        try {
+          const bars = await this.seed(this.cfg, { symbol: sym, interval: tf, limit });
+          this.store.seed(sym, tf, bars);
+        } catch (e) {
+          this.log.warn('candles_seed_failed', { tf, err: (e as Error).message });
+        }
+      }
+      const ltfBars = this.store.getSeries(sym, this.ltfTf);
+      const htfBars = this.store.getSeries(sym, this.htfTf);
+      this.c15.splice(0, this.c15.length, ...ltfBars);
+      this.c1h.splice(0, this.c1h.length, ...htfBars);
+      this.log.info('candles_seeded', {
+        timeframes: this.timeframes,
+        ltf: this.ltfTf,
+        htf: this.htfTf,
+        nLtf: this.c15.length,
+        nHtf: this.c1h.length,
+      });
+      return;
+    }
     const [h15, h1h] = await Promise.all([
       this.seed(this.cfg, {
         symbol: this.pairs.binanceSymbol,
@@ -250,6 +438,13 @@ export class HybridOrchestrator {
     this.c15.splice(0, this.c15.length, ...h15);
     this.c1h.splice(0, this.c1h.length, ...h1h);
     this.log.info('candles_seeded', { n15: this.c15.length, n1h: this.c1h.length });
+  }
+
+  /** Optional: paginated historical seed for one tf. */
+  async seedHistorical(tf: string, startMs: number, endMs: number, maxBars?: number): Promise<void> {
+    const sym = this.pairs.binanceSymbol;
+    const bars = await this.fetchHistorical(this.cfg, { symbol: sym, interval: tf, startMs, endMs, maxBars });
+    this.store.seed(sym, tf, bars);
   }
 
   private async loadPrecision(): Promise<void> {
@@ -282,7 +477,10 @@ export class HybridOrchestrator {
     this.lastMark = price;
     if (ltpSource === 'ticker') this.confirmLtp('ticker', price, eventTime);
     else this.confirmLtp(ltpSource, price, eventTime);
-    this.feedSyntheticBook(price);
+    const symU = this.pairs.binanceSymbol.toUpperCase();
+    const liveBook =
+      this.cfg.BINANCE_USE_BOOKTICKER && this.multiplex !== null && this.book.latest(symU);
+    if (!liveBook) this.feedSyntheticBook(price);
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
     const htfBias = biasFromCandles(this.c1h);
@@ -341,26 +539,6 @@ export class HybridOrchestrator {
       ts: Date.now(),
     });
     this.book.ingestTrade(sym, mid);
-  }
-
-  private onKline(c: Candle, isFinal: boolean): void {
-    upsertCandle(this.c15, c);
-    if (isFinal) {
-      void this.maybeRefreshHtf().then(() => this.evaluate(c));
-    }
-  }
-
-  private async maybeRefreshHtf(): Promise<void> {
-    try {
-      const h = await this.seed(this.cfg, {
-        symbol: this.pairs.binanceSymbol,
-        interval: this.cfg.BINANCE_HTF_INTERVAL,
-        limit: 120,
-      });
-      this.c1h.splice(0, this.c1h.length, ...h);
-    } catch (e) {
-      this.log.warn('htf_refresh_failed', { err: (e as Error).message });
-    }
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {

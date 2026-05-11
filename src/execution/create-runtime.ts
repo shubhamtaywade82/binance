@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { binanceRestBase, type AppConfig } from '../config';
+import { binanceRestBase, binanceWsBase, type AppConfig } from '../config';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
 import { CoinDcxExecutionAdapter } from './coindcx-adapter';
 import type { ExecutionAdapter } from './types';
@@ -25,7 +25,7 @@ function symbolFromPair(cfg: AppConfig, _pair: string): string {
  */
 export function createExecutionRuntime(cfg: AppConfig, cdcx: CoinDcxFuturesClient): ExecutionRuntime {
   const book = new BookTickerFeed({
-    wsBase: binanceRestBase(cfg),
+    wsBase: binanceWsBase(cfg),
     symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
   });
 

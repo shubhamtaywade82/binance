@@ -110,6 +110,35 @@ export const AppConfigSchema = z.object({
   PAPER_LEDGER_DIR: z.string().default('./paper'),
   PAPER_FUNDING_POLL_SEC: numFromString(300),
   PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
+
+  /** Comma-separated kline timeframes for the multiplex feed. First = LTF, second = HTF. */
+  BINANCE_TIMEFRAMES: z
+    .string()
+    .default('15m,1h')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((p) => p.trim().toLowerCase())
+        .filter((p) => p.length > 0),
+    )
+    .pipe(z.array(z.string()).min(1)),
+  BINANCE_HISTORY_BARS: z
+    .union([z.number(), z.string()])
+    .default(500)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(v, 10)))
+    .pipe(z.number().int().min(50).max(2000)),
+  BINANCE_DEPTH_LEVELS: z
+    .union([z.number(), z.string()])
+    .default(20)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(v, 10)))
+    .pipe(z.union([z.literal(0), z.literal(5), z.literal(10), z.literal(20)])),
+  BINANCE_DEPTH_SPEED: z.enum(['100ms', '1000ms']).default('100ms'),
+  BINANCE_USE_AGGTRADE: boolFromString(true),
+  BINANCE_USE_BOOKTICKER: boolFromString(true),
+  BINANCE_USE_MARK_PRICE: boolFromString(true),
+  BINANCE_WS_RECONNECT_HOURS: numFromString(23),
+  SHUTDOWN_TIMEOUT_MS: numFromString(5000),
+  SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
