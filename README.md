@@ -134,3 +134,7 @@ After seeding, the process stays open on the Binance WebSocket. Log lines (stdou
 | `binance_ws_reconnect` / `binance_ws_error` | Feed issues. |
 
 So: if nothing changes for a long time, you should still see **`heartbeat`** once a minute and **`ltf_bar_closed`** every LTF interval.
+
+## SOL 1.5% SMC confluence playbook
+
+A formal strategy spec for multi-timeframe SMC confluence and 1.5% SOL capture is documented in [`docs/sol-1p5-smc-strategy.md`](docs/sol-1p5-smc-strategy.md).
