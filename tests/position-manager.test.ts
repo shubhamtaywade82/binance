@@ -9,6 +9,7 @@ import { createStubExecutionAdapter } from './stub-execution-adapter';
 
 function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
+    TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
     BINANCE_SYMBOL: 'SOLUSDT',
     BINANCE_KLINE_INTERVAL: '15m',
@@ -19,7 +20,7 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     PUBLIC_BASE_URL: 'https://public.coindcx.com',
     COINDCX_PAIR: 'B-SOL_USDT',
     READ_ONLY: true,
-    EXECUTION_ENABLED: false,
+    PLACE_ORDER: true,
     LOG_HEARTBEAT_SEC: 60,
     LTP_CONNECT_WARN_SEC: 15,
     LEVERAGE: 10,
@@ -28,8 +29,8 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
-    TP_PRICE_PCT: 0.01,
-    SL_PRICE_PCT: 0.005,
+    TP_PRICE_PCT: 0.015,
+    SL_PRICE_PCT: 0.01,
     MIN_CONFIDENCE: 0.65,
     MIN_SMC_SCORE: 2,
     TAKER_FEE: 0.0005,
@@ -76,7 +77,7 @@ describe('PositionManager paper mode', () => {
     const pos = await pm.open('LONG', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');
     expect(pos).not.toBeNull();
     expect(pm.hasPosition()).toBe(true);
-    const evt = await pm.onMark(101.1, 'LONG');
+    const evt = await pm.onMark(101.6, 'LONG');
     expect(evt?.reason).toBe('TP');
     expect(pm.hasPosition()).toBe(false);
     expect(fs.existsSync(tmpCsv)).toBe(true);
@@ -85,7 +86,7 @@ describe('PositionManager paper mode', () => {
   it('closes on SL', async () => {
     const pm = buildPm();
     await pm.open('LONG', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');
-    const evt = await pm.onMark(99.4, 'LONG');
+    const evt = await pm.onMark(98.9, 'LONG');
     expect(evt?.reason).toBe('SL');
   });
 
@@ -105,7 +106,7 @@ describe('PositionManager paper mode', () => {
   it('short TP at lower price', async () => {
     const pm = buildPm();
     await pm.open('SHORT', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');
-    const evt = await pm.onMark(98.9, 'SHORT');
+    const evt = await pm.onMark(98.4, 'SHORT');
     expect(evt?.reason).toBe('TP');
   });
 });

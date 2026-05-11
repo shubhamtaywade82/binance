@@ -180,10 +180,11 @@ export class HybridOrchestrator {
     this.scheduleRestMarkPoll();
     this.scheduleHeartbeat();
     this.log.info('orchestrator_started', {
+      tradingAsset: this.cfg.TRADING_ASSET,
       binance: this.pairs.binanceSymbol,
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
-      executionEnabled: this.cfg.EXECUTION_ENABLED,
+      placeOrder: this.cfg.PLACE_ORDER,
       usdmMarkRestPollSec:
         this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',

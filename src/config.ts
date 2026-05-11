@@ -1,7 +1,10 @@
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+import { normalizeTradingAsset, TRADING_ASSET_PRESETS } from './config/asset-presets';
 
 loadDotenv();
+
+export type { TradingAsset } from './config/asset-presets';
 
 const BinanceProduct = z.enum(['usdm', 'spot']);
 const ExecutionModeEnum = z.enum(['paper', 'live']);
@@ -20,6 +23,14 @@ const boolFromString = (def: boolean) =>
     .transform((v) => (typeof v === 'boolean' ? v : v.toLowerCase() === 'true'));
 
 export const AppConfigSchema = z.object({
+  /**
+   * Primary control: `sol` | `eth` | `btc` sets `BINANCE_SYMBOL` + `COINDCX_PAIR` automatically.
+   * Use `custom` with explicit `BINANCE_SYMBOL` and `COINDCX_PAIR` in env for other markets.
+   */
+  TRADING_ASSET: z
+    .string()
+    .default('sol')
+    .transform((s) => normalizeTradingAsset(s)),
   BINANCE_PRODUCT: BinanceProduct.default('usdm'),
   BINANCE_REST_BASE: z.string().url().optional(),
   BINANCE_WS_BASE: z.string().url().optional(),
@@ -35,10 +46,20 @@ export const AppConfigSchema = z.object({
     .string()
     .default('true')
     .transform((s) => s.toLowerCase() !== 'false'),
-  EXECUTION_ENABLED: z
-    .string()
-    .default('false')
-    .transform((s) => s.toLowerCase() === 'true'),
+
+  /**
+   * When false (default), strategy runs but **no orders** are sent — neither CoinDCX nor paper fills.
+   * Set `PLACE_ORDER=true` to enable `PaperExecutionAdapter` or live broker calls (still gated by `EXECUTION_MODE` / `READ_ONLY`).
+   * Legacy: `EXECUTION_ENABLED=true` is honored if `PLACE_ORDER` is unset.
+   */
+  PLACE_ORDER: z.preprocess((val: unknown) => {
+    if (val !== undefined && val !== '') return val;
+    if (process.env.PLACE_ORDER !== undefined && process.env.PLACE_ORDER !== '') return process.env.PLACE_ORDER;
+    if (process.env.EXECUTION_ENABLED !== undefined && process.env.EXECUTION_ENABLED !== '') {
+      return process.env.EXECUTION_ENABLED;
+    }
+    return 'false';
+  }, boolFromString(false)),
 
   /** Seconds between heartbeat logs (mark + biases). 0 = disable. */
   LOG_HEARTBEAT_SEC: z
@@ -82,10 +103,10 @@ export const AppConfigSchema = z.object({
   INR_PER_USDT: numFromString(85),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
-  /** Take-profit distance as underlying price move (e.g. 0.015 = 1.5%). Replaces TARGET_PNL_PCT/LEVERAGE for exits. */
-  TP_PRICE_PCT: numFromString(0.01),
-  /** Stop-loss distance as underlying price move (e.g. 0.01 = 1%). */
-  SL_PRICE_PCT: numFromString(0.005),
+  /** Take-profit distance as underlying price move (default 1.5% capture profile). */
+  TP_PRICE_PCT: numFromString(0.015),
+  /** Stop-loss distance as underlying price move. */
+  SL_PRICE_PCT: numFromString(0.01),
   MIN_CONFIDENCE: numFromString(0.65),
   MIN_SMC_SCORE: numFromString(2),
   TAKER_FEE: numFromString(0.0005),
@@ -105,15 +126,20 @@ export const AppConfigSchema = z.object({
   SMC_CONFLUENCE_TARGET_PCT: numFromString(0.015),
 
   /**
-   * SOL USD-M: multi-timeframe SMC stack (5m execution close, 15m/1h/4h/1d filters).
-   * Set `BINANCE_TIMEFRAMES=5m,15m,1h,4h,1d` (5m first). Binance data → CoinDCX orders unchanged.
+   * Multi-timeframe SMC stack (5m execution close, 15m/1h/4h/1d filters). Same engine for SOL/ETH/BTC presets.
+   * Legacy env: `USE_SOL_MTF_STRATEGY` still honored if set (overrides default when present).
    */
-  USE_SOL_MTF_STRATEGY: boolFromString(false),
+  USE_SOL_MTF_STRATEGY: z.preprocess((val) => {
+    if (process.env.USE_SOL_MTF_STRATEGY !== undefined && (val === undefined || val === '')) {
+      return process.env.USE_SOL_MTF_STRATEGY;
+    }
+    return val ?? 'true';
+  }, boolFromString(true)),
   TRADES_CSV_PATH: z.string().default('./logs/trades.csv'),
   TRADE_LOG_PATH: z.string().default('./logs/trades.csv'),
 
-  /** Append NDJSON log lines (empty = no log file, stdout/stderr only). */
-  APP_LOG_PATH: z.string().default(''),
+  /** Append NDJSON log lines (empty = stdout/stderr only). */
+  APP_LOG_PATH: z.string().default('./logs/app.ndjson'),
 
   EXECUTION_MODE: z
     .union([ExecutionModeEnum, z.string()])
@@ -131,10 +157,10 @@ export const AppConfigSchema = z.object({
   PAPER_FUNDING_POLL_SEC: numFromString(300),
   PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
 
-  /** Comma-separated kline timeframes for the multiplex feed. First = LTF, second = HTF. */
+  /** Comma-separated kline timeframes for the multiplex feed. First = execution (LTF) close. */
   BINANCE_TIMEFRAMES: z
     .string()
-    .default('15m,1h')
+    .default('5m,15m,1h,4h,1d')
     .transform((s) =>
       s
         .split(',')
@@ -185,8 +211,19 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
+export function applyTradingAssetPreset(cfg: AppConfig): AppConfig {
+  if (cfg.TRADING_ASSET === 'custom') return cfg;
+  const p = TRADING_ASSET_PRESETS[cfg.TRADING_ASSET];
+  return {
+    ...cfg,
+    BINANCE_SYMBOL: p.binanceSymbol,
+    COINDCX_PAIR: p.coindcxPair,
+  };
+}
+
 export function loadConfig(): AppConfig {
-  return AppConfigSchema.parse(process.env);
+  const parsed = AppConfigSchema.parse(process.env);
+  return applyTradingAssetPreset(parsed);
 }
 
 /** USD-M REST per https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info */

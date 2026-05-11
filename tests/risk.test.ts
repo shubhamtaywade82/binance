@@ -4,6 +4,7 @@ import type { AppConfig } from '../src/config';
 
 function cfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
+    TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
     BINANCE_SYMBOL: 'SOLUSDT',
     BINANCE_KLINE_INTERVAL: '15m',
@@ -14,7 +15,7 @@ function cfg(over: Partial<AppConfig> = {}): AppConfig {
     PUBLIC_BASE_URL: 'https://public.coindcx.com',
     COINDCX_PAIR: 'B-SOL_USDT',
     READ_ONLY: true,
-    EXECUTION_ENABLED: false,
+    PLACE_ORDER: false,
     LOG_HEARTBEAT_SEC: 60,
     LTP_CONNECT_WARN_SEC: 0,
     LEVERAGE: 10,
@@ -23,8 +24,8 @@ function cfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
-    TP_PRICE_PCT: 0.01,
-    SL_PRICE_PCT: 0.005,
+    TP_PRICE_PCT: 0.015,
+    SL_PRICE_PCT: 0.01,
     MIN_CONFIDENCE: 0.65,
     MIN_SMC_SCORE: 2,
     TAKER_FEE: 0.0005,
@@ -68,15 +69,15 @@ describe('RiskManager.targets', () => {
   it('uses TP_PRICE_PCT / SL_PRICE_PCT as underlying price distances (long)', () => {
     const rm = new RiskManager(cfg());
     const t = rm.targets(100, 'LONG');
-    expect(t.takeProfit).toBeCloseTo(101, 6);
-    expect(t.stopLoss).toBeCloseTo(99.5, 6);
+    expect(t.takeProfit).toBeCloseTo(101.5, 6);
+    expect(t.stopLoss).toBeCloseTo(99, 6);
   });
 
   it('inverts for short', () => {
     const rm = new RiskManager(cfg());
     const t = rm.targets(100, 'SHORT');
-    expect(t.takeProfit).toBeCloseTo(99, 6);
-    expect(t.stopLoss).toBeCloseTo(100.5, 6);
+    expect(t.takeProfit).toBeCloseTo(98.5, 6);
+    expect(t.stopLoss).toBeCloseTo(101, 6);
   });
 });
 

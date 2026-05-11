@@ -7,6 +7,7 @@ import type { AppConfig } from '../src/config';
 
 function cfgWithLog(file: string): AppConfig {
   return {
+    TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
     BINANCE_SYMBOL: 'SOLUSDT',
     BINANCE_KLINE_INTERVAL: '15m',
@@ -17,7 +18,7 @@ function cfgWithLog(file: string): AppConfig {
     PUBLIC_BASE_URL: 'https://public.coindcx.com',
     COINDCX_PAIR: 'B-SOL_USDT',
     READ_ONLY: true,
-    EXECUTION_ENABLED: false,
+    PLACE_ORDER: false,
     LOG_HEARTBEAT_SEC: 60,
     LTP_CONNECT_WARN_SEC: 0,
     LEVERAGE: 10,
@@ -26,8 +27,8 @@ function cfgWithLog(file: string): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.1,
     STOP_LOSS_PCT: 0.05,
-    TP_PRICE_PCT: 0.01,
-    SL_PRICE_PCT: 0.005,
+    TP_PRICE_PCT: 0.015,
+    SL_PRICE_PCT: 0.01,
     MIN_CONFIDENCE: 0.65,
     MIN_SMC_SCORE: 2,
     TAKER_FEE: 0.0005,

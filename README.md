@@ -26,7 +26,7 @@ npm run fapi:ws:status
 ## CoinDCX
 
 - Environment variables match `coindcx-bot` (`API_BASE_URL`, `COINDCX_API_KEY`, `COINDCX_API_SECRET`, …).
-- Default: `READ_ONLY=true`, `EXECUTION_ENABLED=false` — logs only.
+- Default: **`PLACE_ORDER=false`** — strategy runs and logs signals; **no orders** (paper or live). Set **`PLACE_ORDER=true`** to allow `PositionManager` to call the execution adapter. Defaults also include `READ_ONLY=true` (CoinDCX REST writes blocked at the client).
 
 ## Quick start
 
@@ -41,9 +41,11 @@ npm run dev:once     # single run, no file watcher
 npm run check
 ```
 
-## Symbol map
+## Trading asset (single knob)
 
-`BINANCE_SYMBOL` (e.g. `SOLUSDT`) must align with `COINDCX_PAIR` (e.g. `B-SOL_USDT`). Adjust both in `.env`.
+Set **`TRADING_ASSET=sol`** | **`eth`** | **`btc`** — the app fills **`BINANCE_SYMBOL`** (USD-M on Binance) and **`COINDCX_PAIR`** from presets in [`src/config/asset-presets.ts`](src/config/asset-presets.ts). Use **`TRADING_ASSET=custom`** only if you set both symbols manually in `.env`.
+
+Defaults include **`BINANCE_TIMEFRAMES=5m,15m,1h,4h,1d`**, **`USE_SOL_MTF_STRATEGY=true`** (multi-timeframe SMC stack), **`TP_PRICE_PCT=0.015`**, **`SL_PRICE_PCT=0.01`**, **`APP_LOG_PATH=./logs/app.ndjson`** — override only when needed.
 
 ## Strategy
 
@@ -58,15 +60,16 @@ Per LTF candle close:
 ## Risk math
 
 - Margin = `CAPITAL_PER_TRADE_INR`. Notional USDT = `margin / INR_PER_USDT * LEVERAGE`. Quantity = floor-to-step(`notional / entry`).
-- TP price move = `TARGET_PNL_PCT / LEVERAGE`; SL move = `STOP_LOSS_PCT / LEVERAGE`. At 10× a 1% price move = 10% PnL on margin.
+- TP / SL levels use **`TP_PRICE_PCT`** and **`SL_PRICE_PCT`** as **underlying price moves** (defaults ~1.5% / 1%). Legacy margin-target fields **`TARGET_PNL_PCT`** / **`STOP_LOSS_PCT`** remain in config for compatibility but exits follow the price-pct fields.
 - Net PnL USDT = `(exit-entry) * qty * dir - (entryNotional + exitNotional) * TAKER_FEE - entryNotional * FUNDING_FEE_EST`. INR via `INR_PER_USDT`.
 
 ## Modes
 
-| Mode | `READ_ONLY` | `EXECUTION_ENABLED` | Behavior |
-| ---- | ----------- | ------------------- | -------- |
-| Paper (default) | `true` | `false` | Strategy fully evaluated, position tracked locally, CSV trade log written, no API writes. |
-| Live | `false` | `true` | Sends create/exit/TP-SL/leverage updates to CoinDCX. |
+| Mode | `PLACE_ORDER` | `READ_ONLY` | Behavior |
+| ---- | ------------- | ----------- | -------- |
+| Signals-only (default) | `false` | `true` | Strategy evaluated; **no** paper fills and **no** CoinDCX orders. |
+| Paper trading | `true` | `true` | Simulated fills via `PaperExecutionAdapter`; CSV trade log; **no** CoinDCX writes. |
+| Live | `true` | `false` | Real CoinDCX orders when `EXECUTION_MODE=live` and API keys set. |
 
 ## Execution Modes
 
@@ -97,7 +100,7 @@ paper/
 
 ### Safety
 
-Live execution requires **all three**: `EXECUTION_MODE=live` AND `READ_ONLY=false` AND non-empty `COINDCX_API_KEY` + `COINDCX_API_SECRET`. Missing any throws at startup. Default config (`paper`) is fully safe.
+Live CoinDCX execution requires **`PLACE_ORDER=true`** AND `EXECUTION_MODE=live` AND `READ_ONLY=false` AND non-empty `COINDCX_API_KEY` + `COINDCX_API_SECRET`. Startup throws if `live` is requested without keys/read-write. With **`PLACE_ORDER=false`** (default), no broker calls occur regardless of mode.
 
 PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now.
 
@@ -105,7 +108,7 @@ PostgreSQL persistence is deferred — JSONL ledger + atomic JSON wallet for now
 
 The worker uses route-aware combined-stream WebSockets (`BinanceMultiplexWs`) that subscribe to:
 
-- `<sym>@kline_<tf>` for every entry in `BINANCE_TIMEFRAMES` (first = LTF, second = HTF).
+- `<sym>@kline_<tf>` for every entry in `BINANCE_TIMEFRAMES` (first = execution / LTF close).
 - `<sym>@bookTicker` (top of book, paper fills).
 - `<sym>@aggTrade` (trade tape, last-trade fallback).
 - `<sym>@depth<N>@<speed>` partial book (or `<sym>@depth@<speed>` diff stream when `BINANCE_DEPTH_LEVELS=0`).
@@ -135,6 +138,8 @@ Components:
 
 | Var | Default | Purpose |
 | --- | ------- | ------- |
+| `TRADING_ASSET` | `sol` | `sol` / `eth` / `btc` → preset Binance + CoinDCX pair; `custom` → use `BINANCE_SYMBOL` + `COINDCX_PAIR` |
+| `PLACE_ORDER` | `false` | **`true`** required for any adapter order (paper simulation or live). Legacy: `EXECUTION_ENABLED` if `PLACE_ORDER` unset |
 | `LEVERAGE` | `10` | Position leverage |
 | `CAPITAL_PER_TRADE_INR` | `20000` | Margin per trade in INR |
 | `INR_PER_USDT` | `85` | FX for sizing |
@@ -147,7 +152,7 @@ Components:
 | `TRADE_LOG_PATH` | `./logs/trades.csv` | Per-trade audit CSV |
 | `BINANCE_WS_BASE` | `wss://fstream.binance.com` | USD-M futures WS root; the app routes streams to `/market` or `/public` |
 | `USDM_MARK_REST_POLL_SEC` | `5` | USD-M only: poll `premiumIndex` for mark/LTP; `0` = WebSocket only |
-| `BINANCE_TIMEFRAMES` | `15m,1h` | Comma-separated kline TFs; first = LTF, second = HTF |
+| `BINANCE_TIMEFRAMES` | `5m,15m,1h,4h,1d` | Comma-separated kline TFs; first = execution interval (candle close) |
 | `BINANCE_HISTORY_BARS` | `500` | Bars seeded per timeframe at startup (50..2000) |
 | `BINANCE_DEPTH_LEVELS` | `20` | `0` (diff stream + `LocalOrderBook`) or `5`/`10`/`20` (partial top) |
 | `BINANCE_DEPTH_SPEED` | `100ms` | `100ms` or `500ms` |
@@ -161,7 +166,7 @@ Components:
 ## Where logs go
 
 - **Terminal:** every `log.info` / `log.warn` line is still printed to stdout/stderr.
-- **Optional NDJSON file:** set `APP_LOG_PATH` (e.g. `./logs/app.ndjson`). Each line is one JSON object: `ts`, `level`, `msg`, plus any metadata fields.
+- **NDJSON file:** default **`APP_LOG_PATH=./logs/app.ndjson`** (set empty to disable file logging). Each line is one JSON object: `ts`, `level`, `msg`, plus any metadata fields.
 - **Trades only:** closed trades are also appended to **`TRADE_LOG_PATH`** / `TRADES_CSV_PATH` as CSV (see `PositionManager`).
 - **Heartbeat:** every `LOG_HEARTBEAT_SEC` (default 60) an `heartbeat` event is logged (and mirrored to the file when set).
 

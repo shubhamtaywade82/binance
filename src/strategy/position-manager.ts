@@ -20,6 +20,7 @@ export interface CloseEvent {
 
 export class PositionManager {
   private current: (Position & { orderId: string }) | null = null;
+  private placeOrderDisabledLogged = false;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -37,6 +38,15 @@ export class PositionManager {
   }
 
   async open(side: Side, price: number, precision: InstrumentPrecision, pair: string): Promise<Position | null> {
+    if (!this.cfg.PLACE_ORDER) {
+      if (!this.placeOrderDisabledLogged) {
+        this.placeOrderDisabledLogged = true;
+        this.log.warn('place_order_disabled', {
+          hint: 'Set PLACE_ORDER=true to send paper or live orders (still subject to EXECUTION_MODE and READ_ONLY).',
+        });
+      }
+      return null;
+    }
     if (this.current) return this.current;
     const sized = this.risk.sizePosition(price, precision.stepSize);
     if (sized.quantity <= 0) {

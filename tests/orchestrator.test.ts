@@ -8,6 +8,7 @@ import { createStubExecutionAdapter } from './stub-execution-adapter';
 
 function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
+    TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
     BINANCE_SYMBOL: 'SOLUSDT',
     BINANCE_KLINE_INTERVAL: '15m',
@@ -18,7 +19,7 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     PUBLIC_BASE_URL: 'https://public.coindcx.com',
     COINDCX_PAIR: 'B-SOL_USDT',
     READ_ONLY: true,
-    EXECUTION_ENABLED: false,
+    PLACE_ORDER: true,
     LOG_HEARTBEAT_SEC: 60,
     LTP_CONNECT_WARN_SEC: 0,
     LEVERAGE: 10,
@@ -27,8 +28,8 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
     INR_PER_USDT: 85,
     TARGET_PNL_PCT: 0.10,
     STOP_LOSS_PCT: 0.05,
-    TP_PRICE_PCT: 0.01,
-    SL_PRICE_PCT: 0.005,
+    TP_PRICE_PCT: 0.015,
+    SL_PRICE_PCT: 0.01,
     MIN_CONFIDENCE: 0.4,
     MIN_SMC_SCORE: 0,
     TAKER_FEE: 0.0005,

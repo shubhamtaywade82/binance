@@ -16,7 +16,7 @@ const baseCfg: AppConfig = {
   PUBLIC_BASE_URL: 'https://public.coindcx.com',
   COINDCX_PAIR: 'B-SOL_USDT',
   READ_ONLY: true,
-  EXECUTION_ENABLED: false,
+  PLACE_ORDER: false,
   USDM_MARK_REST_POLL_SEC: 0,
 } as AppConfig;
 
