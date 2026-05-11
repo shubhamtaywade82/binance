@@ -37,6 +37,7 @@ Per LTF candle close:
 2. **LTF `analyzeTrend`** scoring 6 indicators — EMA fast vs slow, MACD hist sign+slope, RSI > 45 (long) / < 55 (short), Supertrend direction, swing structure HH+HL or LH+LL, volume ≥ 0.8× 20-bar avg. Direction set when ≥4 align AND volume confirms; `confidence = aligned/6`.
 3. **SMC overlay** (`USE_SMC=true`) — liquidity sweep, order block (last opposite candle before ≥1.5×ATR impulse), 3-candle FVG, BOS/CHoCH from swings. `score` counts concepts agreeing with HTF.
 4. Enter only when `htf.direction === ltf.direction !== 'NONE'` AND `confidence >= MIN_CONFIDENCE` AND `(!USE_SMC || smc.score >= MIN_SMC_SCORE)`.
+5. Optional strict gate: `USE_SMC_CONFLUENCE=true` enforces weighted SMC confluence thresholds (standard/sniper).
 
 ## Risk math
 

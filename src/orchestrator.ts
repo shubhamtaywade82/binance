@@ -21,6 +21,7 @@ import { resolvePairMap, type ResolvedPairMap } from './mapping/symbol-map';
 import { biasFromCandles } from './strategy/htf-ltf';
 import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
+import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
 import type { Candle, Side, TrendBias } from './types';
@@ -563,8 +564,29 @@ export class HybridOrchestrator {
       htfBias === ltf.direction;
     const passConfidence = ltf.confidence >= this.cfg.MIN_CONFIDENCE;
     const passSmc = !this.cfg.USE_SMC || smc.score >= this.cfg.MIN_SMC_SCORE;
+    const confluence = evaluateSmcConfluence(
+      this.c15,
+      this.c1h,
+      htfBias,
+      refPrice,
+      {
+        enabled: this.cfg.USE_SMC_CONFLUENCE,
+        mode: this.cfg.SMC_CONFLUENCE_MODE,
+        standardMinScore: this.cfg.SMC_CONFLUENCE_MIN_STANDARD,
+        sniperMinScore: this.cfg.SMC_CONFLUENCE_MIN_SNIPER,
+        targetPct: this.cfg.SMC_CONFLUENCE_TARGET_PCT,
+      },
+    );
 
-    if (!aligned || !passConfidence || !passSmc) {
+    this.log.info('smc_confluence', {
+      enabled: this.cfg.USE_SMC_CONFLUENCE,
+      pass: confluence.pass,
+      score: Number(confluence.score.toFixed(2)),
+      threshold: confluence.threshold,
+      reasons: confluence.reasons,
+    });
+
+    if (!aligned || !passConfidence || !passSmc || !confluence.pass) {
       return;
     }
 
