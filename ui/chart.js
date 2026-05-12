@@ -2,6 +2,10 @@
  * chart.js — TradingView Lightweight Charts integration
  * Handles: candlestick, volume, EMA 9/21/50, supertrend
  */
+import { createChart, LineStyle } from 'lightweight-charts';
+
+/** Per-frame lerp toward target LTP on the custom price line (same-bar ticks only). */
+const LTP_ANIM_ALPHA = 0.22;
 
 const COLORS = {
   bull: '#00e676',
@@ -41,6 +45,8 @@ const CHART_OPTS = {
     borderColor: 'rgba(255,255,255,0.06)',
     timeVisible: true,
     secondsVisible: false,
+    /** Stops ultra-dense zoom where LW merges wicks/bodies and candles look like flat hash marks. */
+    minBarSpacing: 2,
   },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
   handleScale: { mouseWheel: true, pinch: true },
@@ -66,6 +72,9 @@ const DEFAULT_VISIBLE_BARS = {
   '1d': 120, // ~4mo
 };
 
+/** Tab order when picking a default TF (must match `.tf-btn` data-tf). */
+const TF_TAB_ORDER = ['5m', '15m', '1h', '4h', '1d'];
+
 export class ChartManager {
   constructor(containerId) {
     this.containerId = containerId;
@@ -80,7 +89,6 @@ export class ChartManager {
     this.candleMap = {}; // tf → candle[] cache
     this.indicMap = {}; // tf → indicators cache
     this.showEma = true;
-    this.showVolume = true;
     this.showSupertrend = true;
     this._resizeObs = null;
     /** @type {Record<string, boolean>} */
@@ -91,6 +99,30 @@ export class ChartManager {
     this._historyDebounceTimer = null;
     /** @type {((p: { tf: string; oldestOpenTime: number }) => void) | null} */
     this._onNeedHistory = null;
+    /** Custom dashed LTP line (series default price line jumps on each tick). */
+    this._ltpPriceLine = null;
+    /** @type {number | null} */
+    this._ltpAnimDisplay = null;
+    /** @type {number | null} */
+    this._ltpTarget = null;
+    /** @type {number | null} */
+    this._ltpRafId = null;
+    /** @type {((tf: string) => void) | null} */
+    this._onTfChange = null;
+    /** @type {Set<string> | null} */
+    this._availableTfSet = null;
+    /** @type {((price: number | null) => void) | null} */
+    this._ltpDisplayListener = null;
+  }
+
+  /** @param {(tf: string) => void} fn */
+  setTfChangeHandler(fn) {
+    this._onTfChange = fn;
+  }
+
+  /** Optional: sync header / UI with the smoothed LTP value each animation frame. */
+  setLtpDisplayListener(fn) {
+    this._ltpDisplayListener = fn;
   }
 
   /**
@@ -114,10 +146,142 @@ export class ChartManager {
     return Number.isFinite(c) ? c : null;
   }
 
+  _applyAvailableTimeframes(list) {
+    const wrap = document.getElementById('tf-tabs');
+    if (!wrap) return;
+    const buttons = wrap.querySelectorAll('.tf-btn');
+    if (!Array.isArray(list) || list.length === 0) {
+      this._availableTfSet = null;
+      buttons.forEach((b) => {
+        b.style.display = '';
+        b.disabled = false;
+      });
+      return;
+    }
+    this._availableTfSet = new Set(list.map((t) => String(t).trim().toLowerCase()));
+    buttons.forEach((b) => {
+      const tf = b.dataset.tf;
+      const ok = this._availableTfSet.has(tf);
+      b.style.display = ok ? '' : 'none';
+      b.disabled = !ok;
+    });
+  }
+
+  _pickFirstAvailableTf() {
+    if (!this._availableTfSet) return this.currentTf;
+    for (const t of TF_TAB_ORDER) {
+      if (this._availableTfSet.has(t)) return t;
+    }
+    const [first] = this._availableTfSet;
+    return first ?? this.currentTf;
+  }
+
+  _emitLtpDisplay(price) {
+    try {
+      this._ltpDisplayListener?.(price);
+    } catch (e) {
+      console.warn('[chart] ltp display listener', e);
+    }
+  }
+
+  _cancelLtpAnim() {
+    if (this._ltpRafId != null) {
+      cancelAnimationFrame(this._ltpRafId);
+      this._ltpRafId = null;
+    }
+  }
+
+  _hideLtpPriceLine() {
+    this._cancelLtpAnim();
+    this._ltpTarget = null;
+    this._ltpAnimDisplay = null;
+    if (this._ltpPriceLine && this.candleSeries) {
+      try {
+        this.candleSeries.removePriceLine(this._ltpPriceLine);
+      } catch {
+        /* ignore */
+      }
+    }
+    this._ltpPriceLine = null;
+  }
+
+  _ensureLtpPriceLine(initialPrice) {
+    if (this._ltpPriceLine != null || !this.candleSeries) return;
+    this._ltpPriceLine = this.candleSeries.createPriceLine({
+      price: initialPrice,
+      color: COLORS.bear,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      lineVisible: true,
+      axisLabelVisible: true,
+      axisLabelColor: COLORS.bear,
+    });
+  }
+
+  _ltpAnimStep() {
+    this._ltpRafId = null;
+    const t = this._ltpTarget;
+    const d0 = this._ltpAnimDisplay;
+    if (this._ltpPriceLine == null || t == null || d0 == null || !Number.isFinite(t) || !Number.isFinite(d0)) {
+      return;
+    }
+    let d = d0;
+    const diff = t - d;
+    const eps = Math.max(1e-9 * Math.max(1, Math.abs(t)), 1e-12);
+    if (Math.abs(diff) <= eps) {
+      this._ltpAnimDisplay = t;
+      this._ltpPriceLine.applyOptions({ price: t });
+      this._emitLtpDisplay(t);
+      return;
+    }
+    d = d + diff * LTP_ANIM_ALPHA;
+    this._ltpAnimDisplay = d;
+    this._ltpPriceLine.applyOptions({ price: d });
+    this._emitLtpDisplay(d);
+    this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
+  }
+
+  _snapLtpTo(price) {
+    if (!Number.isFinite(price)) {
+      this._hideLtpPriceLine();
+      this._emitLtpDisplay(null);
+      return;
+    }
+    this._cancelLtpAnim();
+    this._ltpTarget = price;
+    this._ltpAnimDisplay = price;
+    this._ensureLtpPriceLine(price);
+    this._ltpPriceLine.applyOptions({
+      price,
+      lineVisible: true,
+      axisLabelVisible: true,
+      color: COLORS.bear,
+      axisLabelColor: COLORS.bear,
+    });
+    this._emitLtpDisplay(price);
+  }
+
+  _smoothLtpTo(price) {
+    if (!Number.isFinite(price)) {
+      this._hideLtpPriceLine();
+      this._emitLtpDisplay(null);
+      return;
+    }
+    this._ltpTarget = price;
+    this._ensureLtpPriceLine(this._ltpAnimDisplay ?? price);
+    if (this._ltpAnimDisplay == null || !Number.isFinite(this._ltpAnimDisplay)) {
+      this._snapLtpTo(price);
+      return;
+    }
+    if (this._ltpRafId == null) {
+      this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
+    }
+  }
+
   init() {
     const container = document.getElementById(this.containerId);
 
-    this.chart = LightweightCharts.createChart(container, {
+    this.chart = createChart(container, {
       ...CHART_OPTS,
       width: container.clientWidth,
       height: container.clientHeight,
@@ -130,6 +294,9 @@ export class ChartManager {
       borderDownColor: COLORS.bear,
       wickUpColor: COLORS.bull,
       wickDownColor: COLORS.bear,
+      borderVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
 
     this.volumeSeries = this.chart.addHistogramSeries({
@@ -164,10 +331,6 @@ export class ChartManager {
       this.showEma = e.target.checked;
       this._toggleEma(this.showEma);
     });
-    document.getElementById('toggle-volume').addEventListener('change', (e) => {
-      this.showVolume = e.target.checked;
-      this.volumeSeries.applyOptions({ visible: this.showVolume });
-    });
     document.getElementById('toggle-supertrend').addEventListener('change', (e) => {
       this.showSupertrend = e.target.checked;
       this.stSeries.applyOptions({ visible: this.showSupertrend });
@@ -183,6 +346,7 @@ export class ChartManager {
         }
         this.currentTf = btn.dataset.tf;
         this._loadTf(this.currentTf);
+        this._onTfChange?.(this.currentTf);
       });
     });
   }
@@ -301,6 +465,8 @@ export class ChartManager {
         /* ignore */
       }
     }
+    const rawClose = candles[candles.length - 1]?.close;
+    this._snapLtpTo(Number.isFinite(rawClose) ? rawClose : NaN);
   }
 
   onHistoryEnd(tf) {
@@ -401,15 +567,26 @@ export class ChartManager {
   }
 
   /** Ingest snapshot (initial load) */
-  onSnapshot({ candles, indicators }) {
+  onSnapshot({ candles, indicators, availableTimeframes }) {
     this._historyExhausted = {};
     this._historyLoading = {};
+    this._applyAvailableTimeframes(availableTimeframes ?? null);
+
     const raw = candles ?? {};
     this.candleMap = {};
     for (const [k, v] of Object.entries(raw)) {
       this.candleMap[k] = Array.isArray(v) ? this._sortedDedupeCandles(v) : v;
     }
     this.indicMap = indicators ?? {};
+
+    if (this._availableTfSet && !this._availableTfSet.has(this.currentTf)) {
+      const next = this._pickFirstAvailableTf();
+      this.currentTf = next;
+      document.querySelectorAll('.tf-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.tf === next);
+      });
+    }
+
     this._loadTf(this.currentTf);
   }
 
@@ -417,6 +594,10 @@ export class ChartManager {
   onKline(tf, candle, _isFinal) {
     if (!this.candleMap[tf]) this.candleMap[tf] = [];
     const arr = this.candleMap[tf];
+    const prevSorted = this._sortedDedupeCandles(arr);
+    const prevLastOpenTime =
+      prevSorted.length > 0 ? prevSorted[prevSorted.length - 1].openTime : null;
+
     const row = this._coerceCandle(candle);
     if (!row) return;
 
@@ -466,6 +647,9 @@ export class ChartManager {
         value: vol,
         color: tail.close >= tail.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
       });
+      const sameBar = prevLastOpenTime != null && tail.openTime === prevLastOpenTime;
+      if (sameBar) this._smoothLtpTo(tail.close);
+      else this._snapLtpTo(tail.close);
     } catch (e) {
       console.warn('[chart] candle update failed, resyncing series', e);
       this._loadTf(tf);
@@ -486,6 +670,8 @@ export class ChartManager {
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
       this.chart.timeScale().fitContent();
+      this._hideLtpPriceLine();
+      this._emitLtpDisplay(null);
       return;
     }
 
@@ -509,6 +695,8 @@ export class ChartManager {
 
     this._paintIndicators(tf);
     this._fitDefaultVisibleRange(tf, candles.length);
+    const lastClose = candles[candles.length - 1]?.close;
+    this._snapLtpTo(Number.isFinite(lastClose) ? lastClose : NaN);
   }
 
   _paintIndicators(tf) {

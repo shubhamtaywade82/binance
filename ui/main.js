@@ -1,12 +1,14 @@
 /**
  * Dashboard bootstrap & WebSocket client.
- * WS URL: `VITE_DASHBOARD_WS_URL`, else same host as this page + `VITE_DASHBOARD_WS_PORT` (default 4001).
- * The WebSocket is served by the **bot process** (`npm run dev` / `npm start`) when `DASHBOARD_ENABLED=true`.
- * Optional: `npm run dashboard` is an alias for the same bot entry with that env var set.
+ * WS URL: `VITE_DASHBOARD_WS_URL` if set.
+ * Dev (Vite): same host + path `/__dashboard_ws` (proxied to the bot on 127.0.0.1:4001 — see vite.config.js).
+ * Production build: `ws(s)://` page host + `VITE_DASHBOARD_WS_PORT` (default 4001).
+ * The WebSocket is served by the bot when `DASHBOARD_ENABLED=true`.
  */
 
+import { escapeHtml, renderAiBriefMarkdown } from './ai-brief-render.js';
 import { ChartManager }     from './chart.js';
-import { OrderBookManager, DepthChart } from './orderbook.js';
+import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
 import { SentimentGauge }  from './sentiment.js';
@@ -14,13 +16,14 @@ import { SentimentGauge }  from './sentiment.js';
 // ─── Module instances ─────────────────────────────────────────────────────
 const chart    = new ChartManager('chart-container');
 const obMgr    = new OrderBookManager();
-const depthCh  = new DepthChart('depth-canvas');
 const tape     = new TradeTapeManager();
 const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
 
 // ─── Price tracker ────────────────────────────────────────────────────────
-let lastPrice  = null;
+let lastPrice = null;
+/** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
+let lastLtpTarget = null;
 
 // ─── Format helpers ───────────────────────────────────────────────────────
 function fmtPrice(p) {
@@ -74,11 +77,15 @@ function dashboardWebSocketUrl() {
   const fromEnv = import.meta.env?.VITE_DASHBOARD_WS_URL;
   if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim();
 
-  const port = import.meta.env?.VITE_DASHBOARD_WS_PORT ?? '4001';
-  const { protocol, hostname } = window.location;
-  const host = hostname || 'localhost';
+  const { protocol, host } = window.location;
   const wsScheme = protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${wsScheme}//${host}:${port}`;
+  if (import.meta.env.DEV) {
+    return `${wsScheme}//${host}/__dashboard_ws`;
+  }
+
+  const port = import.meta.env?.VITE_DASHBOARD_WS_PORT ?? '4001';
+  const hostname = window.location.hostname || 'localhost';
+  return `${wsScheme}//${hostname}:${port}`;
 }
 
 // ─── WebSocket connection ─────────────────────────────────────────────────
@@ -130,12 +137,15 @@ function dispatch(msg) {
     /* ── Snapshot (initial load) ─ */
     case 'snapshot': {
       // Feed chart
-      chart.onSnapshot({ candles: msg.candles, indicators: msg.indicators });
+      chart.onSnapshot({
+        candles: msg.candles,
+        indicators: msg.indicators,
+        availableTimeframes: msg.availableTimeframes,
+      });
 
       // Feed order book
       if (msg.depth) {
         obMgr.update(msg.depth);
-        depthCh.update(msg.depth.bids, msg.depth.asks);
       }
 
       // Feed trade tape
@@ -157,6 +167,8 @@ function dispatch(msg) {
         bid: msg.bestBid,
         ask: msg.bestAsk,
       });
+      if (Number.isFinite(msg.mark)) obMgr.setMarkPrice(msg.mark);
+      lastLtpTarget = Number.isFinite(ltp) ? ltp : null;
 
       // Compute initial signals from snapshot data
       if (msg.signals) signals.update(msg.signals);
@@ -166,6 +178,10 @@ function dispatch(msg) {
         const ratio = imbalanceRatio(msg.depth.bids, msg.depth.asks);
         gauge.update(ratio);
       }
+
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
+      }
       break;
     }
 
@@ -173,8 +189,14 @@ function dispatch(msg) {
     case 'kline': {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
       if (msg.tf === chart.getCurrentTf()) {
-        const p = chart.getLastCloseForTf(chart.getCurrentTf());
-        if (p != null) updateHeader({ price: p });
+        const target = chart.getLastCloseForTf(chart.getCurrentTf());
+        if (target != null && Number.isFinite(target)) {
+          const priceEl = document.getElementById('hdr-price');
+          if (lastLtpTarget != null && target !== lastLtpTarget) {
+            flashPrice(priceEl, target > lastLtpTarget);
+          }
+          lastLtpTarget = target;
+        }
       }
       break;
     }
@@ -209,6 +231,7 @@ function dispatch(msg) {
     /* ── Mark Price (futures mark ≠ last; do not put mark on the main LTP slot) ─ */
     case 'mark_price': {
       updateHeader({ mark: msg.price });
+      if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
       break;
     }
 
@@ -248,7 +271,6 @@ function dispatch(msg) {
     /* ── Depth ─ */
     case 'depth': {
       obMgr.update({ bids: msg.bids, asks: msg.asks });
-      depthCh.update(msg.bids, msg.asks);
       // Update sentiment from depth imbalance
       const ratio = imbalanceRatio(msg.bids, msg.asks);
       gauge.update(ratio);
@@ -276,7 +298,17 @@ function dispatch(msg) {
         st.className = `mono-sm ${msg.error ? 'bear' : 'dim'}`;
       }
       if (body) {
-        body.textContent = msg.error ? `Error: ${msg.error}` : (msg.text ?? '—');
+        if (msg.error) {
+          body.classList.add('ai-brief-prose');
+          body.innerHTML = `<p class="ai-brief-error"><strong>Error</strong> — ${escapeHtml(String(msg.error))}</p>`;
+        } else {
+          body.classList.add('ai-brief-prose');
+          body.innerHTML = renderAiBriefMarkdown(msg.text ?? '');
+          body.querySelectorAll('a[href^="http"]').forEach((a) => {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+          });
+        }
       }
       break;
     }
@@ -305,9 +337,59 @@ function imbalanceRatio(bids = [], asks = []) {
   return total > 0 ? bidVol / total : 0.5;
 }
 
+function initSidebarTabs() {
+  const bar = document.querySelector('.sidebar-tab-bar');
+  if (!bar) return;
+
+  bar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sidebar-tab');
+    if (!btn || !bar.contains(btn)) return;
+    const tabId = btn.dataset.tab;
+    bar.querySelectorAll('.sidebar-tab').forEach((b) => {
+      const on = b === btn;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.sidebar-tab-pane').forEach((pane) => {
+      const on = pane.dataset.tabPane === tabId;
+      pane.classList.toggle('is-active', on);
+      pane.setAttribute('aria-hidden', on ? 'false' : 'true');
+    });
+    requestAnimationFrame(() => {
+      if (tabId === 'live') {
+        gauge.redraw();
+      }
+    });
+  });
+
+  document.querySelectorAll('.sidebar-tab-pane').forEach((pane) => {
+    pane.setAttribute('aria-hidden', pane.classList.contains('is-active') ? 'false' : 'true');
+  });
+
+  requestAnimationFrame(() => {
+    gauge.redraw();
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  obMgr.init();
   chart.init();
+  chart.setLtpDisplayListener((p) => {
+    const priceEl = document.getElementById('hdr-price');
+    if (!priceEl) return;
+    if (p == null || !Number.isFinite(p)) {
+      priceEl.textContent = '—';
+      return;
+    }
+    priceEl.textContent = fmtPrice(p);
+  });
+  chart.setTfChangeHandler((tf) => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set_chart_tf', tf }));
+    }
+  });
+  initSidebarTabs();
   chart.setHistoryRequestHandler(({ tf, oldestOpenTime }) => {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'load_history', tf, oldestOpenTime }));

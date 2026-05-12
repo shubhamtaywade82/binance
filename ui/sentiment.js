@@ -22,6 +22,11 @@ export class SentimentGauge {
     if (this.raf === null) this._start();
   }
 
+  /** Redraw after the gauge becomes visible (tab switch). */
+  redraw() {
+    this._draw();
+  }
+
   updateVwap(vwap, vol) {
     const vwapEl = document.getElementById('vwap-val');
     const volEl  = document.getElementById('vol-val');

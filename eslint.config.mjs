@@ -6,14 +6,13 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ['dist/**', 'node_modules/**'],
+    ignores: ['dist/**', 'dist-ui/**', 'node_modules/**'],
   },
   {
     files: ['ui/**/*.js'],
     languageOptions: {
       globals: {
         ...globals.browser,
-        LightweightCharts: 'readonly',
       },
     },
     rules: {

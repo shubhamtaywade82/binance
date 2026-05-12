@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -76,7 +76,7 @@
           <h2 class="panel-title">Price Chart</h2>
           <div class="panel-controls">
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-ema" checked /><span>EMA</span></label>
-            <label class="toggle-ctrl"><input type="checkbox" id="toggle-volume" checked /><span>VOL</span></label>
+            <span class="toggle-ctrl toggle-ctrl-static" title="Volume always shown"><span>VOL</span></span>
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-supertrend" checked /><span>ST</span></label>
           </div>
         </div>
@@ -84,140 +84,173 @@
       </div>
     </section>
 
-    <!-- Column 2: Order Book + Depth -->
-    <section id="col-book">
-      <div class="panel" id="book-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Order Book</h2>
-          <span id="book-imbalance" class="imbalance-badge">—</span>
+    <!-- Column 2: tabbed tools (full height per tab) -->
+    <aside id="col-sidebar" class="sidebar-tabs" aria-label="Market tools">
+      <nav class="sidebar-tab-bar" role="tablist" aria-label="Sidebar views">
+        <button type="button" id="tab-live" class="sidebar-tab active" role="tab" aria-selected="true" aria-controls="pane-live" data-tab="live" title="Market sentiment, order book, trade tape">Live</button>
+        <button type="button" id="tab-insights" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-insights" data-tab="insights" title="Strategy signals and AI brief">Insights</button>
+      </nav>
+      <div class="sidebar-tab-panels">
+        <div class="sidebar-tab-pane is-active" role="tabpanel" data-tab-pane="live" id="pane-live" aria-labelledby="tab-live">
+          <div class="sidebar-live-stack">
+            <div class="panel sidebar-inner-panel panel-sm" id="sentiment-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Market Sentiment</h2>
+                <span id="sentiment-label" class="sentiment-txt neutral">Neutral</span>
+              </div>
+              <div id="sentiment-gauge-wrap">
+                <canvas id="sentiment-gauge"></canvas>
+                <div id="sentiment-pct" class="gauge-pct">50%</div>
+              </div>
+              <div class="vwap-row">
+                <span class="stat-label">1m VWAP</span>
+                <span id="vwap-val" class="stat-value mono-sm">—</span>
+                <span class="stat-label">Vol 1m</span>
+                <span id="vol-val" class="stat-value mono-sm">—</span>
+              </div>
+            </div>
+            <div class="panel sidebar-inner-panel" id="book-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Order Book</h2>
+                <span id="book-imbalance" class="imbalance-badge">—</span>
+              </div>
+              <div class="book-toolbar">
+                <span class="book-toolbar-title">Book</span>
+                <label class="book-precision-wrap">
+                  <span class="visually-hidden">Price group</span>
+                  <select id="book-precision" class="book-precision" aria-label="Order book price group"></select>
+                </label>
+              </div>
+              <div class="book-mark-block">
+                <div id="book-mark-val" class="book-mark-val">—</div>
+                <div class="book-mark-sub">
+                  <span>Mark price</span>
+                  <span id="book-spread-inline" class="book-spread-inline"></span>
+                </div>
+              </div>
+              <div id="orderbook-scroll" class="orderbook-scroll">
+                <div class="book-grid-head" aria-hidden="true">
+                  <span class="gh-amt">Amt</span>
+                  <span class="gh-bar"></span>
+                  <span class="gh-price bid">Bid</span>
+                  <span class="gh-price ask">Ask</span>
+                  <span class="gh-bar"></span>
+                  <span class="gh-amt">Amt</span>
+                </div>
+                <div id="orderbook-mirrored" class="orderbook-mirrored"></div>
+              </div>
+              <div class="book-foot" role="toolbar" aria-label="Order book display">
+                <div class="book-seg" role="group" aria-label="Side filter">
+                  <button type="button" class="book-foot-btn is-on" data-book-filter="all">All</button>
+                  <button type="button" class="book-foot-btn" data-book-filter="bid">Bid</button>
+                  <button type="button" class="book-foot-btn" data-book-filter="ask">Ask</button>
+                </div>
+                <div class="book-seg" role="group" aria-label="Quantity column">
+                  <button type="button" class="book-foot-btn is-on" data-book-amt="vol">Vol</button>
+                  <button type="button" class="book-foot-btn" data-book-amt="depth">Depth</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel sidebar-inner-panel" id="trades-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Trade Tape</h2>
+                <div class="tape-stats">
+                  <span class="stat-label">BUYS</span><span id="tape-buys" class="stat-value bull">0</span>
+                  <span class="stat-label">SELLS</span><span id="tape-sells" class="stat-value bear">0</span>
+                </div>
+              </div>
+              <div id="trades-list"></div>
+            </div>
+          </div>
         </div>
-        <div id="orderbook-asks"></div>
-        <div id="orderbook-spread-row" class="spread-row">
-          <span class="spread-label">SPREAD</span>
-          <span id="book-spread-val" class="mono-sm">—</span>
-        </div>
-        <div id="orderbook-bids"></div>
-      </div>
 
-      <div class="panel" id="depth-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Depth</h2>
-          <div class="depth-legend">
-            <span class="leg-dot bull"></span><span>Bids</span>
-            <span class="leg-dot bear"></span><span>Asks</span>
+        <div class="sidebar-tab-pane" role="tabpanel" data-tab-pane="insights" id="pane-insights" aria-labelledby="tab-insights">
+          <div class="sidebar-insights-stack">
+            <div class="panel sidebar-inner-panel" id="signals-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Strategy Signals</h2>
+                <span id="signal-verdict" class="verdict-badge neutral">NEUTRAL</span>
+              </div>
+              <div id="signals-content">
+                <div class="sig-row">
+                  <div class="sig-label">HTF Bias (1h)</div>
+                  <div id="sig-htf" class="sig-value neutral">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">LTF Trend (5m)</div>
+                  <div id="sig-ltf" class="sig-value neutral">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">Confidence</div>
+                  <div id="sig-conf" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">Ref price (chart TF)</div>
+                  <div id="sig-ref-tf" class="sig-value dim mono-sm">—</div>
+                </div>
+                <div class="sig-section-header">Smart Money Concepts</div>
+                <div class="sig-row">
+                  <div class="sig-label">SMC Score</div>
+                  <div id="sig-smc-score" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">Liquidity Sweep</div>
+                  <div id="sig-sweep" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">Order Block</div>
+                  <div id="sig-ob" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">FVG</div>
+                  <div id="sig-fvg" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">BOS</div>
+                  <div id="sig-bos" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">CHoCH</div>
+                  <div id="sig-choch" class="sig-value">—</div>
+                </div>
+                <div class="sig-section-header">MTF Stack (SOL)</div>
+                <div class="sig-row">
+                  <div class="sig-label">Direction</div>
+                  <div id="sig-mtf-dir" class="sig-value">—</div>
+                </div>
+                <div class="sig-row">
+                  <div class="sig-label">Pass</div>
+                  <div id="sig-mtf-pass" class="sig-value">—</div>
+                </div>
+                <div id="sig-mtf-reasons" class="reasons-list"></div>
+                <div class="sig-section-header">Trend Matrix (5m)</div>
+                <div class="signals-matrix" id="signals-matrix">
+                  <div class="matrix-item" id="mat-ema"><span class="mat-label">EMA</span><span class="mat-val">—</span></div>
+                  <div class="matrix-item" id="mat-macd"><span class="mat-label">MACD</span><span class="mat-val">—</span></div>
+                  <div class="matrix-item" id="mat-rsi"><span class="mat-label">RSI</span><span class="mat-val">—</span></div>
+                  <div class="matrix-item" id="mat-st"><span class="mat-label">ST</span><span class="mat-val">—</span></div>
+                  <div class="matrix-item" id="mat-struct"><span class="mat-label">STRUCT</span><span class="mat-val">—</span></div>
+                  <div class="matrix-item" id="mat-vol"><span class="mat-label">VOL</span><span class="mat-val">—</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="panel sidebar-inner-panel" id="ai-brief-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">AI Brief</h2>
+                <span id="ai-brief-status" class="mono-sm dim">—</span>
+              </div>
+              <div id="ai-brief-body" class="ai-brief-body ai-brief-prose">
+                <p class="ai-brief-setup">
+                  Enable <strong>AI_MARKET_BRIEF_ENABLED</strong> and <code>OLLAMA_MODEL</code> in <code>.env</code>.
+                  Use <strong>OLLAMA_TARGET</strong>=<code>local</code> (default) or <code>cloud</code> with <code>OLLAMA_API_KEY</code> when required.
+                </p>
+                <p class="ai-brief-muted"><em>Advisory only — not financial advice.</em></p>
+              </div>
+            </div>
           </div>
-        </div>
-        <canvas id="depth-canvas"></canvas>
-      </div>
-    </section>
-
-    <!-- Column 3: Signals + Trade Tape + Sentiment -->
-    <section id="col-signals">
-      <div class="panel" id="signals-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Strategy Signals</h2>
-          <span id="signal-verdict" class="verdict-badge neutral">NEUTRAL</span>
-        </div>
-        <div id="signals-content">
-          <!-- HTF Bias Row -->
-          <div class="sig-row">
-            <div class="sig-label">HTF Bias (1h)</div>
-            <div id="sig-htf" class="sig-value neutral">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">LTF Trend (5m)</div>
-            <div id="sig-ltf" class="sig-value neutral">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">Confidence</div>
-            <div id="sig-conf" class="sig-value">—</div>
-          </div>
-          <!-- SMC -->
-          <div class="sig-section-header">Smart Money Concepts</div>
-          <div class="sig-row">
-            <div class="sig-label">SMC Score</div>
-            <div id="sig-smc-score" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">Liquidity Sweep</div>
-            <div id="sig-sweep" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">Order Block</div>
-            <div id="sig-ob" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">FVG</div>
-            <div id="sig-fvg" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">BOS</div>
-            <div id="sig-bos" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">CHoCH</div>
-            <div id="sig-choch" class="sig-value">—</div>
-          </div>
-          <!-- SOL MTF -->
-          <div class="sig-section-header">MTF Stack (SOL)</div>
-          <div class="sig-row">
-            <div class="sig-label">Direction</div>
-            <div id="sig-mtf-dir" class="sig-value">—</div>
-          </div>
-          <div class="sig-row">
-            <div class="sig-label">Pass</div>
-            <div id="sig-mtf-pass" class="sig-value">—</div>
-          </div>
-          <div id="sig-mtf-reasons" class="reasons-list"></div>
-          <!-- Trend Signals Matrix -->
-          <div class="sig-section-header">Trend Matrix (5m)</div>
-          <div class="signals-matrix" id="signals-matrix">
-            <div class="matrix-item" id="mat-ema"><span class="mat-label">EMA</span><span class="mat-val">—</span></div>
-            <div class="matrix-item" id="mat-macd"><span class="mat-label">MACD</span><span class="mat-val">—</span></div>
-            <div class="matrix-item" id="mat-rsi"><span class="mat-label">RSI</span><span class="mat-val">—</span></div>
-            <div class="matrix-item" id="mat-st"><span class="mat-label">ST</span><span class="mat-val">—</span></div>
-            <div class="matrix-item" id="mat-struct"><span class="mat-label">STRUCT</span><span class="mat-val">—</span></div>
-            <div class="matrix-item" id="mat-vol"><span class="mat-label">VOL</span><span class="mat-val">—</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel" id="ai-brief-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">AI Brief</h2>
-          <span id="ai-brief-status" class="mono-sm dim">—</span>
-        </div>
-        <pre id="ai-brief-body" class="ai-brief-body">Set AI_MARKET_BRIEF_ENABLED=true and OLLAMA_MODEL. Use OLLAMA_TARGET=local (default) or cloud; host URLs are fixed in the app. Cloud needs OLLAMA_API_KEY. Pull the model locally first (`ollama pull …`). Advisory only — not financial advice.</pre>
-      </div>
-
-      <div class="panel" id="trades-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Trade Tape</h2>
-          <div class="tape-stats">
-            <span class="stat-label">BUYS</span><span id="tape-buys" class="stat-value bull">0</span>
-            <span class="stat-label">SELLS</span><span id="tape-sells" class="stat-value bear">0</span>
-          </div>
-        </div>
-        <div id="trades-list"></div>
-      </div>
-
-      <div class="panel panel-sm" id="sentiment-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Market Sentiment</h2>
-          <span id="sentiment-label" class="sentiment-txt neutral">Neutral</span>
-        </div>
-        <div id="sentiment-gauge-wrap">
-          <canvas id="sentiment-gauge"></canvas>
-          <div id="sentiment-pct" class="gauge-pct">50%</div>
-        </div>
-        <div class="vwap-row">
-          <span class="stat-label">1m VWAP</span>
-          <span id="vwap-val" class="stat-value mono-sm">—</span>
-          <span class="stat-label">Vol 1m</span>
-          <span id="vol-val" class="stat-value mono-sm">—</span>
         </div>
       </div>
-    </section>
+    </aside>
   </main>
 
   <script type="module" src="./main.js"></script>

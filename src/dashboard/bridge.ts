@@ -48,6 +48,9 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   const htfTf = cfg.BINANCE_TIMEFRAMES[1] ?? cfg.BINANCE_HTF_INTERVAL;
   const depthLevelsUi = cfg.BINANCE_DEPTH_LEVELS > 0 ? cfg.BINANCE_DEPTH_LEVELS : 20;
 
+  /** Last chart TF selected in UI (WS `set_chart_tf`) — drives `refPrice` for SMC / AI so it matches the visible chart. */
+  let activeRefTf: string = chartTfsOnStream[0] ?? ltfTf;
+
   let lastMark: number | null = null;
   let bestBid: number | null = null;
   let bestAsk: number | null = null;
@@ -111,6 +114,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     const snapshot: MarketSignalsSnapshot = {
       symbol: symbolUpper,
       refPrice: signals.refPrice,
+      refPriceTf: signals.refPriceTf,
       htfBias: String(signals.htfBias),
       ltfDirection: String(signals.ltfDirection),
       ltfConfidence: signals.ltfConfidence,
@@ -200,11 +204,27 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     indicatorDebounce = setTimeout(flush, INDICATOR_BROADCAST_MIN_MS);
   }
 
+  function resolveRefTf(): string {
+    if (chartTfBroadcastSet.has(activeRefTf)) return activeRefTf;
+    return chartTfsOnStream[0] ?? ltfTf;
+  }
+
+  function refPriceFromTf(tf: string): number | undefined {
+    const s = store.getSeries(symbolUpper, tf);
+    const c = s[s.length - 1]?.close;
+    return Number.isFinite(c) ? c : undefined;
+  }
+
   function computeSignals() {
     const rows = getCandlesByChartTf();
     const candlesLtf = store.getSeries(symbolUpper, ltfTf);
     const candlesHtf = store.getSeries(symbolUpper, htfTf);
-    const refPrice = candlesLtf[candlesLtf.length - 1]?.close ?? lastMark ?? 0;
+    const refTf = resolveRefTf();
+    const refPrice =
+      refPriceFromTf(refTf) ??
+      refPriceFromTf(ltfTf) ??
+      (typeof lastMark === 'number' && Number.isFinite(lastMark) ? lastMark : undefined) ??
+      0;
 
     const htfBias = biasFromCandles(candlesHtf);
     const ltfTrend = analyzeTrend(candlesLtf);
@@ -233,6 +253,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
     return {
       refPrice,
+      refPriceTf: refTf,
       htfBias,
       ltfDirection: ltfTrend.direction,
       ltfConfidence: +ltfTrend.confidence.toFixed(3),
@@ -254,6 +275,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     const rows = getCandlesByChartTf();
     return {
       symbol: symbolUpper,
+      availableTimeframes: [...chartTfsOnStream],
       mark: lastMark,
       bestBid,
       bestAsk,
@@ -315,6 +337,14 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       try {
         msg = JSON.parse(String(raw)) as typeof msg;
       } catch {
+        return;
+      }
+      if (msg.type === 'set_chart_tf' && typeof msg.tf === 'string') {
+        const tf = msg.tf.trim().toLowerCase();
+        if (chartTfBroadcastSet.has(tf)) {
+          activeRefTf = tf;
+          broadcast({ type: 'signals', ...computeSignals() });
+        }
         return;
       }
       if (msg.type !== 'load_history' || typeof msg.tf !== 'string') return;
@@ -415,7 +445,8 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       symbol: symbolUpper,
       chartTimeframes: chartTfsOnStream,
       ltfTf,
-      uiHint: 'npm run ui:dev → Vite on port 5173',
+      uiHint:
+        'Vite: npm run ui:dev or npm run dashboard:ui (bot+Vite). Open http://127.0.0.1:5173 in a normal browser; embedded previews can show chrome-error frame blocks.',
     });
 
     heartbeatTimer = setInterval(() => {

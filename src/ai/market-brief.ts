@@ -8,6 +8,8 @@ import { Ollama } from 'ollama';
 export interface MarketSignalsSnapshot {
   symbol: string;
   refPrice: number;
+  /** Chart timeframe used for `refPrice` (aligned with UI selection). */
+  refPriceTf?: string;
   htfBias: string;
   ltfDirection: string;
   ltfConfidence: number;
@@ -34,14 +36,22 @@ export interface OllamaBriefConfig {
 
 const SYSTEM_PROMPT = `You are a concise market-structure analyst assistant.
 You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack).
-Write 4–6 short bullet lines: context, alignment or conflict between timeframes, what would strengthen or weaken the picture, and execution hygiene (wait for confirmation, avoid chasing).
-Do not give buy/sell instructions or price targets. End with one line: "Not financial advice."
-Keep total under 120 words. Plain text bullets using "- " prefix each line.`;
+
+Respond in GitHub-flavored Markdown only (no HTML tags):
+- Start with a ## heading (e.g. "## Brief" or "## Snapshot").
+- Use short paragraphs and/or bullet lists with "- ".
+- Bold key labels inline, e.g. **Context:**, **Alignment:**, **Conflict:**, **Execution:**.
+- Mention directions like SHORT/LONG in **bold** when they matter.
+- Use \`TICKER\` backticks for the symbol when you reference it.
+- Do not give buy/sell instructions or price targets.
+- End with a separate line: *Not financial advice.*
+Keep total under 140 words.`;
 
 function buildUserContent(snapshot: MarketSignalsSnapshot): string {
   return JSON.stringify({
     symbol: snapshot.symbol,
     refPrice: snapshot.refPrice,
+    refPriceTf: snapshot.refPriceTf,
     htfBias: snapshot.htfBias,
     ltfDirection: snapshot.ltfDirection,
     ltfConfidence: snapshot.ltfConfidence,

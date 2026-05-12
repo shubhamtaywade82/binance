@@ -31,6 +31,13 @@ export class SignalsPanel {
       confEl.className = 'sig-value ' + (s.ltfConfidence >= 0.65 ? 'bull' : s.ltfConfidence >= 0.45 ? 'neutral' : 'bear');
     }
 
+    const refTfEl = document.getElementById('sig-ref-tf');
+    if (refTfEl) {
+      const tf = s.refPriceTf ?? '—';
+      const rp = s.refPrice != null && Number.isFinite(s.refPrice) ? this._fmtPrice(s.refPrice) : '—';
+      refTfEl.textContent = `${tf} @ ${rp}`;
+    }
+
     // SMC
     const smc = s.smc;
     if (smc) {
