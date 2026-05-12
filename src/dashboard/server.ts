@@ -17,6 +17,7 @@ import { analyzeSmc } from '../strategy/smc';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
 import { ema, rsi, macd, supertrend } from '../strategy/indicators';
 import type { Candle } from '../types';
+import { requestMarketBrief, type MarketSignalsSnapshot } from '../ai/market-brief';
 
 const cfg = loadConfig();
 const PORT = 4001;
@@ -42,6 +43,56 @@ const tradeTape = new AggTradeTape(500);
 let lastMark: number | null = null;
 let bestBid: number | null = null;
 let bestAsk: number | null = null;
+
+let lastAiBriefAt = 0;
+let aiBriefInflight = false;
+let aiBriefWarnedNoModel = false;
+
+function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
+  if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
+  if (!cfg.OLLAMA_MODEL.trim()) {
+    if (!aiBriefWarnedNoModel) {
+      aiBriefWarnedNoModel = true;
+      console.warn('[dashboard] AI_MARKET_BRIEF_ENABLED but OLLAMA_MODEL is empty — skipping.');
+    }
+    return;
+  }
+  const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
+  const now = Date.now();
+  if (aiBriefInflight) return;
+  if (lastAiBriefAt > 0 && now - lastAiBriefAt < gapMs) return;
+
+  const snapshot: MarketSignalsSnapshot = {
+    symbol: SYMBOL,
+    refPrice: signals.refPrice,
+    htfBias: String(signals.htfBias),
+    ltfDirection: String(signals.ltfDirection),
+    ltfConfidence: signals.ltfConfidence,
+    ltfScore: signals.ltfScore,
+    ltfSignals: signals.ltfSignals,
+    smc: signals.smc,
+    solMtf: signals.solMtf,
+  };
+
+  aiBriefInflight = true;
+  void requestMarketBrief(
+    {
+      host: cfg.OLLAMA_HOST,
+      model: cfg.OLLAMA_MODEL,
+      apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+      timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+    },
+    snapshot,
+  ).then((r) => {
+    aiBriefInflight = false;
+    lastAiBriefAt = Date.now();
+    if (r.text) {
+      broadcast({ type: 'ai_brief', text: r.text, ts: Date.now() });
+    } else if (r.error) {
+      broadcast({ type: 'ai_brief', error: r.error, ts: Date.now() });
+    }
+  });
+}
 
 // ─── HTTP + WS Server ────────────────────────────────────────────────────────
 const httpServer = http.createServer((_req, res) => {
@@ -96,6 +147,7 @@ function buildSnapshot() {
     depth: orderbook.topLevels(DEPTH_LEVELS),
     trades: tradeTape.recent(60),
     indicators: computeIndicators(candles5m, candles15m, candles1h, candles4h, candles1d),
+    signals: computeSignals(),
   };
 }
 
@@ -260,6 +312,7 @@ const multiplex = new BinanceMultiplexWs(
       if (isFinal && (tf === '5m' || tf === '15m')) {
         const signals = computeSignals();
         broadcast({ type: 'signals', ...signals });
+        void maybeRefreshAiBrief(signals);
       }
     },
 
@@ -340,12 +393,16 @@ setInterval(() => {
 setInterval(() => {
   const signals = computeSignals();
   broadcast({ type: 'signals', ...signals });
+  void maybeRefreshAiBrief(signals);
 }, 60_000);
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 (async () => {
   await seedHistory();
   multiplex.start();
+
+  const bootSignals = computeSignals();
+  void maybeRefreshAiBrief(bootSignals);
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Dashboard WS Bridge on ws://0.0.0.0:${PORT} (all interfaces)`);

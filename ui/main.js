@@ -216,6 +216,19 @@ function dispatch(msg) {
       break;
     }
 
+    case 'ai_brief': {
+      const body = document.getElementById('ai-brief-body');
+      const st = document.getElementById('ai-brief-status');
+      if (st) {
+        st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
+        st.className = `mono-sm ${msg.error ? 'bear' : 'dim'}`;
+      }
+      if (body) {
+        body.textContent = msg.error ? `Error: ${msg.error}` : (msg.text ?? '—');
+      }
+      break;
+    }
+
     /* ── Connection status ─ */
     case 'status': {
       if (msg.connected === true)  setWsStatus('connected', 'Live');

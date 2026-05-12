@@ -234,6 +234,31 @@ export const AppConfigSchema = z.object({
   /** When true, handshake uses `?returnRateLimits=false`. */
   BINANCE_FAPI_WS_HIDE_RATELIMITS: boolFromString(false),
 
+  /**
+   * Dashboard (`npm run dashboard`): optional LLM narrative from structured signals via `ollama` JS → local Ollama or Ollama Cloud.
+   */
+  AI_MARKET_BRIEF_ENABLED: boolFromString(false),
+  /** Ollama HTTP API root (local default `http://127.0.0.1:11434`; use `https://ollama.com` for cloud). */
+  OLLAMA_HOST: z.preprocess(
+    (val) => (val === undefined || val === '' ? 'http://127.0.0.1:11434' : val),
+    z.string().url(),
+  ),
+  /** Model name as known to Ollama (e.g. `llama3.2`, `mistral` — run `ollama pull <name>` locally). */
+  OLLAMA_MODEL: z.string().default('llama3.2'),
+  /** Optional Bearer token for Ollama Cloud (`OLLAMA_HOST=https://ollama.com`). */
+  OLLAMA_API_KEY: z.string().default(''),
+  /** Minimum seconds between LLM calls when signals refresh. */
+  AI_BRIEF_INTERVAL_SEC: z
+    .union([z.number(), z.string()])
+    .default(120)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(30).max(3600)),
+  AI_REQUEST_TIMEOUT_MS: z
+    .union([z.number(), z.string()])
+    .default(25_000)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(3000).max(120_000)),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 });

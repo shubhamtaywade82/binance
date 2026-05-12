@@ -391,6 +391,22 @@ body::before {
 
 /* ── Misc ─────────────────────────────────────────────────────────────────── */
 .mono-sm { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.mono-sm.dim { color: var(--text-dim); }
+.mono-sm.bear { color: var(--bear); }
+
+/* AI Brief (dashboard WS) */
+.ai-brief-body {
+  margin: 0;
+  padding: 0 var(--panel-pad) var(--panel-pad);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
 
 /* Glow flash on price update */
 @keyframes price-flash-up   { 0% { color: var(--bull); text-shadow: 0 0 12px var(--bull-glow); } 100% { } }
