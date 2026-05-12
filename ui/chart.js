@@ -16,6 +16,24 @@ import {
   storeSignalHudEnabled,
 } from './chart-strategy-hud.js';
 
+const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
+
+function readBookTopLinesEnabled() {
+  try {
+    return localStorage.getItem(BOOK_TOP_STORAGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function storeBookTopLinesEnabled(on) {
+  try {
+    localStorage.setItem(BOOK_TOP_STORAGE_KEY, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
 const COLORS = {
   bull: '#00e676',
   bear: '#ff1744',
@@ -137,6 +155,12 @@ export class ChartManager {
     this._volAnimColor = '';
     /** @type {number | null} */
     this._volRafId = null;
+    /** Best bid / ask from order book — horizontal guides on the price scale. */
+    this._bookTopBidLine = null;
+    this._bookTopAskLine = null;
+    this._lastBookBid = null;
+    this._lastBookAsk = null;
+    this._bookTopLinesEnabled = readBookTopLinesEnabled();
     /** @type {(() => void) | null} */
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
@@ -614,6 +638,99 @@ export class ChartManager {
     }
   }
 
+  _removeBookTopLines() {
+    if (this.candleSeries && this._bookTopBidLine) {
+      try {
+        this.candleSeries.removePriceLine(this._bookTopBidLine);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.candleSeries && this._bookTopAskLine) {
+      try {
+        this.candleSeries.removePriceLine(this._bookTopAskLine);
+      } catch {
+        /* ignore */
+      }
+    }
+    this._bookTopBidLine = null;
+    this._bookTopAskLine = null;
+  }
+
+  _ensureBookTopLines() {
+    if (!this.candleSeries) return;
+    if (!this._bookTopBidLine) {
+      this._bookTopBidLine = this.candleSeries.createPriceLine({
+        price: this._lastBookBid ?? 0,
+        color: 'rgba(0,230,118,0.82)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        lineVisible: true,
+        axisLabelVisible: true,
+        title: 'BID',
+        axisLabelColor: 'rgba(0,230,118,0.95)',
+      });
+    }
+    if (!this._bookTopAskLine) {
+      this._bookTopAskLine = this.candleSeries.createPriceLine({
+        price: this._lastBookAsk ?? 0,
+        color: 'rgba(255,23,68,0.82)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        lineVisible: true,
+        axisLabelVisible: true,
+        title: 'ASK',
+        axisLabelColor: 'rgba(255,23,68,0.95)',
+      });
+    }
+  }
+
+  _syncBookTopLines() {
+    if (!this.candleSeries) return;
+    if (!this._bookTopLinesEnabled) {
+      this._removeBookTopLines();
+      return;
+    }
+    const bid = this._lastBookBid;
+    const ask = this._lastBookAsk;
+    if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid > ask) {
+      this._removeBookTopLines();
+      return;
+    }
+    this._ensureBookTopLines();
+    this._bookTopBidLine?.applyOptions({
+      price: bid,
+      lineVisible: true,
+      axisLabelVisible: true,
+      color: 'rgba(0,230,118,0.82)',
+      axisLabelColor: 'rgba(0,230,118,0.95)',
+    });
+    this._bookTopAskLine?.applyOptions({
+      price: ask,
+      lineVisible: true,
+      axisLabelVisible: true,
+      color: 'rgba(255,23,68,0.82)',
+      axisLabelColor: 'rgba(255,23,68,0.95)',
+    });
+  }
+
+  /**
+   * Best bid / ask from the order book (same top-of-book as the ladder). Non-finite clears lines.
+   */
+  setBookTopLevels(bid, ask) {
+    const b = Number.isFinite(bid) ? bid : null;
+    const a = Number.isFinite(ask) ? ask : null;
+    if (b == null || a == null) {
+      this._lastBookBid = null;
+      this._lastBookAsk = null;
+      this._removeBookTopLines();
+      return;
+    }
+    this._lastBookBid = b;
+    this._lastBookAsk = a;
+    this._syncBookTopLines();
+  }
+
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
@@ -874,6 +991,16 @@ export class ChartManager {
       });
     }
 
+    const bookTopToggle = document.getElementById('toggle-book-top');
+    if (bookTopToggle instanceof HTMLInputElement) {
+      bookTopToggle.checked = this._bookTopLinesEnabled;
+      bookTopToggle.addEventListener('change', () => {
+        this._bookTopLinesEnabled = bookTopToggle.checked;
+        storeBookTopLinesEnabled(this._bookTopLinesEnabled);
+        this._syncBookTopLines();
+      });
+    }
+
     document.querySelectorAll('.tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.tf-btn').forEach((b) => b.classList.remove('active'));
@@ -882,9 +1009,10 @@ export class ChartManager {
           clearTimeout(this._historyDebounceTimer);
           this._historyDebounceTimer = null;
         }
+        const alignToVisibleTimeRange = this._getSafeVisibleTimeRange();
         this.currentTf = btn.dataset.tf;
         this._clearSmcChartVisuals();
-        this._loadTf(this.currentTf);
+        this._loadTf(this.currentTf, { alignToVisibleTimeRange });
         this._onTfChange?.(this.currentTf);
       });
     });
@@ -1108,6 +1236,48 @@ export class ChartManager {
     }
   }
 
+  /**
+   * LW `Time` can be UTCTimestamp (sec) or BusinessDay — normalize for `setVisibleRange`.
+   * @param {unknown} t
+   * @returns {number}
+   */
+  _horzTimeToUnixSec(t) {
+    if (t == null) return NaN;
+    if (typeof t === 'number' && Number.isFinite(t)) return t;
+    if (typeof t === 'string') {
+      const n = Number(t);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    if (typeof t === 'object' && t !== null && 'year' in t && 'month' in t && 'day' in t) {
+      const y = /** @type {{ year: number; month: number; day: number }} */ (t).year;
+      const mo = /** @type {{ year: number; month: number; day: number }} */ (t).month;
+      const d = /** @type {{ year: number; month: number; day: number }} */ (t).day;
+      if ([y, mo, d].every(Number.isFinite)) return Math.floor(Date.UTC(y, mo - 1, d) / 1000);
+    }
+    return NaN;
+  }
+
+  /**
+   * Visible chart window in unix seconds (for cross-TF zoom continuity).
+   * @returns {{ from: number; to: number } | null}
+   */
+  _getSafeVisibleTimeRange() {
+    if (!this.chart) return null;
+    try {
+      const r = this.chart.timeScale().getVisibleRange();
+      if (!r) return null;
+      const from = this._horzTimeToUnixSec(r.from);
+      const to = this._horzTimeToUnixSec(r.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+      const lo = Math.min(from, to);
+      const hi = Math.max(from, to);
+      if (hi <= lo) return null;
+      return { from: lo, to: hi };
+    } catch {
+      return null;
+    }
+  }
+
   /** Ingest snapshot (initial load) */
   onSnapshot({ candles, indicators, availableTimeframes }) {
     this._historyExhausted = {};
@@ -1206,10 +1376,15 @@ export class ChartManager {
 
   /**
    * @param {string} tf
-   * @param {{ preserveVisibleRange?: boolean }} [opts] — keep bar window after `setData` (resync / theme). New TF or snapshot omit this so default tail zoom applies.
+   * @param {{
+   *   preserveVisibleRange?: boolean;
+   *   alignToVisibleTimeRange?: { from: number; to: number } | null;
+   * }} [opts] — `preserveVisibleRange`: same logical bar indices after `setData` (resync / theme).
+   *   `alignToVisibleTimeRange`: keep the same unix time window (used when switching TFs).
    */
   _loadTf(tf, opts = {}) {
     const preserveVisibleRange = opts.preserveVisibleRange === true;
+    const alignToVisibleTimeRange = opts.alignToVisibleTimeRange ?? null;
     /** Logical bar indices before `setData` — reapplied after paint so zoom is not wiped. */
     let savedLogicalRange = null;
     if (preserveVisibleRange && this.chart && tf === this.currentTf) {
@@ -1254,7 +1429,24 @@ export class ChartManager {
     this._resetVolumeAnimState();
 
     this._paintIndicators(tf);
-    if (
+
+    const canAlignTime =
+      alignToVisibleTimeRange &&
+      Number.isFinite(alignToVisibleTimeRange.from) &&
+      Number.isFinite(alignToVisibleTimeRange.to) &&
+      alignToVisibleTimeRange.to > alignToVisibleTimeRange.from;
+
+    if (canAlignTime) {
+      try {
+        this.chart.timeScale().setVisibleRange({
+          from: alignToVisibleTimeRange.from,
+          to: alignToVisibleTimeRange.to,
+        });
+      } catch (e) {
+        console.warn('[chart] setVisibleRange after TF change', e);
+        this._fitDefaultVisibleRange(tf, candles.length);
+      }
+    } else if (
       preserveVisibleRange &&
       savedLogicalRange &&
       savedLogicalRange.from != null &&

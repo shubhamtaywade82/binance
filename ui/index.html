@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Quantum Trade — Live Dashboard</title>
-  <meta name="description" content="Institutional-grade live trading dashboard with TradingView charts, real-time order book, trade tape, and AI strategy signals." />
+  <meta name="description" content="Institutional-grade live trading dashboard with TradingView charts, real-time order book, dedicated trade tape tab, and AI strategy signals." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -80,6 +80,10 @@
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-ema" checked /><span>EMA</span></label>
             <span class="toggle-ctrl toggle-ctrl-static" title="Volume always shown"><span>VOL</span></span>
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-supertrend" checked /><span>ST</span></label>
+            <label class="toggle-ctrl toggle-book-top" title="Show best bid and best ask from the order book on the price scale">
+              <input type="checkbox" id="toggle-book-top" checked />
+              <span>Book</span>
+            </label>
             <div class="candle-theme-wrap" id="candle-theme-wrap">
               <span id="candle-theme-heading" class="candle-theme-label">Candles</span>
               <button
@@ -117,7 +121,8 @@
     <!-- Column 2: tabbed tools (full height per tab) -->
     <aside id="col-sidebar" class="sidebar-tabs" aria-label="Market tools">
       <nav class="sidebar-tab-bar" role="tablist" aria-label="Sidebar views">
-        <button type="button" id="tab-live" class="sidebar-tab active" role="tab" aria-selected="true" aria-controls="pane-live" data-tab="live" title="Market sentiment, order book, trade tape">Live</button>
+        <button type="button" id="tab-live" class="sidebar-tab active" role="tab" aria-selected="true" aria-controls="pane-live" data-tab="live" title="Market sentiment and order book">Live</button>
+        <button type="button" id="tab-tape" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-tape" data-tab="tape" title="Live trade tape">Tape</button>
         <button type="button" id="tab-insights" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-insights" data-tab="insights" title="Strategy signals and AI brief">Insights</button>
       </nav>
       <div class="sidebar-tab-panels">
@@ -193,6 +198,18 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div
+          class="sidebar-tab-pane"
+          role="tabpanel"
+          data-tab-pane="tape"
+          id="pane-tape"
+          aria-labelledby="tab-tape"
+          aria-hidden="true"
+        >
+          <div class="sidebar-tape-stack">
             <div class="panel sidebar-inner-panel" id="trades-panel">
               <div class="panel-header">
                 <h2 class="panel-title">Trade Tape</h2>

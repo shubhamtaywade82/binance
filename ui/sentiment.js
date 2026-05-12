@@ -62,8 +62,9 @@ export class SentimentGauge {
     const { ctx, canvas } = this;
     if (!ctx || !canvas) return;
     const parent = canvas.parentElement;
-    const W = parent.clientWidth;
-    const H = 80;
+    const W = Math.max(1, parent.clientWidth);
+    /** Logical height — must fit arc + thick stroke (center sits just below canvas so the upper semicircle is in view). */
+    const H = 100;
     canvas.width  = W * devicePixelRatio;
     canvas.height = H * devicePixelRatio;
     canvas.style.width  = `${W}px`;
@@ -73,8 +74,10 @@ export class SentimentGauge {
     ctx.clearRect(0, 0, W, H);
 
     const cx = W / 2;
-    const cy = H + 10;
-    const r  = H * 1.05;
+    const lineWidth = 18;
+    const r = Math.min(W * 0.42, 78);
+    /** Pivot below the bottom edge so π→2π is the upper semicircle; tuned so y_top − lineWidth/2 ≥ ~8px. */
+    const cy = H + 16;
     const startAngle = Math.PI;
     const endAngle   = 2 * Math.PI;
 
@@ -82,7 +85,7 @@ export class SentimentGauge {
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAngle, endAngle);
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.lineWidth = 20;
+    ctx.lineWidth = lineWidth;
     ctx.stroke();
 
     // Gradient arc (bear → bull)
@@ -95,7 +98,7 @@ export class SentimentGauge {
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAngle, fillEnd);
     ctx.strokeStyle = grad;
-    ctx.lineWidth = 20;
+    ctx.lineWidth = lineWidth;
     ctx.lineCap = 'round';
     ctx.stroke();
 

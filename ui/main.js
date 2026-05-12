@@ -24,6 +24,14 @@ const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
 const rolling1m = new Rolling1mTradeStats();
 
+/** Best bid / first ask row from depth snapshot (same ordering as OrderBookManager). */
+function topOfBookFromDepth(depth) {
+  const b = depth?.bids?.[0]?.price;
+  const a = depth?.asks?.[0]?.price;
+  if (Number.isFinite(b) && Number.isFinite(a) && b <= a) return { bid: b, ask: a };
+  return null;
+}
+
 /** Multiplex watch symbol for this browser (matches server `getSym`). */
 let activeWatchSymbol = null;
 
@@ -266,6 +274,12 @@ function dispatch(msg) {
         gauge.update(ratio);
       }
 
+      const bookTop = msg.depth ? topOfBookFromDepth(msg.depth) : null;
+      if (bookTop) chart.setBookTopLevels(bookTop.bid, bookTop.ask);
+      else if (Number.isFinite(msg.bestBid) && Number.isFinite(msg.bestAsk)) {
+        chart.setBookTopLevels(msg.bestBid, msg.bestAsk);
+      }
+
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
       }
@@ -360,6 +374,7 @@ function dispatch(msg) {
     case 'book_ticker': {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ bid: msg.bid, ask: msg.ask });
+      chart.setBookTopLevels(msg.bid, msg.ask);
       break;
     }
 
@@ -367,6 +382,8 @@ function dispatch(msg) {
     case 'depth': {
       if (!appliesToActiveWatch(msg)) break;
       obMgr.update({ bids: msg.bids, asks: msg.asks });
+      const top = topOfBookFromDepth({ bids: msg.bids, asks: msg.asks });
+      if (top) chart.setBookTopLevels(top.bid, top.ask);
       const ratio = imbalanceRatio(msg.bids, msg.asks);
       gauge.update(ratio);
       break;

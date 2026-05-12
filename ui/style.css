@@ -330,14 +330,13 @@ body::before {
   flex: unset;
 }
 
-/* Live tab: sentiment, book, tape — bounded rows + internal scroll */
+/* Live tab: sentiment + order book (two rows) */
 .sidebar-live-stack {
   display: grid;
   grid-template-rows:
-    /* Sentiment = header + 80px gauge + VWAP row; reserve enough height so header is not clipped */
-    minmax(178px, min(24vh, 240px))
-    minmax(300px, min(56vh, 520px))
-    minmax(140px, min(22vh, 240px));
+    /* Sentiment: header + ~100px gauge + VWAP row — enough height so gauge arc is not clipped */
+    minmax(198px, min(26vh, 260px))
+    minmax(300px, min(56vh, 520px));
   gap: var(--gap);
   flex: 1;
   min-height: 0;
@@ -351,6 +350,24 @@ body::before {
   display: flex;
   flex-direction: column;
   flex: unset;
+}
+
+/* Tape tab: single panel fills sidebar tab */
+.sidebar-tape-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: var(--gap);
+}
+#pane-tape .sidebar-tape-stack > .sidebar-inner-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-sm .panel-header { padding: 8px var(--panel-pad); }
@@ -1064,12 +1081,12 @@ body::before {
   flex-direction: column;
   justify-content: flex-start;
   align-items: center;
-  padding: 6px 0 2px;
+  padding: 8px 0 4px;
   flex: 1 1 0;
-  min-height: 80px;
-  overflow: hidden;
+  min-height: 100px;
+  overflow: visible;
 }
-#sentiment-gauge { width: 100%; height: 80px; }
+#sentiment-gauge { width: 100%; height: 100px; display: block; }
 .gauge-pct {
   position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
   font-family: var(--font-mono); font-size: 18px; font-weight: 700;
@@ -1308,10 +1325,8 @@ body::before {
 @media (max-height: 720px) {
   .sidebar-live-stack {
     grid-template-rows:
-      minmax(120px, 32vh)
-      minmax(80px, 16vh)
-      minmax(100px, 22vh)
-      minmax(96px, 14vh);
+      minmax(132px, min(30vh, 240px))
+      minmax(160px, min(42vh, 420px));
   }
   .sidebar-insights-stack {
     grid-template-rows: minmax(160px, 1.1fr) minmax(120px, 0.9fr);

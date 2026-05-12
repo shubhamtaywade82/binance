@@ -4,7 +4,7 @@
 
 export class TradeTapeManager {
   constructor() {
-    this.maxRows = 50;
+    this.maxRows = 120;
     this.rows = [];
     this.buyCount = 0;
     this.sellCount = 0;
