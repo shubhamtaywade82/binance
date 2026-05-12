@@ -1,189 +1,238 @@
-# Binance USDⓈ-M perpetual futures — API reference (for this workspace)
+# Binance USDⓈ-M perpetual futures — API reference
 
-Scope: **USDⓈ-M (USDT-margined) perpetual contracts** on Binance Derivatives — market data, WebSockets, trading, account, funding, and algo.  
-Not covered in depth here: **COIN-M** (`dapi`), **Options**, **Portfolio Margin** (`papi`) unless noted as “different product”.
+Scope: **USDⓈ-M (USDT-margined) perpetual contracts** on Binance Derivatives — market data, WebSockets, trading, account, funding, and algo orders.
 
 Official hubs:
-
-- [Derivatives documentation](https://developers.binance.com/docs/derivatives) — USDⓈ-M Futures is the primary doc tree for `/fapi` + `fstream`.
-- [Algo documentation](https://developers.binance.com/docs/algo) — TWAP / VP and related **signed** `/sapi/v1/algo/...` endpoints (execution style, not a separate market feed).
+- [Derivatives documentation](https://developers.binance.com/docs/derivatives)
+- [USD-M Futures general info](https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info)
+- [WebSocket market streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams)
+- [Trade REST](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)
+- [User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
 
 ---
 
 ## 1. Environments and base URLs
 
-| Layer | Mainnet | Testnet (demo) |
-|--------|---------|----------------|
-| **REST (USD-M)** | `https://fapi.binance.com` | `https://demo-fapi.binance.com` |
+| Layer | Mainnet | Testnet |
+|-------|---------|---------|
+| **REST (USD-M)** | `https://fapi.binance.com` | `https://testnet.binancefuture.com` |
 | **WebSocket (USD-M)** | Root `wss://fstream.binance.com` | `wss://fstream.binancefuture.com` |
 
-Binance has documented **routed** WebSocket paths under that root (see *Important WebSocket Change Notice* in [USD-M WebSocket market streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams)): in practice you connect to **`{root}/market/stream`** or **`{root}/public/stream`** (combined) or **`{root}/market/ws/...`** / **`{root}/public/ws/...`** (raw), not always a single legacy `…/ws/<stream>` on the bare host.
+Set `BINANCE_FUTURES_TESTNET=true` to switch to testnet. Override both endpoints individually with `BINANCE_REST_BASE` / `BINANCE_WS_BASE` if needed.
 
-**This repo** (`src/binance/ws-routing.ts`): normalizes `BINANCE_WS_BASE` to a **root** and builds:
+**Routed WebSocket paths** — Binance splits USD-M streams across two routes from the same root:
+- `/market/stream` — klines, aggTrade, markPrice
+- `/public/stream` — bookTicker, depth
 
-- **`/market/...`** — e.g. kline, aggTrade, mark price (see `routeForStream`).
-- **`/public/...`** — e.g. `@bookTicker`, `@depth` (see `routeForStream`).
-
-Spot (if you use `BINANCE_PRODUCT=spot`) uses **`wss://stream.binance.com:9443`** — different product from USD-M perp.
+`src/binance/ws-routing.ts` normalises `BINANCE_WS_BASE` to a root and builds the correct route per stream. Do not point `BINANCE_WS_BASE` at a routed path.
 
 ---
 
 ## 2. Market data — REST (`/fapi`)
 
-Typical categories (exact paths and weights: official **Market Data REST API** doc):
+All public endpoints; no API key required.
 
-| Use | Examples | Notes |
-|-----|-----------|--------|
-| **Candles** | `GET /fapi/v1/klines` | `symbol`, `interval`, `limit`, optional `startTime`/`endTime` |
-| **Order book** | `GET /fapi/v1/depth` | Snapshot; maintain locally with WS `depth` if needed |
-| **Trades** | `GET /fapi/v1/trades`, `GET /fapi/v1/aggTrades` | Public recent trades |
-| **Ticker / 24h** | `GET /fapi/v1/ticker/24hr`, `GET /fapi/v1/ticker/price` | Last / stats |
-| **Mark / funding** | `GET /fapi/v1/premiumIndex`, `GET /fapi/v1/fundingRate` | Mark, index, funding for perps |
-| **Exchange info** | `GET /fapi/v1/exchangeInfo` | Filters, tick/step, contract specs |
+| Use | Endpoint | Notes |
+|-----|----------|-------|
+| Candles | `GET /fapi/v1/klines` | `symbol`, `interval`, `limit`, optional `startTime`/`endTime` |
+| Order book | `GET /fapi/v1/depth` | Snapshot; maintain locally with WS `depth` diff |
+| Trades | `GET /fapi/v1/trades`, `GET /fapi/v1/aggTrades` | Public recent trades |
+| Ticker / 24h | `GET /fapi/v1/ticker/24hr`, `GET /fapi/v1/ticker/price` | Last / stats |
+| Mark / funding | `GET /fapi/v1/premiumIndex`, `GET /fapi/v1/fundingRate` | Mark price, index, funding rate |
+| Exchange info | `GET /fapi/v1/exchangeInfo` | Filters, tick/step size, contract specs |
 
-All of the above are **unsigned** for public endpoints (no API key on request).
+**In this repo:**
 
-**This repo** uses a subset: e.g. `rest-klines`, `rest-premium-index`, `rest-depth`, historical helpers — not full exchange coverage.
+| Source file | Covers |
+|-------------|--------|
+| `src/binance/rest-klines.ts` | `GET /fapi/v1/klines` (seeding + live bars) |
+| `src/binance/rest-premium-index.ts` | `GET /fapi/v1/premiumIndex` (mark REST poll) |
+| `src/binance/rest-depth.ts` | `GET /fapi/v1/depth` (orderbook bootstrap) |
+| `src/binance/historical.ts` | Paginated multi-page kline pulls |
+| `src/binance/rest-exchange-info.ts` | `GET /fapi/v1/exchangeInfo` → extracts `tickSize`, `stepSize`, `minQty` |
 
 ---
 
 ## 3. Market data — WebSocket (USD-M)
 
-### 3.1 Stream names (lowercase symbol)
+### 3.1 Stream names
 
-Examples (see official **Websocket Market Streams**):
+| Stream | Purpose |
+|--------|---------|
+| `<sym>@kline_<interval>` | Candle updates; `k.x = true` = closed bar |
+| `<sym>@markPrice@1s` | Mark price (USD-M perp) |
+| `<sym>@aggTrade` | Aggregate trade tape |
+| `<sym>@bookTicker` | Best bid/ask |
+| `<sym>@depth<N>@<speed>` | Partial order book (N = 5/10/20) |
+| `<sym>@depth@<speed>` | Diff depth stream (use with REST snapshot bootstrap) |
+| `<sym>@forceOrder` | Liquidation events for this symbol |
 
-- `<symbol>@aggTrade` — aggregate trades (LTP-style tape).
-- `<symbol>@markPrice` or `<symbol>@markPrice@1s` — mark price.
-- `<symbol>@kline_<interval>` — candle updates (`k.x` = closed bar).
-- `<symbol>@depth` / `<symbol>@depth@100ms` — diff depth.
-- `<symbol>@bookTicker` — best bid/ask.
-- `<symbol>@forceOrder` — liquidations (single symbol); `!forceOrder@arr` — all markets.
+### 3.2 Combined stream format
 
-### 3.2 Combined vs raw
+`{root}/{route}/stream?streams=a@aggTrade/b@kline_1m` — payload wrapped `{ "stream": "...", "data": { ... } }`.
 
-- **Combined:** `{root}/{route}/stream?streams=a@aggTrade/b@kline_1m` — payload wrapped `{ "stream": "...", "data": { ... } }`.
-- **Raw:** `{root}/{route}/ws/btcusdt@aggTrade` — payload is the event object directly.
+### 3.3 Operational rules
 
-### 3.3 Operational rules (from Binance general WSS guidance)
+- **Ping/pong:** server sends WebSocket ping frames; client must pong within the window or risk disconnect. Handled in `BinanceMultiplexWs`.
+- **`serverShutdown`:** JSON event before maintenance; triggers immediate reconnect.
+- **23h rotation timer:** pre-empts Binance's 24h connection cap (`BINANCE_WS_RECONNECT_HOURS=23`).
+- **Exponential backoff reconnect:** cap 60s.
 
-- **Ping / pong:** server may send WebSocket **ping** frames; client must **pong** with the same payload within the documented window or risk disconnect.
-- **`serverShutdown`:** JSON event before maintenance; reconnect promptly.
-- **Limits:** e.g. max streams per connection, max connections per IP per interval, max **incoming** messages per second (control messages count) — see official **WebSocket Limits** for your product.
+### 3.4 In this repo
 
-### 3.4 Network reality (this repo)
+`BinanceMultiplexWs` (`src/binance/ws-multiplex.ts`) subscribes all streams on a single combined connection per route. Callbacks:
+- `onKline(symbol, tf, candle, isFinal)` → `MultiTimeframeStore`
+- `onMarkPrice(update)` → mark reference + `positionManager.onMark()`
+- `onAggTrade(event)` → `AggTradeTape`
+- `onBookTicker(event)` → `BookTickerFeed` (paper fills)
+- `onDepthDiff` / `onDepthPartial` → `LocalOrderBook`
+- `onForceOrder(event)` → liquidation hook (when `BINANCE_USE_FORCE_ORDER=true`)
 
-Some networks allow **`fapi` HTTPS** but not **`fstream` pushed frames** (socket **opens**, no `kline`/`aggTrade`/`markPrice`). Mitigations used here:
-
-- **`USDM_MARK_REST_POLL_SEC`** — poll `GET /fapi/v1/premiumIndex` for mark.
-- Optional **spot** WS/REST for signals if you switch product — **not** identical to perp tape.
+REST fallback: `USDM_MARK_REST_POLL_SEC` (default 5s) polls `GET /fapi/v1/premiumIndex` when `fstream` push frames are blocked.
 
 ---
 
 ## 4. Trading — REST (signed, `/fapi`)
 
-Requires **API key** + **HMAC SHA256** signing (or Ed25519 where supported — follow official **Authentication** doc for USD-M).
+Signing: **HMAC-SHA256** (`timestamp` + `signature` appended to every request). Implemented in `src/binance/rest-client.ts` (`BinanceRestClient`). Requires `BINANCE_API_KEY` + `BINANCE_API_SECRET`.
 
-Typical areas:
+### 4.1 Order lifecycle
 
-| Area | Examples | Purpose |
-|------|-----------|--------|
-| **Orders** | `POST /fapi/v1/order`, `DELETE /fapi/v1/order`, `GET /fapi/v1/openOrders` | Place, cancel, query |
-| **Batch** | `POST /fapi/v1/batchOrders` | Multiple orders |
-| **Position mode** | `GET/POST …/positionSide/dual` | Hedge vs one-way |
-| **Leverage / margin type** | `POST …/leverage`, `POST …/marginType` | Setup |
+| Step | Endpoint | Notes |
+|------|----------|-------|
+| Set leverage | `POST /fapi/v1/leverage` | Called on every entry |
+| Set margin type | `POST /fapi/v1/marginType` | `ISOLATED`; code -4046 = already set (ignored) |
+| Entry | `POST /fapi/v1/order` | `type: MARKET`, `newOrderRespType: RESULT` for fill price |
+| Cancel order | `DELETE /fapi/v1/order` | By `orderId` |
+| Cancel all | `DELETE /fapi/v1/allOpenOrders` | Symbol-level batch cancel |
+| Query open | `GET /fapi/v1/openOrders` | Optional symbol filter |
+| Query single | `GET /fapi/v1/order` | By `orderId` |
+| Batch place | `POST /fapi/v1/batchOrders` | Up to 5 orders |
 
-Order types include **LIMIT**, **MARKET**, **STOP** / **TAKE_PROFIT** variants, **reduceOnly**, **closePosition**, etc. — exact enums in official **Trade REST** doc.
+### 4.2 Algo orders — TP/SL (Dec 2025 migration)
 
-**This repo** does **not** place orders on Binance; execution is **CoinDCX** (`src/coindcx/futures-client.ts`). Adding Binance execution would be a **new** signed client + keys + compliance review.
+**`STOP_MARKET`, `TAKE_PROFIT_MARKET`, and `TRAILING_STOP_MARKET` must use the Algo Service**, not `/fapi/v1/order`.
 
----
+| Step | Endpoint | Notes |
+|------|----------|-------|
+| Place algo order | `POST /fapi/v1/algoOrder` | Returns `strategyId` |
+| Cancel algo order | `DELETE /fapi/v1/algoOrder` | By `strategyId` |
+| Cancel all algo | `DELETE /fapi/v1/algoOpenOrders` | Symbol-level |
+| Query open algo | `GET /fapi/v1/openAlgoOrders` | Returns `{ total, orders[] }` |
 
-## 5. Account & positions — REST (signed, `/fapi`)
+**Parameters used in this repo:**
+- `workingType: MARK_PRICE` — trigger against mark price, not last price
+- `timeInForce: GTE_GTC` — Good Till Expire / GTC; auto-cancels when position closes
+- `closePosition: true` on TP2 and SL — closes full remaining position
+- `reduceOnly: true` + explicit `quantity` on TP1 — partial 60% close
 
-| Area | Examples |
-|------|-----------|
-| **Balances** | `GET /fapi/v2/balance` (or v3 per current doc) |
-| **Account** | `GET /fapi/v2/account` — positions, assets, margin |
-| **Position risk** | `GET /fapi/v2/positionRisk` |
-| **Income / funding history** | `GET /fapi/v1/income` |
+**In this repo:** `src/binance/rest-trade.ts` exports `placeAlgoOrder`, `cancelAlgoOrder`, `cancelAllAlgoOrders`, `getOpenAlgoOrders`. The `BinanceLiveExecutionAdapter` (`src/execution/binance-adapter.ts`) places TP1/TP2/SL exclusively via these endpoints.
 
-Use official **Account** endpoints list; field names and versions change — always match the doc version you target.
+### 4.3 Account and positions
 
----
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /fapi/v2/balance` | USDT wallet balance |
+| `GET /fapi/v2/account` | Full account (assets + positions) |
+| `GET /fapi/v2/positionRisk` | Open position details including `positionAmt`, `entryPrice`, `markPrice` |
 
-## 6. User Data Stream (private WebSocket)
-
-Flow (conceptual):
-
-1. **`POST /fapi/v1/listenKey`** (signed) → `listenKey`.
-2. Connect to **user data** WS URL for USD-M (see official **User Data Streams** for exact base path).
-3. **`PUT /fapi/v1/listenKey`** periodically to keep the key alive.
-4. **`DELETE /fapi/v1/listenKey`** when shutting down.
-
-Events typically include order updates, execution reports, account/position updates — exact event types in official doc.
-
-**This repo:** no Binance user stream (no Binance keys for trading).
-
----
-
-## 7. Funding, mark, liquidation (perp-specific)
-
-- **Funding:** scheduled funding rate payments; query history via REST; some WS streams expose funding-related fields on mark streams.
-- **Mark vs last:** mark is used for PnL / liquidations on many perps; **last** trade price can differ.
-- **Liquidations:** REST `forceOrders` (history limits per changelog); WS `@forceOrder` / `!forceOrder@arr` for live liquidation feed.
+Used for startup reconciliation: on boot, `getPositionRisk` detects any position that survived a restart, and the adapter restores internal state.
 
 ---
 
-## 8. Algo orders (Binance) — `/sapi/v1/algo/...`
+## 5. User Data Stream (private WebSocket)
 
-[Algo Trading](https://developers.binance.com/docs/algo) covers **algorithmic** order products served from **SAPI** (e.g. `/sapi/v1/algo/futures/...` for futures TWAP / VP, `/sapi/v1/algo/spot/...` for spot TWAP).
+### 5.1 Flow
 
-Important:
+1. `POST /fapi/v1/listenKey` (signed) → `listenKey`
+2. Connect to `{wsBase}/private/ws?listenKey=<key>`
+3. `PUT /fapi/v1/listenKey` every 30 min to keep alive
+4. `DELETE /fapi/v1/listenKey` on shutdown
 
-- **Separate signing base** from `/fapi` — typically **`https://api.binance.com`** for SAPI (confirm in official Quick Start for your account type).
-- Algo is for **how** Binance slices your order over time / volume; it is **not** a replacement for market-data WS.
-- Changelogs mention **percent-encoding before signature** for some signed flows — follow the latest **Signed Endpoints** examples or you risk `-1022 INVALID_SIGNATURE`.
+### 5.2 Events handled
 
-**This repo:** no Binance algo integration.
+| Event | Action |
+|-------|--------|
+| `ORDER_TRADE_UPDATE` | Logged; if `status=FILLED` + algo `si` field present → `notifyFilled()` reconciliation |
+| `ACCOUNT_UPDATE` | Logged with position `pa` (amount), `ep` (entry price), `up` (unrealized PnL) |
+| `MARGIN_CALL` | Logged |
+| `listenKeyExpired` | Triggers listen key renewal and reconnect |
+
+### 5.3 Algo strategyId correlation
+
+When an algo TP/SL order fills, `ORDER_TRADE_UPDATE` includes field `si` (strategy ID) matching the `strategyId` returned when the algo order was placed. The orchestrator uses this to call `adapter.notifyFilled(si, avgPrice)` which:
+- Looks up the internal trade via `algoIdToInternal` map
+- For TP1 fill: updates `remainingQty`, leaves position open
+- For TP2/SL fill: removes trade, cancels sibling orders, returns `ClosedPosition`
+- Calls `positionManager.notifyExchangeClose()` — no redundant MARKET order
+
+**In this repo:** `src/binance/private-ws.ts` (`BinancePrivateWs`). Enabled when `BINANCE_EXECUTION_ADAPTER=true` + `EXECUTION_MODE=live`.
+
+---
+
+## 6. Funding, mark, liquidation
+
+- **Funding:** polled in paper mode via `GET /fapi/v1/premiumIndex`; charges open paper positions at each `nextFundingTime` crossing.
+- **Mark vs last:** strategy uses mark price for TP/SL triggers (not last trade); `workingType: MARK_PRICE` on algo orders matches this.
+- **Liquidation feed:** `@forceOrder` WS stream available when `BINANCE_USE_FORCE_ORDER=true` for SMC liquidity sweep detection.
+
+---
+
+## 7. WebSocket trading API (`ws-fapi`) — optional
+
+For `session.logon` / `order.place` via WebSocket. Uses **Ed25519** signing only. Separate endpoint: `wss://ws-fapi.binance.com/ws-fapi/v1` (testnet: `wss://testnet.binancefuture.com/ws-fapi/v1`).
+
+**In this repo:** `src/binance/futures-ws-api.ts` (`BinanceFuturesWsApiClient`) is available but is **not** the active execution path. The live adapter uses signed HMAC REST (`/fapi/v1/order`, `/fapi/v1/algoOrder`).
+
+Quick test:
+```bash
+npm run fapi:ws:status
+```
+
+---
+
+## 8. Precision and filters
+
+`GET /fapi/v1/exchangeInfo` → `PRICE_FILTER.tickSize` + `LOT_SIZE.stepSize` + `LOT_SIZE.minQty`.
+
+- All order **prices** are rounded to `tickSize` via `roundToTick(price, tickSize)`.
+- All **quantities** are floored to `stepSize` via `floorToStep(qty, stepSize)`.
+
+**In this repo:** `src/binance/rest-exchange-info.ts` + `src/mapping/precision.ts`. Precision is fetched at startup, pushed into the adapter via `setPrecision()`, and stored per-trade in `OpenLiveTrade`.
 
 ---
 
 ## 9. Rate limits, weights, errors
 
-- REST: **request weight** per endpoint; **429** / `-1003` style errors when exceeded — see **Limits** in general info.
-- **IP bans** for abuse (including WS control-message floods).
-- **Timestamp / recvWindow:** signed requests must use server time skew rules from the doc.
+- REST: **request weight** per endpoint; `429` / `-1003` when exceeded.
+- **IP bans** for sustained abuse.
+- **Timestamp/recvWindow:** signed requests use `Date.now()` + 5s default window (`recvWindow=5000`).
+- Binance error codes returned as `binanceCode` on `BinanceRestError` (e.g. `-4046` = margin type already set).
 
 ---
 
-## 10. How this maps to the `coindcx/binance` worker
+## 10. Implementation map
 
-| Binance capability | In this repo? | Location / notes |
-|--------------------|---------------|-------------------|
-| USD-M klines REST | Yes | `src/binance/rest-klines.ts` |
-| Depth REST / local book | Partial | `rest-depth`, orderbook + WS depth |
-| Mark / premium REST | Yes | `rest-premium-index.ts`, orchestrator poll |
-| Market WS (routed market/public) | Yes | `ws-routing.ts`, multiplex / streams |
-| aggTrade tape | Partial | `trade-tape.ts` etc. |
-| **Signed `/fapi` orders** | **No** | Would need new module + keys |
-| **User data stream** | **No** | Would need listenKey lifecycle |
-| **Balances / positions on Binance** | **No** | CoinDCX holds execution state here |
-| **Algo (TWAP/VP) on Binance** | **No** | Separate SAPI client |
-
-**Architecture invariant (workspace):** crypto **execution** for this hybrid design is **CoinDCX futures**, not Binance. Binance here is **signal / reference market data** unless you explicitly extend the codebase.
-
----
-
-## 11. Suggested reading order (on Binance’s site)
-
-1. [USDⓈ-M Futures — General Info](https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info) — REST base, enums, errors, limits.  
-2. [Market Data REST](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api) — everything public REST for bars and tape.  
-3. [Websocket Market Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams) — routes, stream list, combined/raw.  
-4. [Trade REST](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api) — only if you add Binance execution.  
-5. [User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams) — only with listenKey + private WS.  
-6. [Algo](https://developers.binance.com/docs/algo) — only if you route TWAP/VP through Binance.
+| Capability | Status | Location |
+|------------|--------|----------|
+| USD-M klines REST | ✅ | `src/binance/rest-klines.ts` |
+| Exchange info / precision | ✅ | `src/binance/rest-exchange-info.ts` |
+| Depth REST + local orderbook | ✅ | `rest-depth.ts`, `orderbook.ts` |
+| Mark / premiumIndex REST | ✅ | `rest-premium-index.ts` |
+| Market WS (multiplex) | ✅ | `ws-routing.ts`, `ws-multiplex.ts` |
+| aggTrade tape | ✅ | `trade-tape.ts` |
+| forceOrder liquidation feed | ✅ | `ws-multiplex.ts` (`BINANCE_USE_FORCE_ORDER`) |
+| Signed HMAC REST client | ✅ | `src/binance/rest-client.ts` |
+| Entry orders (`/fapi/v1/order`) | ✅ | `src/binance/rest-trade.ts` |
+| Leverage + margin type setup | ✅ | `rest-trade.ts` → `BinanceLiveExecutionAdapter` |
+| Algo TP/SL (`/fapi/v1/algoOrder`) | ✅ | `rest-trade.ts` → `BinanceLiveExecutionAdapter` |
+| Position risk (`/fapi/v2/positionRisk`) | ✅ | `rest-trade.ts` (startup reconciliation) |
+| Account / balances | ✅ | `rest-trade.ts` |
+| Private user-data WebSocket | ✅ | `src/binance/private-ws.ts` |
+| ORDER_TRADE_UPDATE reconciliation | ✅ | `orchestrator.ts` → `adapter.notifyFilled()` |
+| Startup position reconciliation | ✅ | `orchestrator.ts` → `reconcileExchangePosition()` |
+| WS-FAPI trading (`ws-fapi`) | Available (not primary) | `src/binance/futures-ws-api.ts` |
 
 ---
 
-*This file is a curated map for developers in this repo; always verify parameters and URLs against the live Binance documentation before production use.*
+*Always verify endpoint parameters and URLs against live Binance documentation before production use.*
