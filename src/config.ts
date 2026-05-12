@@ -99,6 +99,12 @@ export const AppConfigSchema = z.object({
     }),
 
   LEVERAGE: numFromString(10),
+  /**
+   * USDT margin per trade for Binance USDT-M Futures (preferred).
+   * When set to a positive value, overrides the INR-based sizing path.
+   * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
+   */
+  CAPITAL_PER_TRADE_USDT: numFromString(0),
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),
   INR_PER_USDT: numFromString(85),
@@ -183,6 +189,8 @@ export const AppConfigSchema = z.object({
   BINANCE_USE_AGGTRADE: boolFromString(true),
   BINANCE_USE_BOOKTICKER: boolFromString(true),
   BINANCE_USE_MARK_PRICE: boolFromString(true),
+  /** Stream liquidation orders (`@forceOrder`) for SMC liquidity sweep detection. USD-M only. */
+  BINANCE_USE_FORCE_ORDER: boolFromString(false),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
 
   /**
@@ -191,6 +199,26 @@ export const AppConfigSchema = z.object({
    * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
    */
   BINANCE_FUTURES_TESTNET: boolFromString(false),
+
+  /**
+   * Binance HMAC-SHA256 REST trading credentials.
+   * Required when `BINANCE_EXECUTION_ADAPTER=true` (live orders via Binance FAPI).
+   * Enable Futures trading on the API key and restrict by IP for safety.
+   */
+  BINANCE_API_KEY: z.string().default(''),
+  BINANCE_API_SECRET: z.string().default(''),
+
+  /**
+   * When true, live execution uses Binance FAPI directly (HMAC REST + private WS) instead of CoinDCX.
+   * Requires `BINANCE_API_KEY` + `BINANCE_API_SECRET`, `EXECUTION_MODE=live`, `READ_ONLY=false`.
+   */
+  BINANCE_EXECUTION_ADAPTER: boolFromString(false),
+
+  /**
+   * Enable the Binance private user-data WebSocket stream (ORDER_TRADE_UPDATE, ACCOUNT_UPDATE).
+   * Automatically enabled when `BINANCE_EXECUTION_ADAPTER=true` and `EXECUTION_MODE=live`.
+   */
+  BINANCE_PRIVATE_WS_ENABLED: boolFromString(false),
 
   /**
    * Binance USD-M **WebSocket trading API** (`ws-fapi`) — session.logon / order.place (Ed25519).
@@ -231,7 +259,7 @@ export function loadConfig(): AppConfig {
 export function binanceRestBase(cfg: AppConfig): string {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
-  if (cfg.BINANCE_FUTURES_TESTNET) return 'https://demo-fapi.binance.com';
+  if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
 

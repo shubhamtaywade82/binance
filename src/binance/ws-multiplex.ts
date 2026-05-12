@@ -46,6 +46,21 @@ export interface MarkPriceMultiplexEvent {
   eventTime: number;
 }
 
+/** Liquidation order (forceOrder stream). */
+export interface ForceOrderEvent {
+  symbol: string;
+  side: string;
+  orderType: string;
+  timeInForce: string;
+  origQty: string;
+  price: string;
+  avgPrice: string;
+  orderStatus: string;
+  lastFilledQty: string;
+  filledAccumulatedQty: string;
+  tradeTime: number;
+}
+
 export interface MultiplexCallbacks {
   onKline?: (symbol: string, interval: string, candle: Candle, isFinal: boolean) => void;
   onBookTicker?: (t: BookTickerEvent) => void;
@@ -55,6 +70,8 @@ export interface MultiplexCallbacks {
   onDepthDiff?: (d: DepthDiff & { s: string }) => void;
   onAggTrade?: (t: AggTradeEvent) => void;
   onMarkPrice?: (u: MarkPriceMultiplexEvent) => void;
+  /** Liquidation order events (`@forceOrder` stream). USD-M only. */
+  onForceOrder?: (e: ForceOrderEvent) => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number, reason: string) => void;
   onServerShutdown?: () => void;
@@ -72,6 +89,8 @@ export interface MultiplexOptions {
   depthLevels: DepthLevels;
   depthSpeed: DepthSpeed;
   useMarkPrice: boolean;
+  /** Stream liquidation events (`@forceOrder`). USD-M only. Default false. */
+  useForceOrder?: boolean;
   /** Hours before scheduled reconnect (Binance enforces 24h max). Default 23. */
   reconnectAfterHours?: number;
   /** Override constructor for tests. */
@@ -108,6 +127,7 @@ export function buildStreamList(opts: MultiplexOptions): string[] {
     else out.push(`${lower}@depth@${opts.depthSpeed}`);
     if (opts.useAggTrade) out.push(`${lower}@aggTrade`);
     if (opts.useMarkPrice && opts.product === 'usdm') out.push(`${lower}@markPrice@1s`);
+    if (opts.useForceOrder && opts.product === 'usdm') out.push(`${lower}@forceOrder`);
   }
   return out;
 }
@@ -317,6 +337,10 @@ export class BinanceMultiplexWs {
       this.dispatchDiff(data);
       return;
     }
+    if (evt === 'forceOrder') {
+      this.dispatchForceOrder(data);
+      return;
+    }
     if (evt === 'listenKeyExpired') {
       this.cb.onError?.(new Error('listenKeyExpired'));
       return;
@@ -416,6 +440,24 @@ export class BinanceMultiplexWs {
       lastUpdateId: Number(data.lastUpdateId),
       bids: (data.bids as [string, string][]) ?? [],
       asks: (data.asks as [string, string][]) ?? [],
+    });
+  }
+
+  private dispatchForceOrder(data: Record<string, unknown>): void {
+    const o = data.o as Record<string, unknown> | undefined;
+    if (!o) return;
+    this.cb.onForceOrder?.({
+      symbol: String(o.s ?? '').toUpperCase(),
+      side: String(o.S ?? ''),
+      orderType: String(o.o ?? ''),
+      timeInForce: String(o.f ?? ''),
+      origQty: String(o.q ?? '0'),
+      price: String(o.p ?? '0'),
+      avgPrice: String(o.ap ?? '0'),
+      orderStatus: String(o.X ?? ''),
+      lastFilledQty: String(o.l ?? '0'),
+      filledAccumulatedQty: String(o.z ?? '0'),
+      tradeTime: Number(o.T ?? data.E ?? Date.now()),
     });
   }
 

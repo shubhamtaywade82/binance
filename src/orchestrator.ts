@@ -1,4 +1,4 @@
-import { binanceWsBase, type AppConfig } from './config';
+import { binanceWsBase, binanceRestBase, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
@@ -15,6 +15,9 @@ import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
 import { fetchHistoricalKlines } from './binance/historical';
 import { fetchBinanceDepthSnapshot } from './binance/rest-depth';
+import { fetchBinanceExchangeInfo } from './binance/rest-exchange-info';
+import { BinancePrivateWs } from './binance/private-ws';
+import { getPositionRisk, getOpenAlgoOrders } from './binance/rest-trade';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
 import { extractPrecisionFromInstrument, type InstrumentPrecision } from './mapping/precision';
 import { resolvePairMap, type ResolvedPairMap } from './mapping/symbol-map';
@@ -25,9 +28,11 @@ import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
+import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
 import type { Candle, Side, TrendBias } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
+import type { OrderTradeUpdate, AccountUpdate } from './binance/private-ws';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -67,6 +72,8 @@ export interface OrchestratorDeps {
   orderbook?: LocalOrderBook;
   /** Optional aggTrade ring buffer. */
   tradeTape?: AggTradeTape;
+  /** Override for tests; default fetches Binance exchangeInfo. */
+  fetchExchangeInfo?: typeof fetchBinanceExchangeInfo;
 }
 
 export class HybridOrchestrator {
@@ -80,6 +87,7 @@ export class HybridOrchestrator {
   private readonly tradeTape: AggTradeTape;
   private readonly fetchHistorical: typeof fetchHistoricalKlines;
   private readonly fetchDepth: typeof fetchBinanceDepthSnapshot;
+  private readonly fetchExchangeInfo: typeof fetchBinanceExchangeInfo;
   private readonly ltfTf: string;
   private readonly htfTf: string;
   private readonly timeframes: string[];
@@ -98,6 +106,8 @@ export class HybridOrchestrator {
   private readonly fetchUsdmMarkRest: UsdmMarkRestFetch;
   private restMarkWarned = false;
   private orderbookBootstrapInflight = false;
+  /** Private user-data stream — non-null when BINANCE_EXECUTION_ADAPTER=true + live. */
+  private privateWs: BinancePrivateWs | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -119,6 +129,7 @@ export class HybridOrchestrator {
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
     this.fetchHistorical = deps.fetchHistorical ?? fetchHistoricalKlines;
     this.fetchDepth = deps.fetchDepth ?? fetchBinanceDepthSnapshot;
+    this.fetchExchangeInfo = deps.fetchExchangeInfo ?? fetchBinanceExchangeInfo;
     this.store = deps.store ?? new MultiTimeframeStore({ maxBars: 1000 });
     const tfs = (cfg.BINANCE_TIMEFRAMES && cfg.BINANCE_TIMEFRAMES.length > 0)
       ? cfg.BINANCE_TIMEFRAMES
@@ -158,16 +169,48 @@ export class HybridOrchestrator {
           depthLevels: cfg.BINANCE_DEPTH_LEVELS as DepthLevels,
           depthSpeed: cfg.BINANCE_DEPTH_SPEED as DepthSpeed,
           useMarkPrice: cfg.BINANCE_USE_MARK_PRICE,
+          useForceOrder: cfg.BINANCE_USE_FORCE_ORDER,
           reconnectAfterHours: cfg.BINANCE_WS_RECONNECT_HOURS,
         },
         this.bindMultiplexCallbacks(),
       );
+    }
+
+    // Private user-data stream — live Binance adapter only.
+    const needPrivateWs =
+      cfg.EXECUTION_MODE === 'live' &&
+      !cfg.READ_ONLY &&
+      (cfg.BINANCE_EXECUTION_ADAPTER || cfg.BINANCE_PRIVATE_WS_ENABLED) &&
+      this.execution.binanceRestClient;
+
+    if (needPrivateWs && this.execution.binanceRestClient) {
+      this.privateWs = new BinancePrivateWs({
+        wsBase: binanceWsBase(cfg),
+        client: this.execution.binanceRestClient,
+        callbacks: {
+          onOrderUpdate: (e) => this.onPrivateOrderUpdate(e),
+          onAccountUpdate: (e) => this.onPrivateAccountUpdate(e),
+          onListenKeyExpired: () => this.log.warn('binance_listen_key_expired', {}),
+          onError: (err) => this.log.warn('binance_private_ws_error', { err: err.message }),
+          onReconnect: (n) => this.log.warn('binance_private_ws_reconnect', { attempt: n }),
+          onOpen: () => this.log.info('binance_private_ws_connected', { symbol: this.pairs.binanceSymbol }),
+          onClose: () => this.log.info('binance_private_ws_closed', {}),
+        },
+      });
     }
   }
 
   async start(): Promise<void> {
     await this.seedCandles();
     await this.loadPrecision();
+
+    // Push exchange precision into the Binance adapter and reconcile any open position.
+    if (this.cfg.BINANCE_EXECUTION_ADAPTER && this.execution.binanceRestClient) {
+      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
+      if (this.precision) binanceAdapter.setPrecision(this.precision);
+      await this.reconcileExchangePosition(binanceAdapter);
+    }
+
     if (this.multiplex) {
       this.multiplex.start();
     } else if (this.ws) {
@@ -175,6 +218,11 @@ export class HybridOrchestrator {
     }
     if (this.multiplex === null && this.cfg.BINANCE_USE_BOOKTICKER) {
       this.book.start();
+    }
+    if (this.privateWs) {
+      await this.privateWs.start().catch((e) =>
+        this.log.warn('binance_private_ws_start_failed', { err: (e as Error).message }),
+      );
     }
     this.scheduleLtpWatchdog();
     this.scheduleRestMarkPoll();
@@ -185,6 +233,8 @@ export class HybridOrchestrator {
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
       placeOrder: this.cfg.PLACE_ORDER,
+      executionAdapter: this.cfg.BINANCE_EXECUTION_ADAPTER ? 'binance' : 'coindcx',
+      privateWs: this.privateWs !== null,
       usdmMarkRestPollSec:
         this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',
@@ -200,6 +250,12 @@ export class HybridOrchestrator {
     this.book.stop();
     if (this.ws) this.ws.stop();
     if (this.multiplex) void this.multiplex.stop();
+    if (this.privateWs) void this.privateWs.stop();
+  }
+
+  /** Expose private WS for lifecycle registration. */
+  getPrivateWs(): BinancePrivateWs | null {
+    return this.privateWs;
   }
 
   /** Non-null when the orchestrator owns or was given a multiplex connection. */
@@ -489,10 +545,33 @@ export class HybridOrchestrator {
   }
 
   private async loadPrecision(): Promise<void> {
+    // Try Binance exchangeInfo first (authoritative for FAPI symbols).
+    if (this.cfg.BINANCE_PRODUCT === 'usdm') {
+      try {
+        const p = await this.fetchExchangeInfo(
+          binanceRestBase(this.cfg),
+          this.pairs.binanceSymbol,
+        );
+        if (p) {
+          this.precision = p;
+          this.log.info('instrument_precision', {
+            source: 'binance_exchange_info',
+            ...this.precision,
+          });
+          return;
+        }
+      } catch (e) {
+        this.log.warn('binance_exchange_info_failed', { err: (e as Error).message });
+      }
+    }
+    // Fall back to CoinDCX instrument details.
     try {
       const raw = await this.cdcx.getFuturesInstrumentDetails(this.pairs.coindcxPair);
       this.precision = extractPrecisionFromInstrument(raw);
-      this.log.info('instrument_precision', this.precision as unknown as Record<string, unknown>);
+      this.log.info('instrument_precision', {
+        source: 'coindcx',
+        ...this.precision as unknown as Record<string, unknown>,
+      });
     } catch (e) {
       this.log.warn('instrument_precision_failed', { err: (e as Error).message });
       this.precision = extractPrecisionFromInstrument(null);
@@ -579,6 +658,97 @@ export class HybridOrchestrator {
       ts: Date.now(),
     });
     this.book.ingestTrade(sym, mid);
+  }
+
+  private onPrivateOrderUpdate(event: OrderTradeUpdate): void {
+    const o = event.order;
+    this.log.info('binance_order_update', {
+      symbol: o.s,
+      orderId: o.i,
+      strategyId: o.si,
+      status: o.X,
+      execType: o.x,
+      side: o.S,
+      type: o.o,
+      avgPrice: o.ap,
+      filledQty: o.z,
+      realizedPnl: o.rp,
+    });
+
+    // Reconcile exchange-triggered algo TP/SL fills.
+    // algo orders include a strategyId (si) — regular orders do not.
+    if (
+      o.X === 'FILLED' &&
+      o.x === 'TRADE' &&
+      typeof o.si === 'number' &&
+      o.si > 0 &&
+      this.cfg.BINANCE_EXECUTION_ADAPTER
+    ) {
+      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
+      const fillPrice = Number(o.ap) || Number(o.L) || this.lastMark || 0;
+      if (fillPrice > 0) {
+        const result = binanceAdapter.notifyFilled(o.si, fillPrice);
+        if (result?.fullyFilled) {
+          void this.positionManager.notifyExchangeClose(result.closed.exitPrice, result.closed.reason);
+        }
+      }
+    }
+  }
+
+  /** Fetch open positions and algo orders from Binance on startup; restore state if found. */
+  private async reconcileExchangePosition(adapter: BinanceLiveExecutionAdapter): Promise<void> {
+    if (!this.execution.binanceRestClient) return;
+    const client = this.execution.binanceRestClient;
+    const sym = this.pairs.binanceSymbol;
+    try {
+      const [positions, algoOrders] = await Promise.all([
+        getPositionRisk(client, sym),
+        getOpenAlgoOrders(client, sym),
+      ]);
+      const pos = positions.find(
+        (p) => p.symbol.toUpperCase() === sym && Math.abs(Number(p.positionAmt)) > 0,
+      );
+      if (!pos) {
+        this.log.info('startup_no_open_position', { sym });
+        return;
+      }
+
+      const internalId = adapter.restoreFromExchange(pos, algoOrders);
+      if (!internalId) return;
+
+      const side: Side = Number(pos.positionAmt) > 0 ? 'LONG' : 'SHORT';
+      const entryPrice = Number(pos.entryPrice);
+      const qty = Math.abs(Number(pos.positionAmt));
+      const { takeProfit, stopLoss } = this.risk.targets(entryPrice, side);
+
+      this.positionManager.restoreFromExchange({
+        side,
+        entryPrice,
+        quantity: qty,
+        pair: this.pairs.coindcxPair,
+        orderId: internalId,
+        takeProfit,
+        stopLoss,
+        openedAt: pos.updateTime || Date.now(),
+        notionalUsdt: entryPrice * qty,
+      });
+    } catch (e) {
+      this.log.warn('startup_reconcile_failed', { err: (e as Error).message });
+    }
+  }
+
+  private onPrivateAccountUpdate(event: AccountUpdate): void {
+    const positions = event.a?.P ?? [];
+    for (const p of positions) {
+      if (p.s.toUpperCase() !== this.pairs.binanceSymbol) continue;
+      this.log.info('binance_account_update', {
+        symbol: p.s,
+        positionAmt: p.pa,
+        entryPrice: p.ep,
+        unrealizedPnl: p.up,
+        marginType: p.mt,
+      });
+    }
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {

@@ -32,6 +32,11 @@ export function routeForStream(product: BinanceProductWs, stream: string): Binan
   return 'market';
 }
 
+/** Returns true when stream carries liquidation order events. */
+export function isForceOrderStream(stream: string): boolean {
+  return stream.toLowerCase().includes('@forceorder');
+}
+
 export function groupStreamsByRoute(
   product: BinanceProductWs,
   streams: Iterable<string>,

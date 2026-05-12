@@ -20,6 +20,8 @@ export interface CloseEvent {
 
 export class PositionManager {
   private current: (Position & { orderId: string }) | null = null;
+  /** Prevents concurrent close attempts for the same position. */
+  private closingInProgress = false;
   private placeOrderDisabledLogged = false;
 
   constructor(
@@ -111,13 +113,21 @@ export class PositionManager {
   }
 
   async close(exitPrice: number, reason: CloseReason): Promise<CloseEvent | null> {
+    // Guard: if already closing (concurrent onMark ticks), skip.
+    if (this.closingInProgress) return null;
     const pos = this.current;
     if (!pos) return null;
+
+    this.closingInProgress = true;
+    // Nullify BEFORE the async adapter call so concurrent onMark ticks see no position.
+    this.current = null;
 
     try {
       await this.adapter.closePosition(pos.orderId, reason);
     } catch (e) {
       this.log.warn('exit_order_failed', { err: (e as Error).message });
+    } finally {
+      this.closingInProgress = false;
     }
 
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
@@ -131,8 +141,68 @@ export class PositionManager {
       netUsdt: pnl.netUsdt,
       netInr: pnl.netInr,
     });
-    this.current = null;
     return event;
+  }
+
+  /**
+   * Called by the orchestrator when exchange algo TP/SL fills (ORDER_TRADE_UPDATE FILLED).
+   * Skips the adapter call — the exchange already closed the position on its side.
+   */
+  async notifyExchangeClose(exitPrice: number, reason: CloseReason): Promise<CloseEvent | null> {
+    const pos = this.current;
+    if (!pos) return null;
+    // Clear state without calling adapter (exchange already did the close).
+    this.current = null;
+    this.closingInProgress = false;
+    const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
+    const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
+    this.appendCsv(event);
+    this.log.info('position_closed', {
+      side: pos.side,
+      entry: pos.entryPrice,
+      exit: exitPrice,
+      reason,
+      netUsdt: pnl.netUsdt,
+      netInr: pnl.netInr,
+      source: 'exchange',
+    });
+    return event;
+  }
+
+  /**
+   * Restore position state after bot restart (startup reconciliation).
+   * Called after binance-adapter.restoreFromExchange() returns the internalId.
+   */
+  restoreFromExchange(params: {
+    side: Side;
+    entryPrice: number;
+    quantity: number;
+    pair: string;
+    orderId: string;
+    takeProfit: number;
+    stopLoss: number;
+    openedAt: number;
+    notionalUsdt: number;
+  }): void {
+    if (this.current) return;
+    this.current = {
+      side: params.side,
+      entryPrice: params.entryPrice,
+      quantity: params.quantity,
+      takeProfit: params.takeProfit,
+      stopLoss: params.stopLoss,
+      openedAt: params.openedAt,
+      pair: params.pair,
+      notionalUsdt: params.notionalUsdt,
+      marginInr: 0,
+      orderId: params.orderId,
+    };
+    this.log.info('position_restored', {
+      side: params.side,
+      entry: params.entryPrice,
+      qty: params.quantity,
+      orderId: params.orderId,
+    });
   }
 
   private appendCsv(event: CloseEvent): void {

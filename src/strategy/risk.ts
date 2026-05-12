@@ -29,8 +29,10 @@ export class RiskManager {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
       return { quantity: 0, notionalUsdt: 0, marginInr: 0, marginUsdt: 0 };
     }
-    const marginInr = this.cfg.CAPITAL_PER_TRADE_INR;
-    const marginUsdt = marginInr / this.cfg.INR_PER_USDT;
+    // USDT-native path (preferred for Binance USDT-M Futures).
+    const usdtCap = this.cfg.CAPITAL_PER_TRADE_USDT;
+    const marginUsdt = usdtCap > 0 ? usdtCap : this.cfg.CAPITAL_PER_TRADE_INR / this.cfg.INR_PER_USDT;
+    const marginInr = marginUsdt * this.cfg.INR_PER_USDT;
     const notionalUsdt = marginUsdt * this.cfg.LEVERAGE;
     const rawQty = notionalUsdt / entryPrice;
     const quantity = floorToStep(rawQty, stepSize);
