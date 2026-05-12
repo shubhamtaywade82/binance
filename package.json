@@ -21,7 +21,8 @@
     "futures:ltp:rest": "ts-node scripts/futures-ltp-rest.ts",
     "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts",
     "dashboard": "ts-node src/dashboard/server.ts",
-    "ui:dev": "vite"
+    "ui:dev": "vite",
+    "readiness:binance": "ts-node scripts/binance-live-readiness.ts"
   },
   "engines": {
     "node": ">=20"
