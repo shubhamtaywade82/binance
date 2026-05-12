@@ -47,4 +47,13 @@ describe('MultiTimeframeStore', () => {
     expect(s.closes('X', '1m')).toEqual([1, 2]);
     expect(s.latest('X', '1m')!.openTime).toBe(2);
   });
+
+  it('prependOlder merges sorted and dedupes openTime (series row wins over same-time older fetch)', () => {
+    const s = new MultiTimeframeStore();
+    s.seed('X', '1m', [c(2000, 2), c(3000, 3)]);
+    s.prependOlder('X', '1m', [c(500, 5), c(2000, 99)]);
+    const out = s.getSeries('X', '1m');
+    expect(out.map((x) => x.openTime)).toEqual([500, 2000, 3000]);
+    expect(out.find((x) => x.openTime === 2000)!.close).toBe(2);
+  });
 });

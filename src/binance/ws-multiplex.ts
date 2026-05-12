@@ -64,7 +64,7 @@ export interface ForceOrderEvent {
 export interface MultiplexCallbacks {
   onKline?: (symbol: string, interval: string, candle: Candle, isFinal: boolean) => void;
   onBookTicker?: (t: BookTickerEvent) => void;
-  /** Spot 24h ticker — last price in `c`, same LTP role as USD-M mark. */
+  /** Spot / USD-M 24h ticker — last price in `c` (LTP; not mark on futures). */
   on24hrTicker?: (u: { symbol: string; lastPrice: number; eventTime: number }) => void;
   onDepthPartial?: (p: DepthPartialEvent) => void;
   onDepthDiff?: (d: DepthDiff & { s: string }) => void;
@@ -121,7 +121,8 @@ export function buildStreamList(opts: MultiplexOptions): string[] {
   for (const s of opts.symbols) {
     const lower = s.toLowerCase();
     for (const tf of opts.timeframes) out.push(`${lower}@kline_${tf}`);
-    if (opts.product === 'spot') out.push(`${lower}@ticker`);
+    /** Last traded price (`c`) — USD-M needs this for LTP; mark stream alone is not last. */
+    if (opts.product === 'spot' || opts.product === 'usdm') out.push(`${lower}@ticker`);
     if (opts.useBookTicker) out.push(`${lower}@bookTicker`);
     if (opts.depthLevels > 0) out.push(`${lower}@depth${opts.depthLevels}@${opts.depthSpeed}`);
     else out.push(`${lower}@depth@${opts.depthSpeed}`);

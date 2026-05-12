@@ -23,20 +23,23 @@ const cfg = loadConfig();
 const PORT = 4001;
 const SYMBOL = cfg.BINANCE_SYMBOL.toUpperCase();
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
-/** Must match UI candle buffer (`buildSnapshot` slice) so MACD/EMA align with price bars. */
-const CHART_BARS_5M = 300;
-/** Snapshot / chart candle counts per timeframe — indicator arrays must use the same slice. */
-const CHART_BARS: Record<string, number> = {
-  '5m': CHART_BARS_5M,
-  '15m': 200,
-  '1h': 100,
-  '4h': 60,
-  '1d': 30,
-};
+/** Cap in-memory series per timeframe (Binance lazy-load fills up to this). */
+const MAX_STORE_BARS = 100_000;
+/**
+ * Indicators are computed on the last N bars only (MACD/EMA cost); candles carry full history.
+ * Client aligns indicator series to the tail of the candle array.
+ */
+const INDICATOR_MAX_BARS = 3000;
+/**
+ * Binance emits many in-progress klines/sec. Recomputing MACD/EMA for all TFs + broadcasting on
+ * every tick blocks the Node event loop so candle `kline` WS messages arrive late vs TradingView.
+ * Final bars still refresh indicators immediately.
+ */
+const INDICATOR_BROADCAST_MIN_MS = 150;
 const DEPTH_LEVELS = 20;
 
 // ─── State ──────────────────────────────────────────────────────────────────
-const store = new MultiTimeframeStore({ maxBars: 1000 });
+const store = new MultiTimeframeStore({ maxBars: MAX_STORE_BARS });
 const orderbook = new LocalOrderBook();
 const tradeTape = new AggTradeTape(500);
 
@@ -48,6 +51,8 @@ let lastAiBriefAt = 0;
 let aiBriefInflight = false;
 let aiBriefWarnedNoModel = false;
 let aiBriefWarnedCloudKey = false;
+
+let indicatorDebounce: ReturnType<typeof setTimeout> | null = null;
 
 function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
   if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
@@ -119,12 +124,67 @@ function broadcast(msg: object): void {
   }
 }
 
+const historyLoadInflight = new Set<string>();
+
+async function handleClientLoadHistory(ws: WebSocket, tf: string, oldestOpenTime: number): Promise<void> {
+  if (!TIMEFRAMES.includes(tf)) return;
+  if (!Number.isFinite(oldestOpenTime) || oldestOpenTime < 1) {
+    ws.send(JSON.stringify({ type: 'history_error', tf, error: 'invalid oldestOpenTime' }));
+    return;
+  }
+  if (historyLoadInflight.has(tf)) {
+    ws.send(JSON.stringify({ type: 'history_busy', tf }));
+    return;
+  }
+  historyLoadInflight.add(tf);
+  try {
+    const endTime = Math.floor(oldestOpenTime) - 1;
+    const bars = await fetchBinanceKlines(cfg, {
+      symbol: SYMBOL,
+      interval: tf,
+      limit: 1500,
+      endTime,
+    });
+    const older = bars.filter((c) => c.openTime < oldestOpenTime);
+    if (older.length === 0) {
+      broadcast({ type: 'history_end', tf });
+      return;
+    }
+    store.prependOlder(SYMBOL, tf, older);
+    const c5m = store.getSeries(SYMBOL, '5m');
+    const c15m = store.getSeries(SYMBOL, '15m');
+    const c1h = store.getSeries(SYMBOL, '1h');
+    const c4h = store.getSeries(SYMBOL, '4h');
+    const c1d = store.getSeries(SYMBOL, '1d');
+    broadcast({ type: 'history_chunk', tf, candles: older });
+    broadcast({ type: 'indicators', ...computeIndicators(c5m, c15m, c1h, c4h, c1d) });
+  } catch (e) {
+    ws.send(
+      JSON.stringify({ type: 'history_error', tf, error: (e as Error).message }),
+    );
+  } finally {
+    historyLoadInflight.delete(tf);
+  }
+}
+
 wss.on('connection', (ws) => {
   console.log(`[dashboard] client connected (total: ${wss.clients.size})`);
 
   // Send current snapshot on connect
   const snap = buildSnapshot();
   ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
+
+  ws.on('message', (raw) => {
+    let msg: { type?: string; tf?: string; oldestOpenTime?: number };
+    try {
+      msg = JSON.parse(String(raw)) as typeof msg;
+    } catch {
+      return;
+    }
+    if (msg.type !== 'load_history' || typeof msg.tf !== 'string') return;
+    const oldest = Number(msg.oldestOpenTime);
+    void handleClientLoadHistory(ws, msg.tf, oldest);
+  });
 
   ws.on('close', () => {
     console.log(`[dashboard] client disconnected (total: ${wss.clients.size})`);
@@ -146,11 +206,11 @@ function buildSnapshot() {
     bestBid,
     bestAsk,
     candles: {
-      '5m': candles5m.slice(-CHART_BARS['5m']),
-      '15m': candles15m.slice(-CHART_BARS['15m']),
-      '1h': candles1h.slice(-CHART_BARS['1h']),
-      '4h': candles4h.slice(-CHART_BARS['4h']),
-      '1d': candles1d.slice(-CHART_BARS['1d']),
+      '5m': candles5m,
+      '15m': candles15m,
+      '1h': candles1h,
+      '4h': candles4h,
+      '1d': candles1d,
     },
     depth: orderbook.topLevels(DEPTH_LEVELS),
     trades: tradeTape.recent(60),
@@ -197,7 +257,6 @@ function computeIndicators(
 ): Record<string, ChartTfBundle> {
   const out: Record<string, ChartTfBundle> = {};
   for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) {
-    const cap = CHART_BARS[tf];
     const series =
       tf === '5m'
         ? c5m
@@ -208,10 +267,40 @@ function computeIndicators(
             : tf === '4h'
               ? c4h
               : c1d;
-    const bundle = chartIndicatorBundle(series.slice(-cap));
+    const tail = series.length <= INDICATOR_MAX_BARS ? series : series.slice(-INDICATOR_MAX_BARS);
+    const bundle = chartIndicatorBundle(tail);
     if (bundle) out[tf] = bundle;
   }
   return out;
+}
+
+function broadcastLatestIndicators(): void {
+  const c5m = store.getSeries(SYMBOL, '5m');
+  const c15m = store.getSeries(SYMBOL, '15m');
+  const c1h = store.getSeries(SYMBOL, '1h');
+  const c4h = store.getSeries(SYMBOL, '4h');
+  const c1d = store.getSeries(SYMBOL, '1d');
+  broadcast({ type: 'indicators', ...computeIndicators(c5m, c15m, c1h, c4h, c1d) });
+}
+
+/** Partial klines: trailing debounce. Final kline: flush immediately. */
+function scheduleIndicatorBroadcast(isFinal: boolean): void {
+  const flush = (): void => {
+    indicatorDebounce = null;
+    broadcastLatestIndicators();
+  };
+
+  if (isFinal) {
+    if (indicatorDebounce != null) {
+      clearTimeout(indicatorDebounce);
+      indicatorDebounce = null;
+    }
+    flush();
+    return;
+  }
+
+  if (indicatorDebounce != null) clearTimeout(indicatorDebounce);
+  indicatorDebounce = setTimeout(flush, INDICATOR_BROADCAST_MIN_MS);
 }
 
 // ─── Signal Computation ──────────────────────────────────────────────────────
@@ -306,15 +395,8 @@ const multiplex = new BinanceMultiplexWs(
 
       broadcast({ type: 'kline', tf, candle, isFinal });
 
-      // Overlays must match the active TF chart — recompute all cached TFs on every kline tick.
       if (['5m', '15m', '1h', '4h', '1d'].includes(tf)) {
-        const c5m = store.getSeries(SYMBOL, '5m');
-        const c15m = store.getSeries(SYMBOL, '15m');
-        const c1h = store.getSeries(SYMBOL, '1h');
-        const c4h = store.getSeries(SYMBOL, '4h');
-        const c1d = store.getSeries(SYMBOL, '1d');
-        const indicators = computeIndicators(c5m, c15m, c1h, c4h, c1d);
-        broadcast({ type: 'indicators', ...indicators });
+        scheduleIndicatorBroadcast(isFinal);
       }
 
       if (isFinal && (tf === '5m' || tf === '15m')) {
@@ -379,7 +461,7 @@ async function seedHistory(): Promise<void> {
   console.log('[dashboard] Seeding historical candles...');
   await Promise.allSettled(
     TIMEFRAMES.map(async (tf) => {
-      const limit = tf === '1d' ? 60 : tf === '4h' ? 120 : tf === '1h' ? 200 : 500;
+      const limit = 1500;
       try {
         const bars = await fetchBinanceKlines(cfg, { symbol: SYMBOL, interval: tf, limit });
         store.seed(SYMBOL, tf, bars);

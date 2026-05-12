@@ -96,4 +96,26 @@ export class MultiTimeframeStore {
   private cap(arr: Candle[]): void {
     if (arr.length > this.maxBars) arr.splice(0, arr.length - this.maxBars);
   }
+
+  /**
+   * Merges older candles before the current series (REST backfill / lazy history).
+   * On duplicate `openTime`, the value already in the series wins over the incoming fetch
+   * (stable sort of `[...older, ...existing]` keeps the live bar last for that timestamp).
+   */
+  prependOlder(symbol: string, tf: string, older: Candle[]): void {
+    if (!older.length) return;
+    const arr = this.bucket(symbol, tf);
+    const merged = [...older, ...arr].sort((a, b) => a.openTime - b.openTime);
+    const dedup: Candle[] = [];
+    for (const c of merged) {
+      if (dedup.length && dedup[dedup.length - 1]!.openTime === c.openTime) {
+        dedup[dedup.length - 1] = c;
+      } else {
+        dedup.push(c);
+      }
+    }
+    arr.length = 0;
+    arr.push(...dedup);
+    this.cap(arr);
+  }
 }

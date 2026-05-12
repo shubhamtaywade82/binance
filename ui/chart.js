@@ -1,6 +1,6 @@
 /**
  * chart.js — TradingView Lightweight Charts integration
- * Handles: candlestick, volume, EMA 9/21/50, supertrend, MACD
+ * Handles: candlestick, volume, EMA 9/21/50, supertrend
  */
 
 const COLORS = {
@@ -43,56 +43,86 @@ const CHART_OPTS = {
     secondsVisible: false,
   },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
-  handleScale:  { mouseWheel: true, pinch: true },
+  handleScale: { mouseWheel: true, pinch: true },
 };
 
-/** Keep in sync with `CHART_BARS` in `src/dashboard/server.ts` (snapshot + indicator slice). */
-const TF_MAX_BARS = {
-  '5m': 300,
-  '15m': 200,
-  '1h': 100,
-  '4h': 60,
-  '1d': 30,
+/** Match `MAX_STORE_BARS` in `src/dashboard/server.ts` — trim client cache same as server. */
+const MAX_STORE_BARS = 100_000;
+/** When the left edge of the visible window is within this many bars of the oldest loaded bar, request older history. */
+const LAZY_HISTORY_EDGE_BARS = 24;
+const LAZY_HISTORY_DEBOUNCE_MS = 400;
+
+/**
+ * Default visible bar count per TF (most recent bars only).
+ * `fitContent()` on the full 1500×5m seed (~5d) pins the left edge to the dataset start, so EMA
+ * warm up from too little history and look wildly wrong vs TradingView (which keeps deep history
+ * left of the viewport). Showing the tail matches typical TV zoom and stabilizes overlays.
+ */
+const DEFAULT_VISIBLE_BARS = {
+  '5m': 220, // ~18h 20m
+  '15m': 160, // ~40h
+  '1h': 120, // ~5d
+  '4h': 90, // ~15d
+  '1d': 120, // ~4mo
 };
 
 export class ChartManager {
-  constructor(containerId, macdContainerId) {
+  constructor(containerId) {
     this.containerId = containerId;
-    this.macdContainerId = macdContainerId;
     this.chart = null;
-    this.macdChart = null;
     this.candleSeries = null;
     this.volumeSeries = null;
     this.ema9Series = null;
     this.ema21Series = null;
     this.ema50Series = null;
     this.stSeries = null;
-    this.macdHistSeries = null;
-    this.macdLineSeries = null;
-    this.macdSignalSeries = null;
     this.currentTf = '5m';
-    this.candleMap = {};   // tf → candle[] cache
-    this.indicMap = {};    // tf → indicators cache
+    this.candleMap = {}; // tf → candle[] cache
+    this.indicMap = {}; // tf → indicators cache
     this.showEma = true;
     this.showVolume = true;
     this.showSupertrend = true;
     this._resizeObs = null;
+    /** @type {Record<string, boolean>} */
+    this._historyExhausted = {};
+    /** @type {Record<string, boolean>} */
+    this._historyLoading = {};
     /** @type {number | null} */
-    this._macdAlignRaf = null;
+    this._historyDebounceTimer = null;
+    /** @type {((p: { tf: string; oldestOpenTime: number }) => void) | null} */
+    this._onNeedHistory = null;
+  }
+
+  /**
+   * @param {(p: { tf: string; oldestOpenTime: number }) => void} fn
+   */
+  setHistoryRequestHandler(fn) {
+    this._onNeedHistory = fn;
+  }
+
+  getCurrentTf() {
+    return this.currentTf;
+  }
+
+  /** Last close for `tf` after the same merge/dedupe used for candles (source of truth for LTP vs chart). */
+  getLastCloseForTf(tf) {
+    const raw = this.candleMap[tf];
+    if (!raw?.length) return null;
+    const candles = this._sortedDedupeCandles(raw);
+    const last = candles[candles.length - 1];
+    const c = Number(last?.close);
+    return Number.isFinite(c) ? c : null;
   }
 
   init() {
     const container = document.getElementById(this.containerId);
-    const macdEl    = document.getElementById(this.macdContainerId);
 
-    // Main chart
     this.chart = LightweightCharts.createChart(container, {
       ...CHART_OPTS,
       width: container.clientWidth,
       height: container.clientHeight,
     });
 
-    // Candle series
     this.candleSeries = this.chart.addCandlestickSeries({
       upColor: COLORS.bull,
       downColor: COLORS.bear,
@@ -102,7 +132,6 @@ export class ChartManager {
       wickDownColor: COLORS.bear,
     });
 
-    // Volume (histogram on price scale 'volume')
     this.volumeSeries = this.chart.addHistogramSeries({
       color: COLORS.bull,
       priceFormat: { type: 'volume' },
@@ -111,45 +140,26 @@ export class ChartManager {
     });
     this.chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } });
 
-    // EMA series
-    this.ema9Series  = this._addLineSeries(COLORS.ema9, 1, 'EMA9');
+    this.ema9Series = this._addLineSeries(COLORS.ema9, 1, 'EMA9');
     this.ema21Series = this._addLineSeries(COLORS.ema21, 1, 'EMA21');
     this.ema50Series = this._addLineSeries(COLORS.ema50, 1.5, 'EMA50');
 
-    // Supertrend — dashed line
     this.stSeries = this.chart.addLineSeries({
-      color: COLORS.bull, lineWidth: 1.5, lineStyle: 2,
+      color: COLORS.bull,
+      lineWidth: 1.5,
+      lineStyle: 2,
       priceScaleId: 'right',
-      lastValueVisible: false, priceLineVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
 
-    // MACD chart — horizontal scroll off so X-axis only follows the price chart (see time sync below).
-    this.macdChart = LightweightCharts.createChart(macdEl, {
-      ...CHART_OPTS,
-      width: macdEl.clientWidth,
-      height: macdEl.clientHeight,
-      rightPriceScale: { ...CHART_OPTS.rightPriceScale, scaleMargins: { top: 0.1, bottom: 0.1 } },
-      timeScale: { ...CHART_OPTS.timeScale, visible: false },
-      handleScroll: false,
+    this.chart.timeScale().subscribeVisibleLogicalRangeChange((lr) => {
+      this._maybeRequestHistory(lr);
     });
-    this.macdHistSeries = this.macdChart.addHistogramSeries({
-      color: COLORS.accent, priceScaleId: 'right',
-      lastValueVisible: false, priceLineVisible: false,
-    });
-    this.macdLineSeries   = this._addLineSeries(COLORS.ema9, 1,   'MACD line', this.macdChart);
-    this.macdSignalSeries = this._addLineSeries(COLORS.bear, 1, 'Signal line', this.macdChart);
 
-    // Keep MACD time axis locked to the price chart (pan/zoom fires logical and/or time range events).
-    const syncMacd = (timeRangeFromEvent) => this._scheduleMacdTimeAlign(timeRangeFromEvent);
-    this.chart.timeScale().subscribeVisibleTimeRangeChange((r) => syncMacd(r));
-    this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => syncMacd());
-
-    // Resize
     this._resizeObs = new ResizeObserver(() => this._handleResize());
     this._resizeObs.observe(container);
-    this._resizeObs.observe(macdEl);
 
-    // Toggle controls
     document.getElementById('toggle-ema').addEventListener('change', (e) => {
       this.showEma = e.target.checked;
       this._toggleEma(this.showEma);
@@ -163,11 +173,14 @@ export class ChartManager {
       this.stSeries.applyOptions({ visible: this.showSupertrend });
     });
 
-    // TF tabs
     document.querySelectorAll('.tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.tf-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
+        if (this._historyDebounceTimer != null) {
+          clearTimeout(this._historyDebounceTimer);
+          this._historyDebounceTimer = null;
+        }
         this.currentTf = btn.dataset.tf;
         this._loadTf(this.currentTf);
       });
@@ -177,9 +190,11 @@ export class ChartManager {
   _addLineSeries(color, width, title, targetChart) {
     const c = targetChart ?? this.chart;
     return c.addLineSeries({
-      color, lineWidth: width,
+      color,
+      lineWidth: width,
       priceScaleId: 'right',
-      lastValueVisible: false, priceLineVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
       title,
     });
   }
@@ -192,7 +207,7 @@ export class ChartManager {
 
   /**
    * Extend line-like series to `lastTime` so the plot reaches the last candle (LW needs a point
-   * at that time; we forward-fill the last value). Used for EMA / MACD lines / ST.
+   * at that time; we forward-fill the last value). Used for EMA / supertrend.
    */
   _padLineLikeToLastTime(points, lastTime) {
     if (!points?.length || !Number.isFinite(lastTime)) return points ?? [];
@@ -202,82 +217,108 @@ export class ChartManager {
     return [...sorted, { ...last, time: lastTime }];
   }
 
-  /**
-   * Add zero-height histogram bars at candle opens after the last real MACD bar through the last
-   * candle so the MACD pane shares the same time keys as the price chart (fixes horizontal gap).
-   */
-  _padMacdHistogramToLastCandle(histData, candleTime, n) {
-    if (!histData?.length || n < 1) return histData ?? [];
-    const sorted = [...histData].sort((a, b) => a.time - b.time);
-    const tMaxHist = sorted[sorted.length - 1].time;
-    const tEnd = candleTime(n - 1);
-    if (tMaxHist >= tEnd) return sorted;
-    const have = new Set(sorted.map((p) => p.time));
-    const ghost = 'rgba(136,146,164,0.1)';
-    const extra = [];
-    for (let i = 0; i < n; i++) {
-      const t = candleTime(i);
-      if (t <= tMaxHist) continue;
-      if (t > tEnd) break;
-      if (!have.has(t)) extra.push({ time: t, value: 0, color: ghost });
-    }
-    return [...sorted, ...extra].sort((a, b) => a.time - b.time);
-  }
-
   _clearOverlaySeries() {
     if (!this.ema9Series) return;
     this.ema9Series.setData([]);
     this.ema21Series.setData([]);
     this.ema50Series.setData([]);
     this.stSeries.setData([]);
-    this.macdHistSeries.setData([]);
-    this.macdLineSeries.setData([]);
-    this.macdSignalSeries.setData([]);
   }
 
-  /**
-   * @param { { from?: unknown; to?: unknown } | null | undefined } [rangeFromEvent] Visible time range
-   *   from `subscribeVisibleTimeRangeChange`, if any; otherwise we read `getVisibleRange()` after layout.
-   */
-  _scheduleMacdTimeAlign(rangeFromEvent) {
-    if (this._macdAlignRaf != null) cancelAnimationFrame(this._macdAlignRaf);
-    this._macdAlignRaf = requestAnimationFrame(() => {
-      this._macdAlignRaf = null;
-      if (!this.chart || !this.macdChart) return;
-      const hasEventRange =
-        rangeFromEvent &&
-        rangeFromEvent.from != null &&
-        rangeFromEvent.to != null;
-      const range = hasEventRange ? rangeFromEvent : this.chart.timeScale().getVisibleRange();
-      if (range && range.from != null && range.to != null) {
-        try {
-          this.macdChart.timeScale().setVisibleRange(range);
-        } catch {
-          this.macdChart.timeScale().fitContent();
-        }
-      } else {
-        this.macdChart.timeScale().fitContent();
+  _maybeRequestHistory(logicalRange) {
+    if (!this._onNeedHistory || !logicalRange) return;
+    const from = logicalRange.from;
+    if (from == null || !Number.isFinite(from)) return;
+    const tf = this.currentTf;
+    if (this._historyExhausted[tf] || this._historyLoading[tf]) return;
+    if (from > LAZY_HISTORY_EDGE_BARS) return;
+
+    const raw = this.candleMap[tf];
+    if (!raw?.length) return;
+    const sorted = this._sortedDedupeCandles(raw);
+    if (!sorted.length) return;
+    const oldestOpenTime = sorted[0].openTime;
+
+    if (this._historyDebounceTimer != null) clearTimeout(this._historyDebounceTimer);
+    this._historyDebounceTimer = setTimeout(() => {
+      this._historyDebounceTimer = null;
+      if (this._historyExhausted[tf] || this._historyLoading[tf]) return;
+      this._historyLoading[tf] = true;
+      this._onNeedHistory({ tf, oldestOpenTime });
+    }, LAZY_HISTORY_DEBOUNCE_MS);
+  }
+
+  onHistoryChunk(tf, olderCandles) {
+    if (!olderCandles?.length) {
+      this._historyLoading[tf] = false;
+      return;
+    }
+    const existing = this.candleMap[tf] ?? [];
+    const beforeLen = this._sortedDedupeCandles(existing).length;
+    let logicalBefore = null;
+    if (tf === this.currentTf && this.chart) {
+      logicalBefore = this.chart.timeScale().getVisibleLogicalRange();
+    }
+    const merged = this._sortedDedupeCandles([...olderCandles, ...existing]);
+    const trimmed = merged.length > MAX_STORE_BARS ? merged.slice(-MAX_STORE_BARS) : merged;
+    this.candleMap[tf] = trimmed;
+    this._historyLoading[tf] = false;
+
+    if (tf !== this.currentTf) return;
+
+    const afterLen = trimmed.length;
+    const delta = afterLen - beforeLen;
+    const candles = trimmed;
+    const bars = candles.map((c) => ({
+      time: Math.floor(c.openTime / 1000),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    }));
+    const vols = candles.map((c) => ({
+      time: Math.floor(c.openTime / 1000),
+      value: c.volume,
+      color: c.close >= c.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+    }));
+    this.candleSeries.setData(bars);
+    this.volumeSeries.setData(vols);
+    this._paintIndicators(tf);
+    if (
+      delta > 0 &&
+      logicalBefore &&
+      logicalBefore.from != null &&
+      logicalBefore.to != null &&
+      Number.isFinite(logicalBefore.from) &&
+      Number.isFinite(logicalBefore.to)
+    ) {
+      try {
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: logicalBefore.from + delta,
+          to: logicalBefore.to + delta,
+        });
+      } catch {
+        /* ignore */
       }
-      // Same visible time range is not enough: each chart derives barSpacing / rightOffset from its
-      // own series, so the last candle and last MACD point can sit at different x positions.
-      const mainTs = this.chart.timeScale().options();
-      this.macdChart.timeScale().applyOptions({
-        barSpacing: mainTs.barSpacing,
-        rightOffset: mainTs.rightOffset,
-        minBarSpacing: mainTs.minBarSpacing,
-        fixLeftEdge: mainTs.fixLeftEdge,
-        fixRightEdge: mainTs.fixRightEdge,
-        rightBarStaysOnScroll: mainTs.rightBarStaysOnScroll,
-      });
-    });
+    }
+  }
+
+  onHistoryEnd(tf) {
+    this._historyExhausted[tf] = true;
+    this._historyLoading[tf] = false;
+  }
+
+  onHistoryError(tf) {
+    this._historyLoading[tf] = false;
+  }
+
+  onHistoryBusy(tf) {
+    this._historyLoading[tf] = false;
   }
 
   _handleResize() {
-    const c  = document.getElementById(this.containerId);
-    const mc = document.getElementById(this.macdContainerId);
-    if (c)  this.chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
-    if (mc) this.macdChart.applyOptions({ width: mc.clientWidth, height: mc.clientHeight });
-    this._scheduleMacdTimeAlign();
+    const c = document.getElementById(this.containerId);
+    if (c) this.chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
   }
 
   /**
@@ -291,7 +332,17 @@ export class ChartManager {
     for (const c of sorted) {
       const t = Number(c.openTime);
       if (!Number.isFinite(t)) continue;
-      const row = { ...c, openTime: t };
+      const row = {
+        ...c,
+        openTime: t,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number(c.volume),
+      };
+      if (![row.open, row.high, row.low, row.close].every(Number.isFinite)) continue;
+      if (!Number.isFinite(row.volume)) row.volume = 0;
       if (t === prevT) out[out.length - 1] = row;
       else {
         out.push(row);
@@ -307,15 +358,40 @@ export class ChartManager {
       ...CHART_OPTS.timeScale,
       timeVisible: !dailyLike,
       secondsVisible: false,
+      rightOffset: 10,
+      fixLeftEdge: false,
+      fixRightEdge: false,
+      rightBarStaysOnScroll: true,
     };
     this.chart.applyOptions({ timeScale: ts });
-    this.macdChart.applyOptions({ timeScale: { ...ts, visible: false } });
+  }
+
+  /**
+   * Zoom to the latest candles so indicator warm-up uses bars to the left of the viewport
+   * (Binance/TradingView-style), instead of stretching the entire seed with the oldest bar on the left.
+   */
+  _fitDefaultVisibleRange(tf, barCount) {
+    if (!this.chart || barCount < 1) return;
+    const want = DEFAULT_VISIBLE_BARS[tf] ?? 160;
+    if (barCount <= want) {
+      this.chart.timeScale().fitContent();
+    } else {
+      const from = barCount - want;
+      const to = barCount - 1;
+      try {
+        this.chart.timeScale().setVisibleLogicalRange({ from, to });
+      } catch {
+        this.chart.timeScale().fitContent();
+      }
+    }
   }
 
   /** Ingest snapshot (initial load) */
   onSnapshot({ candles, indicators }) {
+    this._historyExhausted = {};
+    this._historyLoading = {};
     this.candleMap = candles ?? {};
-    this.indicMap  = indicators ?? {};
+    this.indicMap = indicators ?? {};
     this._loadTf(this.currentTf);
   }
 
@@ -323,10 +399,17 @@ export class ChartManager {
   onKline(tf, candle, _isFinal) {
     if (!this.candleMap[tf]) this.candleMap[tf] = [];
     const arr = this.candleMap[tf];
-    const cap = TF_MAX_BARS[tf];
     const ot = Number(candle.openTime);
     if (!Number.isFinite(ot)) return;
-    const row = { ...candle, openTime: ot };
+    const row = {
+      ...candle,
+      openTime: ot,
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close),
+      volume: Number(candle.volume),
+    };
 
     if (arr.length === 0) {
       arr.push(row);
@@ -345,21 +428,34 @@ export class ChartManager {
         }
       }
     }
-    if (cap != null && arr.length > cap) arr.splice(0, arr.length - cap);
+    if (arr.length > MAX_STORE_BARS) arr.splice(0, arr.length - MAX_STORE_BARS);
 
     if (tf !== this.currentTf) return;
+
+    const sorted = this._sortedDedupeCandles(arr);
+    const tail = sorted[sorted.length - 1];
+    /** `update()` only matches LW semantics for the latest bar; any other edit needs full setData. */
+    if (!tail || tail.openTime !== row.openTime) {
+      this._loadTf(tf);
+      return;
+    }
 
     const t = Math.floor(row.openTime / 1000);
     if (!Number.isFinite(t)) return;
     const bar = { time: t, open: row.open, high: row.high, low: row.low, close: row.close };
     if (![bar.open, bar.high, bar.low, bar.close].every(Number.isFinite)) return;
-    this.candleSeries.update(bar);
-
-    this.volumeSeries.update({
-      time: t,
-      value: row.volume,
-      color: row.close >= row.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
-    });
+    const vol = Number.isFinite(row.volume) ? row.volume : 0;
+    try {
+      this.candleSeries.update(bar);
+      this.volumeSeries.update({
+        time: t,
+        value: vol,
+        color: row.close >= row.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+      });
+    } catch (e) {
+      console.warn('[chart] candle update failed, resyncing series', e);
+      this._loadTf(tf);
+    }
   }
 
   onIndicators(indicators) {
@@ -383,7 +479,10 @@ export class ChartManager {
 
     const bars = candles.map((c) => ({
       time: Math.floor(c.openTime / 1000),
-      open: c.open, high: c.high, low: c.low, close: c.close,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
     }));
     const vols = candles.map((c) => ({
       time: Math.floor(c.openTime / 1000),
@@ -395,7 +494,7 @@ export class ChartManager {
     this.volumeSeries.setData(vols);
 
     this._paintIndicators(tf);
-    this.chart.timeScale().fitContent();
+    this._fitDefaultVisibleRange(tf, candles.length);
   }
 
   _paintIndicators(tf) {
@@ -416,16 +515,13 @@ export class ChartManager {
 
     const n = candles.length;
 
-    /** Map indicator points to candle times (server sends same length as candles for 5m, or tail-aligned). */
     const candleTime = (idx) => Math.floor(candles[idx].openTime / 1000);
     const tLastCandle = candleTime(n - 1);
 
     const toLine = (arr) => {
       if (!arr || arr.length === 0) return [];
       const aligned =
-        arr.length === n
-          ? arr.map((v, i) => ({ v, i }))
-          : arr.map((v, j) => ({ v, i: n - arr.length + j }));
+        arr.length === n ? arr.map((v, i) => ({ v, i })) : arr.map((v, j) => ({ v, i: n - arr.length + j }));
       return aligned
         .map(({ v, i }) => {
           if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
@@ -439,7 +535,6 @@ export class ChartManager {
     if (ind.ema21) this.ema21Series.setData(this._padLineLikeToLastTime(toLine(ind.ema21), tLastCandle));
     if (ind.ema50) this.ema50Series.setData(this._padLineLikeToLastTime(toLine(ind.ema50), tLastCandle));
 
-    // Supertrend — dir/value aligned to same indices as candles when lengths match
     if (ind.supertrend?.value && ind.supertrend?.dir) {
       const vals = ind.supertrend.value;
       const dirs = ind.supertrend.dir;
@@ -455,36 +550,5 @@ export class ChartManager {
       const stPadded = this._padLineLikeToLastTime(stData, tLastCandle);
       this.stSeries.setData(stPadded);
     }
-
-    // MACD — must share candle indices or the lower pane lags / leaves a blank gap on the right
-    if (ind.macdHist) {
-      const mh = ind.macdHist;
-      const histRaw = mh
-        .map((v, j) => {
-          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
-          const i = mh.length === n ? j : n - mh.length + j;
-          if (i < 0 || i >= n) return null;
-          const col = v >= 0 ? 'rgba(0,230,118,0.7)' : 'rgba(255,23,68,0.7)';
-          return { time: candleTime(i), value: v, color: col };
-        })
-        .filter(Boolean);
-      const histSorted = [...histRaw].sort((a, b) => a.time - b.time);
-      const histData = this._padMacdHistogramToLastCandle(histSorted, candleTime, n);
-      this.macdHistSeries.setData(histData);
-
-      const lastHist = histSorted[histSorted.length - 1];
-      if (lastHist) {
-        const el = document.getElementById('macd-value-display');
-        if (el) el.textContent = `${lastHist.value >= 0 ? '+' : ''}${lastHist.value.toFixed(4)}`;
-      }
-    }
-    if (ind.macdLine) {
-      this.macdLineSeries.setData(this._padLineLikeToLastTime(toLine(ind.macdLine), tLastCandle));
-    }
-    if (ind.macdSignal) {
-      this.macdSignalSeries.setData(this._padLineLikeToLastTime(toLine(ind.macdSignal), tLastCandle));
-    }
-
-    this._scheduleMacdTimeAlign();
   }
 }

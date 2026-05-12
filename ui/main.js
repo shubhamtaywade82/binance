@@ -11,7 +11,7 @@ import { SignalsPanel }     from './signals.js';
 import { SentimentGauge }  from './sentiment.js';
 
 // ─── Module instances ─────────────────────────────────────────────────────
-const chart    = new ChartManager('chart-container', 'macd-container');
+const chart    = new ChartManager('chart-container');
 const obMgr    = new OrderBookManager();
 const depthCh  = new DepthChart('depth-canvas');
 const tape     = new TradeTapeManager();
@@ -140,8 +140,22 @@ function dispatch(msg) {
       // Feed trade tape
       if (msg.trades?.length) tape.loadHistory(msg.trades);
 
-      // Header
-      updateHeader({ price: msg.mark, mark: msg.mark, bid: msg.bestBid, ask: msg.bestAsk });
+      // Header — LTP must match chart series (not mark); USD-M had no @ticker before, so LTP could stick on mark.
+      const tf = chart.getCurrentTf();
+      const fromChart = chart.getLastCloseForTf(tf);
+      const series = msg.candles?.[tf];
+      const lastSnap =
+        Array.isArray(series) && series.length ? Number(series[series.length - 1].close) : null;
+      const ltp =
+        fromChart ??
+        (Number.isFinite(lastSnap) ? lastSnap : null) ??
+        (Number.isFinite(msg.mark) ? msg.mark : null);
+      updateHeader({
+        price: ltp,
+        mark: Number.isFinite(msg.mark) ? msg.mark : null,
+        bid: msg.bestBid,
+        ask: msg.bestAsk,
+      });
 
       // Compute initial signals from snapshot data
       if (msg.signals) signals.update(msg.signals);
@@ -157,6 +171,10 @@ function dispatch(msg) {
     /* ── Kline ─ */
     case 'kline': {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
+      if (msg.tf === chart.getCurrentTf()) {
+        const p = chart.getLastCloseForTf(chart.getCurrentTf());
+        if (p != null) updateHeader({ price: p });
+      }
       break;
     }
 
@@ -167,15 +185,35 @@ function dispatch(msg) {
       break;
     }
 
-    /* ── Mark Price ─ */
-    case 'mark_price': {
-      updateHeader({ price: msg.price, mark: msg.price });
+    case 'history_chunk': {
+      chart.onHistoryChunk(msg.tf, msg.candles);
       break;
     }
 
-    /* ── 24hr Ticker ─ */
+    case 'history_end': {
+      chart.onHistoryEnd(msg.tf);
+      break;
+    }
+
+    case 'history_error': {
+      chart.onHistoryError(msg.tf);
+      break;
+    }
+
+    case 'history_busy': {
+      chart.onHistoryBusy(msg.tf);
+      break;
+    }
+
+    /* ── Mark Price (futures mark ≠ last; do not put mark on the main LTP slot) ─ */
+    case 'mark_price': {
+      updateHeader({ mark: msg.price });
+      break;
+    }
+
+    /* ── 24hr Ticker (exchange last `c`; USD-M now subscribes so LTP is not mark-only) ─ */
     case 'ticker_24hr': {
-      updateHeader({ price: msg.price });
+      if (Number.isFinite(msg.price)) updateHeader({ price: msg.price });
       const changeEl = document.getElementById('hdr-change');
       if (changeEl && msg.priceChange != null) {
         const pct = ((msg.priceChange / (msg.price - msg.priceChange)) * 100).toFixed(2);
@@ -205,14 +243,13 @@ function dispatch(msg) {
     /* ── Agg Trade ─ */
     case 'agg_trade': {
       tape.addTrade(msg);
+      if (Number.isFinite(msg.price)) updateHeader({ price: msg.price });
       break;
     }
 
     /* ── Strategy Signals ─ */
     case 'signals': {
       signals.update(msg);
-      // Update chart header with ref price
-      if (msg.refPrice) updateHeader({ price: msg.refPrice });
       break;
     }
 
@@ -256,5 +293,10 @@ function imbalanceRatio(bids = [], asks = []) {
 // ─── Init ─────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   chart.init();
+  chart.setHistoryRequestHandler(({ tf, oldestOpenTime }) => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'load_history', tf, oldestOpenTime }));
+    }
+  });
   connect();
 });

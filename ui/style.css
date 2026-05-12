@@ -176,7 +176,6 @@ body::before {
 }
 
 #chart-panel  { flex: 1; min-height: 0; }
-#macd-panel   { height: 110px; }
 #book-panel   { flex: 1; min-height: 0; }
 #depth-panel  { height: 160px; }
 #signals-panel{ flex: 1; min-height: 0; overflow: hidden; }
@@ -199,7 +198,7 @@ body::before {
 .toggle-ctrl:hover { color: var(--text-secondary); }
 
 /* ── Chart Container ─────────────────────────────────────────────────────── */
-#chart-container, #macd-container {
+#chart-container {
   flex: 1; min-height: 0;
   position: relative;
 }

@@ -41,6 +41,7 @@ describe('buildStreamList', () => {
     expect(list).toEqual([
       'solusdt@kline_15m',
       'solusdt@kline_1h',
+      'solusdt@ticker',
       'solusdt@bookTicker',
       'solusdt@depth@100ms',
       'solusdt@aggTrade',
@@ -111,7 +112,7 @@ describe('BinanceMultiplexWs', () => {
     pub.emit('open');
 
     expect(sockets.map((s) => s.url).sort()).toEqual([
-      'wss://fstream.binance.com/market/stream?streams=solusdt@kline_15m/solusdt@aggTrade/solusdt@markPrice@1s',
+      'wss://fstream.binance.com/market/stream?streams=solusdt@kline_15m/solusdt@ticker/solusdt@aggTrade/solusdt@markPrice@1s',
       'wss://fstream.binance.com/public/stream?streams=solusdt@bookTicker/solusdt@depth20@100ms',
     ]);
 
