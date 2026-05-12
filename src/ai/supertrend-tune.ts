@@ -4,6 +4,7 @@
  */
 
 import { Ollama } from 'ollama';
+import { formatOllamaRequestError } from './ollama-request-error';
 import { supertrend } from '../strategy/indicators';
 import type { Candle } from '../types';
 
@@ -180,7 +181,6 @@ export const requestSupertrendTune = async (cfg: OllamaSupertrendTuneConfig, sna
     }
     return { params, error: null };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { params: null, error: msg };
+    return { params: null, error: formatOllamaRequestError(e, cfg.timeoutMs) };
   }
 }

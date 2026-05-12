@@ -4,6 +4,7 @@
  */
 
 import { Ollama } from 'ollama';
+import { formatOllamaRequestError } from './ollama-request-error';
 
 export interface MarketSignalsSnapshot {
   symbol: string;
@@ -111,7 +112,6 @@ export const requestMarketBrief = async (cfg: OllamaBriefConfig, snapshot: Marke
     }
     return { text, error: null };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { text: null, error: msg };
+    return { text: null, error: formatOllamaRequestError(e, cfg.timeoutMs) };
   }
 }

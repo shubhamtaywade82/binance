@@ -300,7 +300,7 @@ export const AppConfigSchema = z.object({
     .pipe(z.number().int().min(30).max(3600)),
   AI_REQUEST_TIMEOUT_MS: z
     .union([z.number(), z.string()])
-    .default(25_000)
+    .default(60_000)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(3000).max(120_000)),
   /**
