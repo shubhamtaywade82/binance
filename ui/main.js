@@ -1,13 +1,15 @@
 /**
  * Dashboard bootstrap & WebSocket client.
  * WS URL: `VITE_DASHBOARD_WS_URL` if set.
+ * LTP step decimals: `VITE_LTP_DECIMAL_PLACES` (see `ui/ltp-precision.js`).
  * Dev (Vite): same host + path `/__dashboard_ws` (proxied to the bot on 127.0.0.1:4001 — see vite.config.js).
  * Production build: `ws(s)://` page host + `VITE_DASHBOARD_WS_PORT` (default 4001).
  * The WebSocket is served by the bot when `DASHBOARD_ENABLED=true`.
  */
 
 import { escapeHtml, renderAiBriefMarkdown } from './ai-brief-render.js';
-import { ChartManager }     from './chart.js';
+import { ChartManager } from './chart.js';
+import { fmtLtpDisplay } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
@@ -172,7 +174,7 @@ function dispatch(msg) {
         lastPrice = ltp;
         if (chart.getLastCloseForTf(chart.getCurrentTf()) == null) {
           const priceEl = document.getElementById('hdr-price');
-          if (priceEl) priceEl.textContent = ltp.toFixed(4);
+          if (priceEl) priceEl.textContent = fmtLtpDisplay(ltp);
         }
       }
 
@@ -388,7 +390,7 @@ window.addEventListener('DOMContentLoaded', () => {
       priceEl.textContent = '—';
       return;
     }
-    priceEl.textContent = p.toFixed(4);
+    priceEl.textContent = fmtLtpDisplay(p);
   });
   chart.setTfChangeHandler((tf) => {
     if (ws?.readyState === WebSocket.OPEN) {

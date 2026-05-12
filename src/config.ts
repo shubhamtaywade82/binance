@@ -137,7 +137,7 @@ export const AppConfigSchema = z.object({
   SMC_CONFLUENCE_TARGET_PCT: numFromString(0.015),
 
   /**
-   * Multi-timeframe SMC stack (5m execution close, 15m/1h/4h/1d filters). Same engine for SOL/ETH/BTC presets.
+   * Multi-timeframe SMC stack (5m execution close, 15m/1h/4h/1d filters; optional 1m for finer chart/stream).
    * Legacy env: `USE_SOL_MTF_STRATEGY` still honored if set (overrides default when present).
    */
   USE_SOL_MTF_STRATEGY: z.preprocess((val) => {
@@ -171,7 +171,7 @@ export const AppConfigSchema = z.object({
   /** Comma-separated kline timeframes for the multiplex feed. First = execution (LTF) close. */
   BINANCE_TIMEFRAMES: z
     .string()
-    .default('5m,15m,1h,4h,1d')
+    .default('5m,15m,1m,1h,4h,1d')
     .transform((s) =>
       s
         .split(',')

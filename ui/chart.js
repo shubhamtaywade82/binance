@@ -3,17 +3,7 @@
  * Handles: candlestick, volume, EMA 9/21/50, supertrend
  */
 import { createChart, LineStyle } from 'lightweight-charts';
-
-/** LTP line steps by one 0.0001 tick per animation frame (same-bar updates only). */
-const LTP_TICK_SCALE = 10_000;
-
-function ltpTicksFromPrice(p) {
-  return Math.round(Number(p) * LTP_TICK_SCALE);
-}
-
-function ltpPriceFromTicks(ticks) {
-  return ticks / LTP_TICK_SCALE;
-}
+import { ltpPriceFromTicks, ltpTicksFromPrice } from './ltp-precision.js';
 
 const COLORS = {
   bull: '#00e676',
@@ -73,6 +63,7 @@ const LAZY_HISTORY_DEBOUNCE_MS = 400;
  * left of the viewport). Showing the tail matches typical TV zoom and stabilizes overlays.
  */
 const DEFAULT_VISIBLE_BARS = {
+  '1m': 300, // ~5h
   '5m': 220, // ~18h 20m
   '15m': 160, // ~40h
   '1h': 120, // ~5d
@@ -81,7 +72,7 @@ const DEFAULT_VISIBLE_BARS = {
 };
 
 /** Tab order when picking a default TF (must match `.tf-btn` data-tf). */
-const TF_TAB_ORDER = ['5m', '15m', '1h', '4h', '1d'];
+const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 export class ChartManager {
   constructor(containerId) {
@@ -109,7 +100,7 @@ export class ChartManager {
     this._onNeedHistory = null;
     /** Custom dashed LTP line (series default price line jumps on each tick). */
     this._ltpPriceLine = null;
-    /** Integer price × 10_000 — sequential steps ±1 toward `_ltpTargetTicks`. */
+    /** Integer price × 1_000 — sequential steps ±1 toward `_ltpTargetTicks`. */
     this._ltpDisplayTicks = null;
     /** @type {number | null} */
     this._ltpTargetTicks = null;
@@ -121,6 +112,8 @@ export class ChartManager {
     this._availableTfSet = null;
     /** @type {((price: number | null) => void) | null} */
     this._ltpDisplayListener = null;
+    /** Server truth for the in-progress bar (chart close follows `_ltpDisplayTicks`). */
+    this._formingBarCtx = null;
   }
 
   /** @param {(tf: string) => void} fn */
@@ -203,6 +196,7 @@ export class ChartManager {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
     this._ltpDisplayTicks = null;
+    this._formingBarCtx = null;
     if (this._ltpPriceLine && this.candleSeries) {
       try {
         this.candleSeries.removePriceLine(this._ltpPriceLine);
@@ -211,6 +205,57 @@ export class ChartManager {
       }
     }
     this._ltpPriceLine = null;
+  }
+
+  /** @param {object | null} tail coerced candle (openTime, OHLC, volume). */
+  _setFormingBarCtxFromQuote(tail) {
+    if (!tail) {
+      this._formingBarCtx = null;
+      return;
+    }
+    const t = Math.floor(tail.openTime / 1000);
+    if (!Number.isFinite(t)) {
+      this._formingBarCtx = null;
+      return;
+    }
+    this._formingBarCtx = {
+      time: t,
+      open: tail.open,
+      high: tail.high,
+      low: tail.low,
+      closeTruth: tail.close,
+      volume: tail.volume,
+      openTime: tail.openTime,
+    };
+  }
+
+  _refreshFormingCandleFromCtx() {
+    const ctx = this._formingBarCtx;
+    if (!ctx || !this.candleSeries) return;
+    const dispTicks = this._ltpDisplayTicks;
+    if (dispTicks == null || !Number.isFinite(dispTicks)) return;
+    const truthTicks = ltpTicksFromPrice(ctx.closeTruth);
+    const dispClose = ltpPriceFromTicks(dispTicks);
+    const { time, open, high: hTrue, low: lTrue, closeTruth } = ctx;
+    if (![time, open, hTrue, lTrue, closeTruth].every(Number.isFinite)) return;
+
+    const bar =
+      dispTicks === truthTicks
+        ? { time, open, high: hTrue, low: lTrue, close: closeTruth }
+        : {
+            time,
+            open,
+            high: Math.max(open, hTrue, dispClose),
+            low: Math.min(open, lTrue, dispClose),
+            close: dispClose,
+          };
+    try {
+      this.candleSeries.update(bar);
+    } catch (e) {
+      console.warn('[chart] forming candle update failed, resyncing series', e);
+      this._formingBarCtx = null;
+      this._loadTf(this.currentTf);
+    }
   }
 
   _ensureLtpPriceLine(initialPrice) {
@@ -237,12 +282,14 @@ export class ChartManager {
       return;
     }
     if (this._ltpDisplayTicks === this._ltpTargetTicks) {
+      this._refreshFormingCandleFromCtx();
       return;
     }
     this._ltpDisplayTicks += this._ltpDisplayTicks < this._ltpTargetTicks ? 1 : -1;
     const p = ltpPriceFromTicks(this._ltpDisplayTicks);
     this._ltpPriceLine.applyOptions({ price: p });
     this._emitLtpDisplay(p);
+    this._refreshFormingCandleFromCtx();
     if (this._ltpDisplayTicks !== this._ltpTargetTicks) {
       this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
     }
@@ -268,6 +315,7 @@ export class ChartManager {
       axisLabelColor: COLORS.bear,
     });
     this._emitLtpDisplay(p);
+    this._refreshFormingCandleFromCtx();
   }
 
   _smoothLtpTo(price) {
@@ -289,11 +337,13 @@ export class ChartManager {
       this._ensureLtpPriceLine(p);
       this._ltpPriceLine.applyOptions({ price: p });
       this._emitLtpDisplay(p);
+      this._refreshFormingCandleFromCtx();
       return;
     }
     if (this._ltpRafId == null) {
       this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
     }
+    this._refreshFormingCandleFromCtx();
   }
 
   init() {
@@ -484,6 +534,7 @@ export class ChartManager {
       }
     }
     const rawClose = candles[candles.length - 1]?.close;
+    this._setFormingBarCtxFromQuote(candles[candles.length - 1] ?? null);
     this._snapLtpTo(Number.isFinite(rawClose) ? rawClose : NaN);
   }
 
@@ -655,11 +706,10 @@ export class ChartManager {
 
     const t = Math.floor(tail.openTime / 1000);
     if (!Number.isFinite(t)) return;
-    const bar = { time: t, open: tail.open, high: tail.high, low: tail.low, close: tail.close };
-    if (![bar.open, bar.high, bar.low, bar.close].every(Number.isFinite)) return;
+    if (![tail.open, tail.high, tail.low, tail.close].every(Number.isFinite)) return;
     const vol = tail.volume;
+    this._setFormingBarCtxFromQuote(tail);
     try {
-      this.candleSeries.update(bar);
       this.volumeSeries.update({
         time: t,
         value: vol,
@@ -668,6 +718,7 @@ export class ChartManager {
       const sameBar = prevLastOpenTime != null && tail.openTime === prevLastOpenTime;
       if (sameBar) this._smoothLtpTo(tail.close);
       else this._snapLtpTo(tail.close);
+      this._refreshFormingCandleFromCtx();
     } catch (e) {
       console.warn('[chart] candle update failed, resyncing series', e);
       this._loadTf(tf);
@@ -713,6 +764,7 @@ export class ChartManager {
 
     this._paintIndicators(tf);
     this._fitDefaultVisibleRange(tf, candles.length);
+    this._setFormingBarCtxFromQuote(candles[candles.length - 1] ?? null);
     const lastClose = candles[candles.length - 1]?.close;
     this._snapLtpTo(Number.isFinite(lastClose) ? lastClose : NaN);
   }

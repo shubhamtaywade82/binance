@@ -46,7 +46,7 @@ checks.push({
   details: `Resolved symbol: ${symbol}`,
 });
 
-const timeframes = (process.env.BINANCE_TIMEFRAMES || '5m,15m,1h,4h,1d').split(',').map((s) => s.trim());
+const timeframes = (process.env.BINANCE_TIMEFRAMES || '5m,15m,1m,1h,4h,1d').split(',').map((s) => s.trim());
 checks.push({
   name: 'Multi-timeframe stack',
   ok: ['5m', '15m', '1h', '4h', '1d'].every((tf) => timeframes.includes(tf)),

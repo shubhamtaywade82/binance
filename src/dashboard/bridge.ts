@@ -20,7 +20,7 @@ import type { Candle } from '../types';
 import { requestMarketBrief, type MarketSignalsSnapshot } from '../ai/market-brief';
 import type { AppLogger } from '../logging/app-logger';
 
-const CHART_TFS = ['5m', '15m', '1h', '4h', '1d'] as const;
+const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
 
 const INDICATOR_MAX_BARS = 3000;
@@ -112,6 +112,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   }
 
   function defaultChartRefTf(): string {
+    if (chartTfBroadcastSet.has(ltfTf)) return ltfTf;
     return chartTfsOnStream[0] ?? ltfTf;
   }
 
@@ -331,6 +332,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       bestBid,
       bestAsk,
       candles: {
+        '1m': rows['1m'],
         '5m': rows['5m'],
         '15m': rows['15m'],
         '1h': rows['1h'],

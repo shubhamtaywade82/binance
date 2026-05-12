@@ -145,7 +145,7 @@ export class HybridOrchestrator {
       for (const req of SOL_MTF_TIMEFRAMES) {
         if (!subscribed.has(req)) {
           throw new Error(
-            `USE_SOL_MTF_STRATEGY requires BINANCE_TIMEFRAMES to include ${req} (example: 5m,15m,1h,4h,1d).`,
+            `USE_SOL_MTF_STRATEGY requires BINANCE_TIMEFRAMES to include ${req} (example: 5m,15m,1m,1h,4h,1d).`,
           );
         }
       }
