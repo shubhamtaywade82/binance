@@ -39,6 +39,8 @@ npm run dev:once     # single run, no file watcher
 
 ```bash
 npm run check
+# optional: print Binance live-readiness checklist for SOL 1.5% setup
+npm run readiness:binance
 ```
 
 ## Trading asset (single knob)
@@ -46,6 +48,18 @@ npm run check
 Set **`TRADING_ASSET=sol`** | **`eth`** | **`btc`** — the app fills **`BINANCE_SYMBOL`** (USD-M on Binance) and **`COINDCX_PAIR`** from presets in [`src/config/asset-presets.ts`](src/config/asset-presets.ts). Use **`TRADING_ASSET=custom`** only if you set both symbols manually in `.env`.
 
 Defaults include **`BINANCE_TIMEFRAMES=5m,15m,1h,4h,1d`**, **`USE_SOL_MTF_STRATEGY=true`** (multi-timeframe SMC stack), **`TP_PRICE_PCT=0.015`**, **`SL_PRICE_PCT=0.01`**, **`APP_LOG_PATH=./logs/app.ndjson`** — override only when needed.
+
+## Live readiness workflow (SOL 1.5% futures)
+
+Run this before flipping any live credentials:
+
+```bash
+npm run readiness:binance
+```
+
+The command validates core settings used by the SMC 1.5% playbook (execution guardrails, symbol, MTF timeframes, TP/SL percentages, and Binance endpoint roots) and prints flagged items with remediation notes.
+
+> Important: this repository still executes **live** orders only through the CoinDCX adapter. Binance futures order APIs are available as clients/utilities, but are not wired as the active execution adapter in `EXECUTION_MODE`.
 
 ## Strategy
 
