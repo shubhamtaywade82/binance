@@ -5,7 +5,7 @@ export interface ResolvedPairMap {
   coindcxPair: string;
 }
 
-export function resolvePairMap(cfg: AppConfig): ResolvedPairMap {
+export const resolvePairMap = (cfg: AppConfig): ResolvedPairMap => {
   return {
     binanceSymbol: cfg.BINANCE_SYMBOL.trim().toUpperCase(),
     coindcxPair: cfg.COINDCX_PAIR.trim(),

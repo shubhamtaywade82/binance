@@ -13,21 +13,17 @@ export interface OrderBookMicroSnapshot {
   asks: { price: number; qty: number }[];
 }
 
-function notionalSum(levels: PriceLevel[]): number {
+const notionalSum = (levels: PriceLevel[]): number => {
   let s = 0;
   for (const x of levels) s += x.price * x.qty;
   return s;
 }
 
-function cloneLevels(levels: PriceLevel[], max: number): { price: number; qty: number }[] {
+const cloneLevels = (levels: PriceLevel[], max: number): { price: number; qty: number }[] => {
   return levels.slice(0, max).map((x) => ({ price: x.price, qty: x.qty }));
 }
 
-export function snapshotFromOrderBook(
-  ob: LocalOrderBook,
-  depthLevels: number,
-  ts: number,
-): OrderBookMicroSnapshot | null {
+export const snapshotFromOrderBook = (ob: LocalOrderBook, depthLevels: number, ts: number): OrderBookMicroSnapshot | null => {
   if (!ob.isBootstrapped()) return null;
   const n = Math.max(1, Math.min(50, depthLevels));
   const { bids, asks } = ob.topLevels(n);

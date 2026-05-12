@@ -125,17 +125,12 @@ export const CANDLE_THEMES = [
 
 const DEFAULT_ID = CANDLE_THEMES[0].id;
 
-/**
- * @param {string | null | undefined} id
- * @returns {CandleTheme}
- */
-export function getCandleTheme(id) {
+export const getCandleTheme = (id) => {
   const found = CANDLE_THEMES.find((t) => t.id === id);
   return found ?? CANDLE_THEMES[0];
 }
 
-/** @returns {string} */
-export function readStoredCandleThemeId() {
+export const readStoredCandleThemeId = () => {
   try {
     const raw = localStorage.getItem(CANDLE_THEME_STORAGE_KEY);
     if (typeof raw === 'string' && raw && CANDLE_THEMES.some((t) => t.id === raw)) return raw;
@@ -145,8 +140,7 @@ export function readStoredCandleThemeId() {
   return DEFAULT_ID;
 }
 
-/** @param {string} id */
-export function storeCandleThemeId(id) {
+export const storeCandleThemeId = (id) => {
   try {
     localStorage.setItem(CANDLE_THEME_STORAGE_KEY, id);
   } catch {

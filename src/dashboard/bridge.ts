@@ -86,7 +86,7 @@ export interface DashboardSignalsPayload {
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
 }
 
-export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: DashboardFeeds): DashboardBridge {
+export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: DashboardFeeds): DashboardBridge => {
   const {
     store,
     orderbook,
@@ -99,13 +99,13 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   const watchlistSymbols = multiplexBinanceSymbols(cfg);
   const watchlistSet = new Set(watchlistSymbols);
 
-  function obFor(sym: string): LocalOrderBook {
-    return marketFeeds?.book(sym) ?? orderbook;
-  }
+  const obFor = (sym: string): LocalOrderBook => {
+        return marketFeeds?.book(sym) ?? orderbook;
+      }
 
-  function tapeFor(sym: string): AggTradeTape {
-    return marketFeeds?.tape(sym) ?? tradeTape;
-  }
+  const tapeFor = (sym: string): AggTradeTape => {
+        return marketFeeds?.tape(sym) ?? tradeTape;
+      }
   const allowedHistoryTfs = new Set(cfg.BINANCE_TIMEFRAMES);
   const chartTfsOnStream = CHART_TFS.filter((tf) => cfg.BINANCE_TIMEFRAMES.includes(tf));
   const chartTfBroadcastSet = new Set<string>(chartTfsOnStream);
@@ -138,9 +138,9 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
   const indicatorDebounceBySym = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function getSym(client: WebSocket): string {
-    return watchSymbolByClient.get(client) ?? symbolUpper;
-  }
+  const getSym = (client: WebSocket): string => {
+        return watchSymbolByClient.get(client) ?? symbolUpper;
+      }
 
   const httpServer = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -153,450 +153,447 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let signalsTimer: ReturnType<typeof setInterval> | null = null;
 
-  function broadcast(msg: object): void {
-    const raw = JSON.stringify(msg);
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(raw);
-      }
-    }
-  }
-
-  function getCandlesByChartTf(sym: string): Record<ChartTf, Candle[]> {
-    const out = {} as Record<ChartTf, Candle[]>;
-    for (const tf of CHART_TFS) {
-      out[tf] = store.getSeries(sym, tf);
-    }
-    return out;
-  }
-
-  function defaultChartRefTf(): string {
-    if (chartTfBroadcastSet.has(ltfTf)) return ltfTf;
-    return chartTfsOnStream[0] ?? ltfTf;
-  }
-
-  function firstOpenWebSocket(): WebSocket | undefined {
-    for (const c of wss.clients) {
-      if (c.readyState === WebSocket.OPEN) return c;
-    }
-    return undefined;
-  }
-
-  function broadcastSignalsPerClient(): void {
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      const tf = refTfByClient.get(client) ?? defaultChartRefTf();
-      const payload = computeSignalsForClient(client, tf);
-      client.send(JSON.stringify({ type: 'signals', ...payload }));
-    }
-  }
-
-  function maybeRefreshAiBrief(signals: DashboardSignalsPayload, watchSymbol: string): void {
-    if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
-    if (!cfg.OLLAMA_MODEL.trim()) {
-      if (!aiBriefWarnedNoModel) {
-        aiBriefWarnedNoModel = true;
-        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
-      }
-      return;
-    }
-    if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
-      if (!aiBriefWarnedCloudKey) {
-        aiBriefWarnedCloudKey = true;
-        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
-      }
-      return;
-    }
-    const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
-    const now = Date.now();
-    if (aiBriefInflight) return;
-    if (lastAiBriefAt > 0 && now - lastAiBriefAt < gapMs) return;
-
-    const snapshot: MarketSignalsSnapshot = {
-      symbol: watchSymbol,
-      refPrice: signals.refPrice,
-      refPriceTf: signals.refPriceTf,
-      htfBias: String(signals.htfBias),
-      ltfDirection: String(signals.ltfDirection),
-      ltfConfidence: signals.ltfConfidence,
-      ltfScore: signals.ltfScore,
-      ltfSignals: signals.ltfSignals,
-      smc: signals.smc,
-      solMtf: signals.solMtf,
-    };
-
-    aiBriefInflight = true;
-    void requestMarketBrief(
-      {
-        host: ollamaApiUrl(cfg.OLLAMA_TARGET),
-        model: cfg.OLLAMA_MODEL,
-        apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
-        timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
-      },
-      snapshot,
-    ).then((r) => {
-      aiBriefInflight = false;
-      lastAiBriefAt = Date.now();
-      if (r.text) {
-        broadcast({ type: 'ai_brief', text: r.text, ts: Date.now() });
-      } else if (r.error) {
-        broadcast({ type: 'ai_brief', error: r.error, ts: Date.now() });
-      }
-    });
-  }
-
-  function supertrendParamsForSymbol(sym: string): { period: number; mult: number } {
-    return supertrendParamsBySym.get(sym) ?? {
-      period: DEFAULT_SUPERTREND_PERIOD,
-      mult: DEFAULT_SUPERTREND_MULT,
-    };
-  }
-
-  function maybePeriodicSupertrendTune(sym: string): void {
-    if (!cfg.AI_SUPERTREND_TUNING_ENABLED) return;
-    if (!cfg.OLLAMA_MODEL.trim()) {
-      if (!stTuneWarnedNoModel) {
-        stTuneWarnedNoModel = true;
-        log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_MODEL empty' });
-      }
-      return;
-    }
-    if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
-      if (!stTuneWarnedCloudKey) {
-        stTuneWarnedCloudKey = true;
-        log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
-      }
-      return;
-    }
-    if (supertrendTuneInflight.has(sym)) return;
-    const gapMs = cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC * 1000;
-    const now = Date.now();
-    const last = lastSupertrendTuneAtBySym.get(sym) ?? 0;
-    if (last > 0 && now - last < gapMs) return;
-
-    const candles = store.getSeries(sym, ltfTf);
-    const cur = supertrendParamsForSymbol(sym);
-    const snapshot = buildSupertrendTuneSnapshot(sym, ltfTf, candles, cur.period, cur.mult);
-    if (!snapshot) return;
-
-    supertrendTuneInflight.add(sym);
-    void requestSupertrendTune(
-      {
-        host: ollamaApiUrl(cfg.OLLAMA_TARGET),
-        model: cfg.OLLAMA_MODEL,
-        apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
-        timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
-      },
-      snapshot,
-    ).then((r) => {
-      supertrendTuneInflight.delete(sym);
-      lastSupertrendTuneAtBySym.set(sym, Date.now());
-      if (r.params) {
-        supertrendParamsBySym.set(sym, { period: r.params.atrPeriod, mult: r.params.multiplier });
-        log.info('dashboard_supertrend_tune_applied', {
-          symbol: sym,
-          atrPeriod: r.params.atrPeriod,
-          multiplier: r.params.multiplier,
-        });
-        broadcastLatestIndicatorsForSymbol(sym);
-      } else if (r.error) {
-        log.warn('dashboard_supertrend_tune_failed', { symbol: sym, error: r.error });
-      }
-    });
-  }
-
-  function finiteSeries(arr: number[]): (number | null)[] {
-    return arr.map((v) => (Number.isFinite(v) ? v : null));
-  }
-
-  function chartIndicatorBundle(candles: Candle[], stPeriod: number, stMult: number) {
-    if (candles.length < 2) return null;
-    const closes = candles.map((c) => c.close);
-    const m = macd(closes);
-    const st = supertrend(candles, stPeriod, stMult);
-    return {
-      ema9: finiteSeries(ema(closes, 9)),
-      ema21: finiteSeries(ema(closes, 21)),
-      ema50: finiteSeries(ema(closes, 50)),
-      rsi: finiteSeries(rsi(closes, 14)),
-      macdHist: finiteSeries(m.hist),
-      macdLine: finiteSeries(m.macd),
-      macdSignal: finiteSeries(m.signal),
-      supertrend: {
-        value: finiteSeries(st.value),
-        dir: st.dir,
-      },
-    };
-  }
-
-  type ChartTfBundle = NonNullable<ReturnType<typeof chartIndicatorBundle>>;
-
-  function computeIndicatorsFromRows(
-    rows: Record<ChartTf, Candle[]>,
-    sym: string,
-  ): Record<string, ChartTfBundle> {
-    const st = supertrendParamsForSymbol(sym);
-    const out: Record<string, ChartTfBundle> = {};
-    for (const tf of CHART_TFS) {
-      const series = rows[tf];
-      const tail = series.length <= INDICATOR_MAX_BARS ? series : series.slice(-INDICATOR_MAX_BARS);
-      const bundle = chartIndicatorBundle(tail, st.period, st.mult);
-      if (bundle) out[tf] = bundle;
-    }
-    return out;
-  }
-
-  function broadcastLatestIndicatorsForSymbol(sym: string): void {
-    const rows = getCandlesByChartTf(sym);
-    const payload = { type: 'indicators', ...computeIndicatorsFromRows(rows, sym) };
-    const raw = JSON.stringify(payload);
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      if (getSym(client) !== sym) continue;
-      client.send(raw);
-    }
-  }
-
-  function scheduleIndicatorBroadcastForSymbol(sym: string, isFinal: boolean): void {
-    const flush = (): void => {
-      indicatorDebounceBySym.delete(sym);
-      broadcastLatestIndicatorsForSymbol(sym);
-    };
-
-    if (isFinal) {
-      const pending = indicatorDebounceBySym.get(sym);
-      if (pending !== undefined) {
-        clearTimeout(pending);
-        indicatorDebounceBySym.delete(sym);
-      }
-      flush();
-      return;
-    }
-
-    const existing = indicatorDebounceBySym.get(sym);
-    if (existing !== undefined) clearTimeout(existing);
-    indicatorDebounceBySym.set(sym, setTimeout(flush, INDICATOR_BROADCAST_MIN_MS));
-  }
-
-  function refPriceFromTf(sym: string, tf: string): number | undefined {
-    const s = store.getSeries(sym, tf);
-    const c = s[s.length - 1]?.close;
-    return Number.isFinite(c) ? c : undefined;
-  }
-
-  function computeSignalsForSymbol(sym: string, requestedTf: string): DashboardSignalsPayload {
-    const rows = getCandlesByChartTf(sym);
-    const candlesLtf = store.getSeries(sym, ltfTf);
-    const candlesHtf = store.getSeries(sym, htfTf);
-    const effectiveTf = chartTfBroadcastSet.has(requestedTf) ? requestedTf : defaultChartRefTf();
-    const refSeries = store.getSeries(sym, effectiveTf);
-
-    const candlesTrend = refSeries.length >= 2 ? refSeries : candlesLtf;
-    const candlesSmc = refSeries.length >= SMC_MIN_BARS ? refSeries : candlesLtf;
-
-    const lastMark = lastMarkBySym.get(sym);
-    const refPrice =
-      refPriceFromTf(sym, effectiveTf) ??
-      refPriceFromTf(sym, ltfTf) ??
-      (typeof lastMark === 'number' && Number.isFinite(lastMark) ? lastMark : undefined) ??
-      0;
-
-    const htfBiasRaw = biasFromCandles(candlesHtf);
-    const ltfTrend = analyzeTrend(candlesTrend);
-    const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
-
-    let solMtf = null;
-    const c5 = rows['5m'];
-    const c1d = rows['1d'];
-    if (c5.length >= 30 && c1d.length >= 22) {
-      try {
-        solMtf = evaluateSolMtfStrategy({
-          candles: {
-            '1d': rows['1d'],
-            '4h': rows['4h'],
-            '1h': rows['1h'],
-            '15m': rows['15m'],
-            '5m': rows['5m'],
-          },
-          refPrice,
-          minConfidence: cfg.MIN_CONFIDENCE,
-        });
-      } catch {
-        /* insufficient bars */
-      }
-    }
-
-    let liquidityOrderBook: OrderBookMicroSnapshot | null = null;
-    let sweepCandleIndex: number | null = null;
-    let sweepCandleOpenTime: number | null = null;
-    const prSweep = smc.liquidity?.primaryRejection;
-    if (orderBookSnapshotRing && prSweep?.outcome === 'rejection' && prSweep.sweepBarIndex != null) {
-      const bar = candlesSmc[prSweep.sweepBarIndex];
-      if (bar) {
-        sweepCandleIndex = prSweep.sweepBarIndex;
-        sweepCandleOpenTime = bar.openTime;
-        const memoKey = `${sym}:${prSweep.sweepBarIndex}:${bar.openTime}`;
-        const cached = sweepOrderBookMemoBySym.get(sym);
-        if (cached?.key === memoKey) {
-          liquidityOrderBook = cached.snap;
-        } else {
-          const targetMs = bar.closeTime ?? bar.openTime;
-          const matchWin = 4000;
-          const snap = orderBookSnapshotRing.nearest(sym, targetMs, matchWin);
-          if (snap) {
-            liquidityOrderBook = snap;
-            sweepOrderBookMemoBySym.set(sym, { key: memoKey, snap });
-            orderBookSnapshotRing.releaseAfterSweep(sym, bar.openTime, matchWin);
-          } else {
-            sweepOrderBookMemoBySym.delete(sym);
+  const broadcast = (msg: object): void => {
+        const raw = JSON.stringify(msg);
+        for (const client of wss.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(raw);
           }
         }
       }
-    } else {
-      sweepOrderBookMemoBySym.delete(sym);
-    }
 
-    return {
-      refPrice,
-      refPriceTf: effectiveTf,
-      htfBias: String(htfBiasRaw),
-      ltfDirection: ltfTrend.direction,
-      ltfConfidence: +ltfTrend.confidence.toFixed(3),
-      ltfScore: ltfTrend.score,
-      ltfSignals: ltfTrend.signals,
-      smc: {
-        score: smc.score,
-        liquiditySweep: smc.liquiditySweep,
-        orderBlock: smc.orderBlock,
-        fvg: smc.fvg,
-        bos: smc.bos,
-        choch: smc.choch,
-        liquidity: smc.liquidity,
-        liquidityOrderBook,
-        sweepCandleIndex,
-        sweepCandleOpenTime,
-      },
-      solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
-      signalMeta: {
-        trendSeriesTf: effectiveTf,
-        htf: htfTf,
-        executionLtf: ltfTf,
-      },
-    };
-  }
+  const getCandlesByChartTf = (sym: string): Record<ChartTf, Candle[]> => {
+        const out = {} as Record<ChartTf, Candle[]>;
+        for (const tf of CHART_TFS) {
+          out[tf] = store.getSeries(sym, tf);
+        }
+        return out;
+      }
 
-  function computeSignalsForClient(client: WebSocket, requestedTf: string): DashboardSignalsPayload {
-    return computeSignalsForSymbol(getSym(client), requestedTf);
-  }
+  const defaultChartRefTf = (): string => {
+        if (chartTfBroadcastSet.has(ltfTf)) return ltfTf;
+        return chartTfsOnStream[0] ?? ltfTf;
+      }
 
-  function buildInstrumentPrecisionPayload(sym: string): {
-    instrumentPrecision: InstrumentPrecision | null;
-    ltpDecimalPlaces: number | null;
-    instrumentPrecisionBySymbol: Record<
-      string,
-      InstrumentPrecision & { ltpDecimalPlaces: number }
-    >;
-  } {
-    const instrumentPrecision = precisionBySymbol.get(sym) ?? null;
-    const ltpDecimalPlaces = instrumentPrecision
-      ? ltpDisplayDecimalPlaces(instrumentPrecision.tickSize)
-      : null;
-    const instrumentPrecisionBySymbol: Record<string, InstrumentPrecision & { ltpDecimalPlaces: number }> =
-      {};
-    for (const s of watchlistSymbols) {
-      const p = precisionBySymbol.get(s);
-      if (p)
-        instrumentPrecisionBySymbol[s] = {
-          ...p,
-          ltpDecimalPlaces: ltpDisplayDecimalPlaces(p.tickSize),
+  const firstOpenWebSocket = (): WebSocket | undefined => {
+        for (const c of wss.clients) {
+          if (c.readyState === WebSocket.OPEN) return c;
+        }
+        return undefined;
+      }
+
+  const broadcastSignalsPerClient = (): void => {
+        for (const client of wss.clients) {
+          if (client.readyState !== WebSocket.OPEN) continue;
+          const tf = refTfByClient.get(client) ?? defaultChartRefTf();
+          const payload = computeSignalsForClient(client, tf);
+          client.send(JSON.stringify({ type: 'signals', ...payload }));
+        }
+      }
+
+  const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string): void => {
+        if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
+        if (!cfg.OLLAMA_MODEL.trim()) {
+          if (!aiBriefWarnedNoModel) {
+            aiBriefWarnedNoModel = true;
+            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
+          }
+          return;
+        }
+        if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+          if (!aiBriefWarnedCloudKey) {
+            aiBriefWarnedCloudKey = true;
+            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+          }
+          return;
+        }
+        const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
+        const now = Date.now();
+        if (aiBriefInflight) return;
+        if (lastAiBriefAt > 0 && now - lastAiBriefAt < gapMs) return;
+
+        const snapshot: MarketSignalsSnapshot = {
+          symbol: watchSymbol,
+          refPrice: signals.refPrice,
+          refPriceTf: signals.refPriceTf,
+          htfBias: String(signals.htfBias),
+          ltfDirection: String(signals.ltfDirection),
+          ltfConfidence: signals.ltfConfidence,
+          ltfScore: signals.ltfScore,
+          ltfSignals: signals.ltfSignals,
+          smc: signals.smc,
+          solMtf: signals.solMtf,
         };
-    }
-    return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
-  }
 
-  function buildSnapshot(forWs: WebSocket): Record<string, unknown> {
-    const sym = getSym(forWs);
-    const rows = getCandlesByChartTf(sym);
-    const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
-    const signals = computeSignalsForClient(forWs, refTf);
-    const book = lastBookBySym.get(sym);
-    const mark = lastMarkBySym.get(sym);
-    const precPayload = buildInstrumentPrecisionPayload(sym);
-    return {
-      symbol: sym,
-      watchlist: watchlistSymbols,
-      executionSymbol: symbolUpper,
-      availableTimeframes: [...chartTfsOnStream],
-      mark: mark !== undefined ? mark : null,
-      bestBid: book?.bid ?? null,
-      bestAsk: book?.ask ?? null,
-      ...precPayload,
-      candles: {
-        '1m': rows['1m'],
-        '5m': rows['5m'],
-        '15m': rows['15m'],
-        '1h': rows['1h'],
-        '4h': rows['4h'],
-        '1d': rows['1d'],
-      },
-      depth: obFor(sym).topLevels(depthLevelsUi),
-      trades: tapeFor(sym).recent(60),
-      indicators: computeIndicatorsFromRows(rows, sym),
-      signals,
-    };
-  }
+        aiBriefInflight = true;
+        void requestMarketBrief(
+          {
+            host: ollamaApiUrl(cfg.OLLAMA_TARGET),
+            model: cfg.OLLAMA_MODEL,
+            apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+            timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+          },
+          snapshot,
+        ).then((r) => {
+          aiBriefInflight = false;
+          lastAiBriefAt = Date.now();
+          if (r.text) {
+            broadcast({ type: 'ai_brief', text: r.text, ts: Date.now() });
+          } else if (r.error) {
+            broadcast({ type: 'ai_brief', error: r.error, ts: Date.now() });
+          }
+        });
+      }
 
-  async function handleClientLoadHistory(ws: WebSocket, tf: string, oldestOpenTime: number): Promise<void> {
-    if (!allowedHistoryTfs.has(tf)) return;
-    if (!Number.isFinite(oldestOpenTime) || oldestOpenTime < 1) {
-      ws.send(JSON.stringify({ type: 'history_error', tf, error: 'invalid oldestOpenTime' }));
-      return;
-    }
-    const sym = getSym(ws);
-    const inflightKey = `${sym}|${tf}`;
-    if (historyLoadInflight.has(inflightKey)) {
-      ws.send(JSON.stringify({ type: 'history_busy', tf, symbol: sym }));
-      return;
-    }
-    historyLoadInflight.add(inflightKey);
-    try {
-      const endTime = Math.floor(oldestOpenTime) - 1;
-      const bars = await fetchBinanceKlines(cfg, {
-        symbol: sym,
-        interval: tf,
-        limit: 1500,
-        endTime,
-      });
-      const older = bars.filter((c) => c.openTime < oldestOpenTime);
-      if (older.length === 0) {
-        const endRaw = JSON.stringify({ type: 'history_end', tf, symbol: sym });
+  const supertrendParamsForSymbol = (sym: string): { period: number; mult: number } => {
+        return supertrendParamsBySym.get(sym) ?? {
+          period: DEFAULT_SUPERTREND_PERIOD,
+          mult: DEFAULT_SUPERTREND_MULT,
+        };
+      }
+
+  const maybePeriodicSupertrendTune = (sym: string): void => {
+        if (!cfg.AI_SUPERTREND_TUNING_ENABLED) return;
+        if (!cfg.OLLAMA_MODEL.trim()) {
+          if (!stTuneWarnedNoModel) {
+            stTuneWarnedNoModel = true;
+            log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_MODEL empty' });
+          }
+          return;
+        }
+        if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+          if (!stTuneWarnedCloudKey) {
+            stTuneWarnedCloudKey = true;
+            log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+          }
+          return;
+        }
+        if (supertrendTuneInflight.has(sym)) return;
+        const gapMs = cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC * 1000;
+        const now = Date.now();
+        const last = lastSupertrendTuneAtBySym.get(sym) ?? 0;
+        if (last > 0 && now - last < gapMs) return;
+
+        const candles = store.getSeries(sym, ltfTf);
+        const cur = supertrendParamsForSymbol(sym);
+        const snapshot = buildSupertrendTuneSnapshot(sym, ltfTf, candles, cur.period, cur.mult);
+        if (!snapshot) return;
+
+        supertrendTuneInflight.add(sym);
+        void requestSupertrendTune(
+          {
+            host: ollamaApiUrl(cfg.OLLAMA_TARGET),
+            model: cfg.OLLAMA_MODEL,
+            apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+            timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+          },
+          snapshot,
+        ).then((r) => {
+          supertrendTuneInflight.delete(sym);
+          lastSupertrendTuneAtBySym.set(sym, Date.now());
+          if (r.params) {
+            supertrendParamsBySym.set(sym, { period: r.params.atrPeriod, mult: r.params.multiplier });
+            log.info('dashboard_supertrend_tune_applied', {
+              symbol: sym,
+              atrPeriod: r.params.atrPeriod,
+              multiplier: r.params.multiplier,
+            });
+            broadcastLatestIndicatorsForSymbol(sym);
+          } else if (r.error) {
+            log.warn('dashboard_supertrend_tune_failed', { symbol: sym, error: r.error });
+          }
+        });
+      }
+
+  const finiteSeries = (arr: number[]): (number | null)[] => {
+        return arr.map((v) => (Number.isFinite(v) ? v : null));
+      }
+
+  const chartIndicatorBundle = (candles: Candle[], stPeriod: number, stMult: number) => {
+        if (candles.length < 2) return null;
+        const closes = candles.map((c) => c.close);
+        const m = macd(closes);
+        const st = supertrend(candles, stPeriod, stMult);
+        return {
+          ema9: finiteSeries(ema(closes, 9)),
+          ema21: finiteSeries(ema(closes, 21)),
+          ema50: finiteSeries(ema(closes, 50)),
+          rsi: finiteSeries(rsi(closes, 14)),
+          macdHist: finiteSeries(m.hist),
+          macdLine: finiteSeries(m.macd),
+          macdSignal: finiteSeries(m.signal),
+          supertrend: {
+            value: finiteSeries(st.value),
+            dir: st.dir,
+          },
+        };
+      }
+
+  type ChartTfBundle = NonNullable<ReturnType<typeof chartIndicatorBundle>>;
+
+  const computeIndicatorsFromRows = (rows: Record<ChartTf, Candle[]>, sym: string): Record<string, ChartTfBundle> => {
+        const st = supertrendParamsForSymbol(sym);
+        const out: Record<string, ChartTfBundle> = {};
+        for (const tf of CHART_TFS) {
+          const series = rows[tf];
+          const tail = series.length <= INDICATOR_MAX_BARS ? series : series.slice(-INDICATOR_MAX_BARS);
+          const bundle = chartIndicatorBundle(tail, st.period, st.mult);
+          if (bundle) out[tf] = bundle;
+        }
+        return out;
+      }
+
+  const broadcastLatestIndicatorsForSymbol = (sym: string): void => {
+        const rows = getCandlesByChartTf(sym);
+        const payload = { type: 'indicators', ...computeIndicatorsFromRows(rows, sym) };
+        const raw = JSON.stringify(payload);
         for (const client of wss.clients) {
           if (client.readyState !== WebSocket.OPEN) continue;
           if (getSym(client) !== sym) continue;
-          client.send(endRaw);
+          client.send(raw);
         }
-        return;
       }
-      store.prependOlder(sym, tf, older);
-      const chunkRaw = JSON.stringify({ type: 'history_chunk', symbol: sym, tf, candles: older });
-      const indRaw = JSON.stringify({
-        type: 'indicators',
-        ...computeIndicatorsFromRows(getCandlesByChartTf(sym), sym),
-      });
-      for (const client of wss.clients) {
-        if (client.readyState !== WebSocket.OPEN) continue;
-        if (getSym(client) !== sym) continue;
-        client.send(chunkRaw);
-        client.send(indRaw);
-        const tf0 = refTfByClient.get(client) ?? defaultChartRefTf();
-        client.send(JSON.stringify({ type: 'signals', ...computeSignalsForClient(client, tf0) }));
+
+  const scheduleIndicatorBroadcastForSymbol = (sym: string, isFinal: boolean): void => {
+        const flush = (): void => {
+          indicatorDebounceBySym.delete(sym);
+          broadcastLatestIndicatorsForSymbol(sym);
+        };
+
+        if (isFinal) {
+          const pending = indicatorDebounceBySym.get(sym);
+          if (pending !== undefined) {
+            clearTimeout(pending);
+            indicatorDebounceBySym.delete(sym);
+          }
+          flush();
+          return;
+        }
+
+        const existing = indicatorDebounceBySym.get(sym);
+        if (existing !== undefined) clearTimeout(existing);
+        indicatorDebounceBySym.set(sym, setTimeout(flush, INDICATOR_BROADCAST_MIN_MS));
       }
-    } catch (e) {
-      ws.send(JSON.stringify({ type: 'history_error', tf, symbol: sym, error: (e as Error).message }));
-    } finally {
-      historyLoadInflight.delete(inflightKey);
-    }
-  }
+
+  const refPriceFromTf = (sym: string, tf: string): number | undefined => {
+        const s = store.getSeries(sym, tf);
+        const c = s[s.length - 1]?.close;
+        return Number.isFinite(c) ? c : undefined;
+      }
+
+  const computeSignalsForSymbol = (sym: string, requestedTf: string): DashboardSignalsPayload => {
+        const rows = getCandlesByChartTf(sym);
+        const candlesLtf = store.getSeries(sym, ltfTf);
+        const candlesHtf = store.getSeries(sym, htfTf);
+        const effectiveTf = chartTfBroadcastSet.has(requestedTf) ? requestedTf : defaultChartRefTf();
+        const refSeries = store.getSeries(sym, effectiveTf);
+
+        const candlesTrend = refSeries.length >= 2 ? refSeries : candlesLtf;
+        const candlesSmc = refSeries.length >= SMC_MIN_BARS ? refSeries : candlesLtf;
+
+        const lastMark = lastMarkBySym.get(sym);
+        const refPrice =
+          refPriceFromTf(sym, effectiveTf) ??
+          refPriceFromTf(sym, ltfTf) ??
+          (typeof lastMark === 'number' && Number.isFinite(lastMark) ? lastMark : undefined) ??
+          0;
+
+        const htfBiasRaw = biasFromCandles(candlesHtf);
+        const ltfTrend = analyzeTrend(candlesTrend);
+        const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
+
+        let solMtf = null;
+        const c5 = rows['5m'];
+        const c1d = rows['1d'];
+        if (c5.length >= 30 && c1d.length >= 22) {
+          try {
+            solMtf = evaluateSolMtfStrategy({
+              candles: {
+                '1d': rows['1d'],
+                '4h': rows['4h'],
+                '1h': rows['1h'],
+                '15m': rows['15m'],
+                '5m': rows['5m'],
+              },
+              refPrice,
+              minConfidence: cfg.MIN_CONFIDENCE,
+            });
+          } catch {
+            /* insufficient bars */
+          }
+        }
+
+        let liquidityOrderBook: OrderBookMicroSnapshot | null = null;
+        let sweepCandleIndex: number | null = null;
+        let sweepCandleOpenTime: number | null = null;
+        const prSweep = smc.liquidity?.primaryRejection;
+        if (orderBookSnapshotRing && prSweep?.outcome === 'rejection' && prSweep.sweepBarIndex != null) {
+          const bar = candlesSmc[prSweep.sweepBarIndex];
+          if (bar) {
+            sweepCandleIndex = prSweep.sweepBarIndex;
+            sweepCandleOpenTime = bar.openTime;
+            const memoKey = `${sym}:${prSweep.sweepBarIndex}:${bar.openTime}`;
+            const cached = sweepOrderBookMemoBySym.get(sym);
+            if (cached?.key === memoKey) {
+              liquidityOrderBook = cached.snap;
+            } else {
+              const targetMs = bar.closeTime ?? bar.openTime;
+              const matchWin = 4000;
+              const snap = orderBookSnapshotRing.nearest(sym, targetMs, matchWin);
+              if (snap) {
+                liquidityOrderBook = snap;
+                sweepOrderBookMemoBySym.set(sym, { key: memoKey, snap });
+                orderBookSnapshotRing.releaseAfterSweep(sym, bar.openTime, matchWin);
+              } else {
+                sweepOrderBookMemoBySym.delete(sym);
+              }
+            }
+          }
+        } else {
+          sweepOrderBookMemoBySym.delete(sym);
+        }
+
+        return {
+          refPrice,
+          refPriceTf: effectiveTf,
+          htfBias: String(htfBiasRaw),
+          ltfDirection: ltfTrend.direction,
+          ltfConfidence: +ltfTrend.confidence.toFixed(3),
+          ltfScore: ltfTrend.score,
+          ltfSignals: ltfTrend.signals,
+          smc: {
+            score: smc.score,
+            liquiditySweep: smc.liquiditySweep,
+            orderBlock: smc.orderBlock,
+            fvg: smc.fvg,
+            bos: smc.bos,
+            choch: smc.choch,
+            liquidity: smc.liquidity,
+            liquidityOrderBook,
+            sweepCandleIndex,
+            sweepCandleOpenTime,
+          },
+          solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
+          signalMeta: {
+            trendSeriesTf: effectiveTf,
+            htf: htfTf,
+            executionLtf: ltfTf,
+          },
+        };
+      }
+
+  const computeSignalsForClient = (client: WebSocket, requestedTf: string): DashboardSignalsPayload => {
+        return computeSignalsForSymbol(getSym(client), requestedTf);
+      }
+
+  const buildInstrumentPrecisionPayload = (sym: string): {
+        instrumentPrecision: InstrumentPrecision | null;
+        ltpDecimalPlaces: number | null;
+        instrumentPrecisionBySymbol: Record<
+          string,
+          InstrumentPrecision & { ltpDecimalPlaces: number }
+        >;
+      } => {
+        const instrumentPrecision = precisionBySymbol.get(sym) ?? null;
+        const ltpDecimalPlaces = instrumentPrecision
+          ? ltpDisplayDecimalPlaces(instrumentPrecision.tickSize)
+          : null;
+        const instrumentPrecisionBySymbol: Record<string, InstrumentPrecision & { ltpDecimalPlaces: number }> =
+          {};
+        for (const s of watchlistSymbols) {
+          const p = precisionBySymbol.get(s);
+          if (p)
+            instrumentPrecisionBySymbol[s] = {
+              ...p,
+              ltpDecimalPlaces: ltpDisplayDecimalPlaces(p.tickSize),
+            };
+        }
+        return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
+      }
+
+  const buildSnapshot = (forWs: WebSocket): Record<string, unknown> => {
+        const sym = getSym(forWs);
+        const rows = getCandlesByChartTf(sym);
+        const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
+        const signals = computeSignalsForClient(forWs, refTf);
+        const book = lastBookBySym.get(sym);
+        const mark = lastMarkBySym.get(sym);
+        const precPayload = buildInstrumentPrecisionPayload(sym);
+        return {
+          symbol: sym,
+          watchlist: watchlistSymbols,
+          executionSymbol: symbolUpper,
+          availableTimeframes: [...chartTfsOnStream],
+          mark: mark !== undefined ? mark : null,
+          bestBid: book?.bid ?? null,
+          bestAsk: book?.ask ?? null,
+          ...precPayload,
+          candles: {
+            '1m': rows['1m'],
+            '5m': rows['5m'],
+            '15m': rows['15m'],
+            '1h': rows['1h'],
+            '4h': rows['4h'],
+            '1d': rows['1d'],
+          },
+          depth: obFor(sym).topLevels(depthLevelsUi),
+          trades: tapeFor(sym).recent(60),
+          indicators: computeIndicatorsFromRows(rows, sym),
+          signals,
+        };
+      }
+
+  const handleClientLoadHistory = async (ws: WebSocket, tf: string, oldestOpenTime: number): Promise<void> => {
+        if (!allowedHistoryTfs.has(tf)) return;
+        if (!Number.isFinite(oldestOpenTime) || oldestOpenTime < 1) {
+          ws.send(JSON.stringify({ type: 'history_error', tf, error: 'invalid oldestOpenTime' }));
+          return;
+        }
+        const sym = getSym(ws);
+        const inflightKey = `${sym}|${tf}`;
+        if (historyLoadInflight.has(inflightKey)) {
+          ws.send(JSON.stringify({ type: 'history_busy', tf, symbol: sym }));
+          return;
+        }
+        historyLoadInflight.add(inflightKey);
+        try {
+          const endTime = Math.floor(oldestOpenTime) - 1;
+          const bars = await fetchBinanceKlines(cfg, {
+            symbol: sym,
+            interval: tf,
+            limit: 1500,
+            endTime,
+          });
+          const older = bars.filter((c) => c.openTime < oldestOpenTime);
+          if (older.length === 0) {
+            const endRaw = JSON.stringify({ type: 'history_end', tf, symbol: sym });
+            for (const client of wss.clients) {
+              if (client.readyState !== WebSocket.OPEN) continue;
+              if (getSym(client) !== sym) continue;
+              client.send(endRaw);
+            }
+            return;
+          }
+          store.prependOlder(sym, tf, older);
+          const chunkRaw = JSON.stringify({ type: 'history_chunk', symbol: sym, tf, candles: older });
+          const indRaw = JSON.stringify({
+            type: 'indicators',
+            ...computeIndicatorsFromRows(getCandlesByChartTf(sym), sym),
+          });
+          for (const client of wss.clients) {
+            if (client.readyState !== WebSocket.OPEN) continue;
+            if (getSym(client) !== sym) continue;
+            client.send(chunkRaw);
+            client.send(indRaw);
+            const tf0 = refTfByClient.get(client) ?? defaultChartRefTf();
+            client.send(JSON.stringify({ type: 'signals', ...computeSignalsForClient(client, tf0) }));
+          }
+        } catch (e) {
+          ws.send(JSON.stringify({ type: 'history_error', tf, symbol: sym, error: (e as Error).message }));
+        } finally {
+          historyLoadInflight.delete(inflightKey);
+        }
+      }
 
   wss.on('connection', (ws) => {
     log.info('dashboard_client_connected', { clients: wss.clients.size });
@@ -738,75 +735,75 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     },
   };
 
-  async function listen(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      httpServer.once('error', reject);
-      httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
-        httpServer.off('error', reject);
-        resolve();
-      });
-    });
+  const listen = async (): Promise<void> => {
+        await new Promise<void>((resolve, reject) => {
+          httpServer.once('error', reject);
+          httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
+            httpServer.off('error', reject);
+            resolve();
+          });
+        });
 
-    log.info('dashboard_listen', {
-      bind: cfg.DASHBOARD_BIND,
-      port: cfg.DASHBOARD_PORT,
-      symbol: symbolUpper,
-      watchlist: watchlistSymbols,
-      chartTimeframes: chartTfsOnStream,
-      ltfTf,
-      uiHint:
-        'Vite: npm run ui:dev or npm run dashboard:ui (bot+Vite). Open http://127.0.0.1:5173 in a normal browser; embedded previews can show chrome-error frame blocks.',
-    });
+        log.info('dashboard_listen', {
+          bind: cfg.DASHBOARD_BIND,
+          port: cfg.DASHBOARD_PORT,
+          symbol: symbolUpper,
+          watchlist: watchlistSymbols,
+          chartTimeframes: chartTfsOnStream,
+          ltfTf,
+          uiHint:
+            'Vite: npm run ui:dev or npm run dashboard:ui (bot+Vite). Open http://127.0.0.1:5173 in a normal browser; embedded previews can show chrome-error frame blocks.',
+        });
 
-    heartbeatTimer = setInterval(() => {
-      broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
-    }, 10_000);
+        heartbeatTimer = setInterval(() => {
+          broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
+        }, 10_000);
 
-    signalsTimer = setInterval(() => {
-      for (const s of watchlistSymbols) {
-        maybePeriodicSupertrendTune(s);
+        signalsTimer = setInterval(() => {
+          for (const s of watchlistSymbols) {
+            maybePeriodicSupertrendTune(s);
+          }
+          broadcastSignalsPerClient();
+          const lead = firstOpenWebSocket();
+          if (lead && lead.readyState === WebSocket.OPEN) {
+            const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
+            void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
+          }
+        }, 60_000);
+
+        const bootSignals = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+        void maybeRefreshAiBrief(bootSignals, symbolUpper);
       }
-      broadcastSignalsPerClient();
-      const lead = firstOpenWebSocket();
-      if (lead && lead.readyState === WebSocket.OPEN) {
-        const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
-        void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
-      }
-    }, 60_000);
-
-    const bootSignals = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
-    void maybeRefreshAiBrief(bootSignals, symbolUpper);
-  }
 
   let stopped = false;
 
-  async function stop(): Promise<void> {
-    if (stopped) return;
-    stopped = true;
-    for (const t of indicatorDebounceBySym.values()) clearTimeout(t);
-    indicatorDebounceBySym.clear();
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-    if (signalsTimer) {
-      clearInterval(signalsTimer);
-      signalsTimer = null;
-    }
-    for (const c of wss.clients) {
-      try {
-        c.terminate();
-      } catch {
-        /* ignore */
+  const stop = async (): Promise<void> => {
+        if (stopped) return;
+        stopped = true;
+        for (const t of indicatorDebounceBySym.values()) clearTimeout(t);
+        indicatorDebounceBySym.clear();
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+        if (signalsTimer) {
+          clearInterval(signalsTimer);
+          signalsTimer = null;
+        }
+        for (const c of wss.clients) {
+          try {
+            c.terminate();
+          } catch {
+            /* ignore */
+          }
+        }
+        await new Promise<void>((resolve, reject) => {
+          wss.close((err) => (err ? reject(err) : resolve()));
+        });
+        await new Promise<void>((resolve, reject) => {
+          httpServer.close((err) => (err ? reject(err) : resolve()));
+        });
       }
-    }
-    await new Promise<void>((resolve, reject) => {
-      wss.close((err) => (err ? reject(err) : resolve()));
-    });
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((err) => (err ? reject(err) : resolve()));
-    });
-  }
 
   return { multiplexSidecar, listen, stop };
 }

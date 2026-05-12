@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RiskManager } from '../src/strategy/risk';
 import type { AppConfig } from '../src/config';
 
-function cfg(over: Partial<AppConfig> = {}): AppConfig {
+const cfg = (over: Partial<AppConfig> = {}): AppConfig => {
   return {
     TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',

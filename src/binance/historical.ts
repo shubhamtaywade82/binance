@@ -17,14 +17,11 @@ export interface FetchHistoricalParams {
 
 const PAGE_LIMIT = 1500;
 
-function sleep(ms: number): Promise<void> {
+const sleep = (ms: number): Promise<void> => {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function fetchHistoricalKlines(
-  cfg: AppConfig,
-  params: FetchHistoricalParams,
-): Promise<Candle[]> {
+export const fetchHistoricalKlines = async (cfg: AppConfig, params: FetchHistoricalParams): Promise<Candle[]> => {
   const base = binanceRestBase(cfg);
   const path = cfg.BINANCE_PRODUCT === 'spot' ? '/api/v3/klines' : '/fapi/v1/klines';
   const url = `${base}${path}`;

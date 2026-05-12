@@ -43,14 +43,14 @@ interface AggTradePayload {
   q?: string;
 }
 
-function unwrapPayload(msg: Record<string, unknown>): Record<string, unknown> | null {
+const unwrapPayload = (msg: Record<string, unknown>): Record<string, unknown> | null => {
   if (msg.stream && msg.data && typeof msg.data === 'object') {
     return msg.data as Record<string, unknown>;
   }
   return msg;
 }
 
-function parseIncoming(raw: WebSocket.RawData): { kind: 'aggTrade'; row: AggTradePayload } | { kind: 'serverShutdown' } | { kind: 'control' } | { kind: 'skip' } {
+const parseIncoming = (raw: WebSocket.RawData): { kind: 'aggTrade'; row: AggTradePayload } | { kind: 'serverShutdown' } | { kind: 'control' } | { kind: 'skip' } => {
   try {
     const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
     if (typeof msg.result !== 'undefined' && 'id' in msg) {
@@ -70,7 +70,7 @@ function parseIncoming(raw: WebSocket.RawData): { kind: 'aggTrade'; row: AggTrad
   }
 }
 
-function buildUrl(): string {
+const buildUrl = (): string => {
   if (pathMode === 'subscribe') {
     return `${WS_BASE}/market/ws`;
   }
@@ -90,14 +90,14 @@ let attempt = 0;
 let socket: WebSocket | null = null;
 let noDataTimer: ReturnType<typeof setTimeout> | null = null;
 
-function clearNoDataTimer(): void {
+const clearNoDataTimer = (): void => {
   if (noDataTimer) {
     clearTimeout(noDataTimer);
     noDataTimer = null;
   }
 }
 
-function scheduleNoDataHint(url: string): void {
+const scheduleNoDataHint = (url: string): void => {
   clearNoDataTimer();
   noDataTimer = setTimeout(() => {
     console.warn(
@@ -109,7 +109,7 @@ function scheduleNoDataHint(url: string): void {
   }, 15_000);
 }
 
-function connect(): void {
+const connect = (): void => {
   if (stopping) return;
   const url = buildUrl();
   if (attempt === 0) {
@@ -171,7 +171,7 @@ function connect(): void {
   });
 }
 
-function shutdown(): void {
+const shutdown = (): void => {
   stopping = true;
   clearNoDataTimer();
   if (socket) {

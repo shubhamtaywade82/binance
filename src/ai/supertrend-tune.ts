@@ -50,7 +50,7 @@ Rules:
 - Prefer slightly tighter parameters when baselineFlips50 is very high (noisy flips) unless volatility is extreme.
 - currentAtrPeriod and currentMultiplier are the active values; you may keep them if they still fit the context.`;
 
-function createTimeoutFetch(timeoutMs: number): typeof fetch {
+const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
   const ms = Math.max(1000, timeoutMs);
   return (input, init) => {
     const t = AbortSignal.timeout(ms);
@@ -62,7 +62,7 @@ function createTimeoutFetch(timeoutMs: number): typeof fetch {
   };
 }
 
-function countSupertrendFlips(candles: Candle[], period: number, mult: number): number {
+const countSupertrendFlips = (candles: Candle[], period: number, mult: number): number => {
   if (candles.length <= period + 2) return 0;
   const { dir } = supertrend(candles, period, mult);
   let flips = 0;
@@ -72,13 +72,7 @@ function countSupertrendFlips(candles: Candle[], period: number, mult: number): 
   return flips;
 }
 
-export function buildSupertrendTuneSnapshot(
-  symbol: string,
-  timeframe: string,
-  candles: Candle[],
-  currentAtrPeriod: number,
-  currentMultiplier: number,
-): SupertrendTuneSnapshot | null {
+export const buildSupertrendTuneSnapshot = (symbol: string, timeframe: string, candles: Candle[], currentAtrPeriod: number, currentMultiplier: number): SupertrendTuneSnapshot | null => {
   if (candles.length < 60) return null;
   const tail = candles.length > 120 ? candles.slice(-120) : candles;
   const last = tail[tail.length - 1];
@@ -114,7 +108,7 @@ export function buildSupertrendTuneSnapshot(
   };
 }
 
-function extractJsonObject(raw: string): string | null {
+const extractJsonObject = (raw: string): string | null => {
   const t = raw.trim();
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fence ? fence[1].trim() : t;
@@ -124,7 +118,7 @@ function extractJsonObject(raw: string): string | null {
   return body.slice(start, end + 1);
 }
 
-export function parseSupertrendTuneResponse(raw: string): { atrPeriod: number; multiplier: number } | null {
+export const parseSupertrendTuneResponse = (raw: string): { atrPeriod: number; multiplier: number } | null => {
   const jsonStr = extractJsonObject(raw);
   if (!jsonStr) return null;
   let obj: unknown;
@@ -145,10 +139,7 @@ export function parseSupertrendTuneResponse(raw: string): { atrPeriod: number; m
   return { atrPeriod: pi, multiplier: +mult.toFixed(4) };
 }
 
-export async function requestSupertrendTune(
-  cfg: OllamaSupertrendTuneConfig,
-  snapshot: SupertrendTuneSnapshot,
-): Promise<{ params: { atrPeriod: number; multiplier: number } | null; error: string | null }> {
+export const requestSupertrendTune = async (cfg: OllamaSupertrendTuneConfig, snapshot: SupertrendTuneSnapshot): Promise<{ params: { atrPeriod: number; multiplier: number } | null; error: string | null }> => {
   const model = cfg.model.trim();
   if (!model) {
     return { params: null, error: 'missing_ollama_model' };

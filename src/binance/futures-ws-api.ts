@@ -15,7 +15,7 @@ export interface FuturesWsApiUrlOptions {
   returnRateLimits?: boolean;
 }
 
-export function futuresWsApiUrl(opts: FuturesWsApiUrlOptions): string {
+export const futuresWsApiUrl = (opts: FuturesWsApiUrlOptions): string => {
   if (opts.explicitUrl?.trim()) return opts.explicitUrl.trim();
   const base = opts.useTestnet
     ? 'wss://testnet.binancefuture.com/ws-fapi/v1'
@@ -24,12 +24,11 @@ export function futuresWsApiUrl(opts: FuturesWsApiUrlOptions): string {
   return base;
 }
 
-/** When `hideRateLimits` is true, appends `?returnRateLimits=false` per Binance docs. */
-export function futuresWsApiUrlFromConfig(opts: {
+export const futuresWsApiUrlFromConfig = (opts: {
   explicitUrl?: string;
   useTestnet: boolean;
   hideRateLimits: boolean;
-}): string {
+}): string => {
   return futuresWsApiUrl({
     explicitUrl: opts.explicitUrl,
     useTestnet: opts.useTestnet,
@@ -264,13 +263,13 @@ export class BinanceFuturesWsApiClient {
   }
 }
 
-export function createFuturesWsApiClientFromPem(options: {
+export const createFuturesWsApiClientFromPem = (options: {
   url: string;
   apiKey: string;
   ed25519PrivateKeyPem: string;
   wsFactory?: (url: string) => WebSocket;
   requestTimeoutMs?: number;
-}): BinanceFuturesWsApiClient {
+}): BinanceFuturesWsApiClient => {
   const privateKey = loadEd25519PrivateKeyFromPem(options.ed25519PrivateKeyPem);
   return new BinanceFuturesWsApiClient({
     url: options.url,

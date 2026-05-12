@@ -102,12 +102,12 @@ const DEFAULT_OPTS: LiquidityEngineOptions = {
   decayPerBar: 0.97,
 };
 
-function mean(xs: number[]): number {
+const mean = (xs: number[]): number => {
   if (xs.length === 0) return NaN;
   return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
-function avgVolume(candles: Candle[], endIdx: number, lookback: number): number {
+const avgVolume = (candles: Candle[], endIdx: number, lookback: number): number => {
   const start = Math.max(0, endIdx - lookback);
   const slice = candles.slice(start, endIdx);
   if (slice.length === 0) return 0;
@@ -115,10 +115,7 @@ function avgVolume(candles: Candle[], endIdx: number, lookback: number): number 
   return s / slice.length;
 }
 
-function clusterSwingPrices(
-  points: { index: number; price: number }[],
-  equalPct: number,
-): { meanPrice: number; maxIndex: number; touches: number }[] {
+const clusterSwingPrices = (points: { index: number; price: number }[], equalPct: number): { meanPrice: number; maxIndex: number; touches: number }[] => {
   if (points.length === 0) return [];
   const sorted = [...points].sort((a, b) => a.price - b.price);
   const clusters: { meanPrice: number; maxIndex: number; touches: number }[] = [];
@@ -145,22 +142,16 @@ function clusterSwingPrices(
   return clusters.filter((c) => c.touches >= 2);
 }
 
-function decayedStrength(base: number, createdIndex: number, lastIndex: number, decayPerBar: number): number {
+const decayedStrength = (base: number, createdIndex: number, lastIndex: number, decayPerBar: number): number => {
   const age = Math.max(0, lastIndex - createdIndex);
   return base * decayPerBar ** age;
 }
 
-function candleBody(c: Candle): number {
+const candleBody = (c: Candle): number => {
   return Math.abs(c.close - c.open);
 }
 
-function displacementAfter(
-  candles: Candle[],
-  atrSeries: number[],
-  fromBar: number,
-  poolKind: LiquidityPoolKind,
-  opts: LiquidityEngineOptions,
-): boolean {
+const displacementAfter = (candles: Candle[], atrSeries: number[], fromBar: number, poolKind: LiquidityPoolKind, opts: LiquidityEngineOptions): boolean => {
   const n = candles.length;
   const end = Math.min(n - 1, fromBar + opts.outcomeLookahead);
   for (let j = fromBar; j <= end; j++) {
@@ -175,13 +166,13 @@ function displacementAfter(
   return false;
 }
 
-function evaluatePoolSide(args: {
+const evaluatePoolSide = (args: {
   candles: Candle[];
   atrSeries: number[];
   pool: LiquidityPoolView;
   opts: LiquidityEngineOptions;
   scanFrom: number;
-}): LiquidityEventView | null {
+}): LiquidityEventView | null => {
   const { candles, atrSeries, pool, opts, scanFrom } = args;
   const n = candles.length;
   const P = pool.price;
@@ -293,15 +284,7 @@ function evaluatePoolSide(args: {
   return best;
 }
 
-/**
- * Builds resting-liquidity pools (equal swing clusters + session range fallback) and scores
- * the latest raid outcome: sweep rejection vs breakout acceptance.
- */
-export function runLiquidityEngine(
-  candles: Candle[],
-  timeframeLabel: string,
-  opts: Partial<LiquidityEngineOptions> = {},
-): LiquidityEngineResult {
+export const runLiquidityEngine = (candles: Candle[], timeframeLabel: string, opts: Partial<LiquidityEngineOptions> = {}): LiquidityEngineResult => {
   const o: LiquidityEngineOptions = { ...DEFAULT_OPTS, ...opts };
   const empty: LiquidityEngineResult = {
     pools: [],

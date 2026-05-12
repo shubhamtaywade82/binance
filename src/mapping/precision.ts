@@ -4,15 +4,12 @@ export interface InstrumentPrecision {
   minQty: number;
 }
 
-function num(x: unknown): number | undefined {
+const num = (x: unknown): number | undefined => {
   const n = typeof x === 'string' ? Number.parseFloat(x) : typeof x === 'number' ? x : NaN;
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-/**
- * Best-effort parse of CoinDCX `getFuturesInstrumentDetails` payload (shape varies).
- */
-export function extractPrecisionFromInstrument(payload: unknown): InstrumentPrecision {
+export const extractPrecisionFromInstrument = (payload: unknown): InstrumentPrecision => {
   const defaults = { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 };
   if (!payload || typeof payload !== 'object') return defaults;
   const root = payload as Record<string, unknown>;
@@ -45,29 +42,20 @@ export function extractPrecisionFromInstrument(payload: unknown): InstrumentPrec
   return defaults;
 }
 
-export function floorToStep(value: number, step: number): number {
+export const floorToStep = (value: number, step: number): number => {
   if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) return 0;
   const n = Math.floor(value / step) * step;
   const decimals = `${step}`.includes('.') ? `${step}`.split('.')[1].length : 0;
   return Number(n.toFixed(Math.min(12, decimals)));
 }
 
-/** Round a price to the nearest tick boundary (for order price fields). */
-export function roundToTick(price: number, tick: number): number {
+export const roundToTick = (price: number, tick: number): number => {
   if (!Number.isFinite(price) || !Number.isFinite(tick) || tick <= 0) return price;
   const decimals = `${tick}`.includes('.') ? `${tick}`.split('.')[1].length : 0;
   return Number((Math.round(price / tick) * tick).toFixed(Math.min(12, decimals)));
 }
 
-/**
- * Decimal places for LTP / chart stepping: Binance `PRICE_FILTER.tickSize` fractional digits **plus one**
- * so the UI can show sub-tick movement while order prices still round to the exchange tick.
- * Uses a fixed-point string so float noise (e.g. 0.0099999) does not shrink the scale.
- */
-export function ltpDisplayDecimalPlaces(
-  tickSize: number,
-  opts: { min?: number; max?: number; fallback?: number } = {},
-): number {
+export const ltpDisplayDecimalPlaces = (tickSize: number, opts: { min?: number; max?: number; fallback?: number } = {}): number => {
   const min = opts.min ?? 1;
   const max = opts.max ?? 8;
   const fallback = Math.min(max, Math.max(min, opts.fallback ?? 4));

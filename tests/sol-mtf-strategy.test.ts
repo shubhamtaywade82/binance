@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Candle } from '../src/types';
 import { evaluateSolMtfStrategy } from '../src/strategy/sol-mtf-strategy';
 
-function mkTrend(n: number, step = 0.3): Candle[] {
+const mkTrend = (n: number, step = 0.3): Candle[] => {
   const out: Candle[] = [];
   let p = 100;
   for (let i = 0; i < n; i++) {
@@ -20,7 +20,7 @@ function mkTrend(n: number, step = 0.3): Candle[] {
   return out;
 }
 
-function emptyMtf(over: Partial<Record<'1d' | '4h' | '1h' | '15m' | '5m', Candle[]>> = {}) {
+const emptyMtf = (over: Partial<Record<'1d' | '4h' | '1h' | '15m' | '5m', Candle[]>> = {}) => {
   const base = {
     '1d': [] as Candle[],
     '4h': [] as Candle[],

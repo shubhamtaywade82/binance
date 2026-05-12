@@ -17,7 +17,7 @@ import {
   requestSupertrendTune,
 } from '../src/ai/supertrend-tune';
 
-function synthCandles(n: number, startPrice = 100): Candle[] {
+const synthCandles = (n: number, startPrice = 100): Candle[] => {
   const out: Candle[] = [];
   let p = startPrice;
   const t0 = 1_700_000_000_000;

@@ -10,7 +10,7 @@ export interface DepthDeltaEvent {
   s?: string;
 }
 
-export function depthDeltaToDiff(ev: DepthDeltaEvent, symbol?: string): DepthDiff & { s: string } {
+export const depthDeltaToDiff = (ev: DepthDeltaEvent, symbol?: string): DepthDiff & { s: string } => {
   return {
     s: (ev.s ?? symbol ?? '').toUpperCase(),
     U: ev.U,

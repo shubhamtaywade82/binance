@@ -8,16 +8,7 @@ export interface DepthSnapshot {
   asks: [string, string][];
 }
 
-/**
- * REST order book snapshot (spot or USD-M Futures) for depth WebSocket sync.
- * Spot: `/api/v3/depth`. USD-M: `/fapi/v1/depth`.
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api
- */
-export async function fetchBinanceDepthSnapshot(
-  cfg: AppConfig,
-  symbolUpper: string,
-  limit = 1000,
-): Promise<DepthSnapshot | null> {
+export const fetchBinanceDepthSnapshot = async (cfg: AppConfig, symbolUpper: string, limit = 1000): Promise<DepthSnapshot | null> => {
   const base = binanceRestBase(cfg);
   const path = cfg.BINANCE_PRODUCT === 'spot' ? '/api/v3/depth' : '/fapi/v1/depth';
   const maxLimit = cfg.BINANCE_PRODUCT === 'spot' ? 5000 : 1000;

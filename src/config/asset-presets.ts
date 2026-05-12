@@ -11,7 +11,7 @@ export const TRADING_ASSET_PRESETS: Record<Exclude<TradingAsset, 'custom'>, { bi
     btc: { binanceSymbol: 'BTCUSDT', coindcxPair: 'B-BTC_USDT' },
   };
 
-export function normalizeTradingAsset(raw: string | undefined): TradingAsset {
+export const normalizeTradingAsset = (raw: string | undefined): TradingAsset => {
   const s = String(raw ?? 'sol').trim().toLowerCase();
   if (s === 'sol' || s === 'eth' || s === 'btc' || s === 'custom') return s;
   return 'sol';

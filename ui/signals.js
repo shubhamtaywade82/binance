@@ -6,16 +6,14 @@
 export const DIR_CLASS = { LONG: 'bull', SHORT: 'bear', BULLISH: 'bull', BEARISH: 'bear', NONE: 'neutral' };
 export const DIR_LABEL = { LONG: '▲ LONG', SHORT: '▼ SHORT', BULLISH: '▲ BULL', BEARISH: '▼ BEAR', NONE: '— NONE' };
 
-/** @param {number} p */
-export function fmtSignalPrice(p) {
+export const fmtSignalPrice = (p) => {
   if (p == null || !Number.isFinite(p)) return '—';
   if (p >= 1000) return p.toFixed(2);
   if (p >= 10) return p.toFixed(3);
   return p.toFixed(4);
 }
 
-/** @param {object | null | undefined} s */
-export function computeSignalVerdict(s) {
+export const computeSignalVerdict = (s) => {
   if (!s) return { text: 'NEUTRAL', cls: 'neutral' };
   const htf = s.htfBias;
   const ltf = s.ltfDirection;

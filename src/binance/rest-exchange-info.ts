@@ -20,8 +20,7 @@ interface ExchangeInfo {
   symbols: ExchangeSymbol[];
 }
 
-/** Extract lot + price filters from one `exchangeInfo.symbols[]` entry. */
-export function parseInstrumentPrecisionFromExchangeSymbol(info: ExchangeSymbol): InstrumentPrecision | null {
+export const parseInstrumentPrecisionFromExchangeSymbol = (info: ExchangeSymbol): InstrumentPrecision | null => {
   let tickSize = 0.01;
   let stepSize = 0.001;
   let minQty = 0.001;
@@ -55,14 +54,7 @@ export function parseInstrumentPrecisionFromExchangeSymbol(info: ExchangeSymbol)
   return { tickSize, stepSize, minQty };
 }
 
-/**
- * Fetch precision for many symbols in one `GET /fapi/v1/exchangeInfo` round-trip.
- * Keys in the returned map are uppercase Binance symbol names.
- */
-export async function fetchBinanceExchangeInfoForSymbols(
-  restBase: string,
-  symbols: string[],
-): Promise<Map<string, InstrumentPrecision>> {
+export const fetchBinanceExchangeInfoForSymbols = async (restBase: string, symbols: string[]): Promise<Map<string, InstrumentPrecision>> => {
   const out = new Map<string, InstrumentPrecision>();
   const want = new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean));
   if (want.size === 0) return out;
@@ -82,14 +74,7 @@ export async function fetchBinanceExchangeInfoForSymbols(
   return out;
 }
 
-/**
- * Fetch symbol precision from Binance `GET /fapi/v1/exchangeInfo`.
- * Returns tick size, step size, and minimum order quantity for the given symbol.
- */
-export async function fetchBinanceExchangeInfo(
-  restBase: string,
-  symbol: string,
-): Promise<InstrumentPrecision | null> {
+export const fetchBinanceExchangeInfo = async (restBase: string, symbol: string): Promise<InstrumentPrecision | null> => {
   const map = await fetchBinanceExchangeInfoForSymbols(restBase, [symbol]);
   return map.get(symbol.trim().toUpperCase()) ?? null;
 }

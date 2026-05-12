@@ -31,11 +31,11 @@ export class BinanceRestError extends Error {
   }
 }
 
-function signQuery(secret: string, queryString: string): string {
+const signQuery = (secret: string, queryString: string): string => {
   return crypto.createHmac('sha256', secret).update(queryString).digest('hex');
 }
 
-function buildQueryString(params: Record<string, string | number | boolean>): string {
+const buildQueryString = (params: Record<string, string | number | boolean>): string => {
   return Object.entries(params)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');

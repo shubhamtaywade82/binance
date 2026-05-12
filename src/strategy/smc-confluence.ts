@@ -20,7 +20,7 @@ export interface SmcConfluenceResult {
   reasons: string[];
 }
 
-export function emaTrend(c: Candle[]): TrendBias {
+export const emaTrend = (c: Candle[]): TrendBias => {
   if (c.length < 30) return 'NONE';
   const closes = c.map((x) => x.close);
   const c9 = ema(closes, 9);
@@ -32,13 +32,7 @@ export function emaTrend(c: Candle[]): TrendBias {
   return 'NONE';
 }
 
-export function evaluateSmcConfluence(
-  ltfCandles: Candle[],
-  htfCandles: Candle[],
-  marketBias: TrendBias,
-  refPrice: number,
-  cfg: SmcConfluenceConfig,
-): SmcConfluenceResult {
+export const evaluateSmcConfluence = (ltfCandles: Candle[], htfCandles: Candle[], marketBias: TrendBias, refPrice: number, cfg: SmcConfluenceConfig): SmcConfluenceResult => {
   const reasons: string[] = [];
   const threshold = cfg.mode === 'sniper' ? cfg.sniperMinScore : cfg.standardMinScore;
   if (!cfg.enabled) {

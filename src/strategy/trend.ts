@@ -32,12 +32,12 @@ export interface AnalyzeTrendOpts {
   volumeLookback?: number;
 }
 
-function lastFinite(arr: number[]): number | null {
+const lastFinite = (arr: number[]): number | null => {
   for (let i = arr.length - 1; i >= 0; i--) if (Number.isFinite(arr[i])) return arr[i];
   return null;
 }
 
-function majority(votes: TrendBias[]): { dir: TrendBias; aligned: number } {
+const majority = (votes: TrendBias[]): { dir: TrendBias; aligned: number } => {
   let l = 0;
   let s = 0;
   for (const v of votes) {
@@ -49,10 +49,7 @@ function majority(votes: TrendBias[]): { dir: TrendBias; aligned: number } {
   return { dir: 'NONE', aligned: Math.max(l, s) };
 }
 
-export function analyzeTrend(
-  candles: Candle[],
-  opts: AnalyzeTrendOpts = {},
-): TrendAnalysis {
+export const analyzeTrend = (candles: Candle[], opts: AnalyzeTrendOpts = {}): TrendAnalysis => {
   const empty: TrendAnalysis = {
     direction: 'NONE',
     confidence: 0,

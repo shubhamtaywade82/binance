@@ -7,7 +7,7 @@ import { RiskManager } from '../src/strategy/risk';
 import type { AppConfig } from '../src/config';
 import { createStubExecutionAdapter } from './stub-execution-adapter';
 
-function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
+const makeCfg = (over: Partial<AppConfig> = {}): AppConfig => {
   return {
     TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
@@ -66,7 +66,7 @@ afterEach(() => {
   if (fs.existsSync(tmpCsv)) fs.unlinkSync(tmpCsv);
 });
 
-function buildPm(over: Partial<AppConfig> = {}): PositionManager {
+const buildPm = (over: Partial<AppConfig> = {}): PositionManager => {
   const cfg = makeCfg({ TRADE_LOG_PATH: tmpCsv, TRADES_CSV_PATH: tmpCsv, ...over });
   return new PositionManager(cfg, createStubExecutionAdapter(), new RiskManager(cfg), noopLog);
 }

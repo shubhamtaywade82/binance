@@ -6,8 +6,7 @@ import type {
   OrderResult,
 } from '../src/execution/types';
 
-/** Minimal adapter so `PositionManager` TP/SL paths can be tested without CoinDCX or paper stack. */
-export function createStubExecutionAdapter(fillPriceScale = 1): ExecutionAdapter {
+export const createStubExecutionAdapter = (fillPriceScale = 1): ExecutionAdapter => {
   return {
     name: 'paper',
     async placeOrder(req: OrderRequest): Promise<OrderResult> {

@@ -1,10 +1,6 @@
 import type { MultiplexCallbacks } from './ws-multiplex';
 
-/**
- * Run two multiplex callback sets on the same events (e.g. orchestrator + dashboard).
- * Primary runs first so downstream listeners see state already updated.
- */
-export function mergeMultiplexCallbacks(primary: MultiplexCallbacks, secondary: MultiplexCallbacks): MultiplexCallbacks {
+export const mergeMultiplexCallbacks = (primary: MultiplexCallbacks, secondary: MultiplexCallbacks): MultiplexCallbacks => {
   return {
     onKline: (symbol, interval, candle, isFinal) => {
       primary.onKline?.(symbol, interval, candle, isFinal);

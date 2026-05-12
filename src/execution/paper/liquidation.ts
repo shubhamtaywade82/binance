@@ -5,7 +5,7 @@ export interface LiquidationInputs {
   maintMargin: number;
 }
 
-export function liquidationPrice(i: LiquidationInputs): number {
+export const liquidationPrice = (i: LiquidationInputs): number => {
   const inv = 1 / i.leverage;
   return i.side === 'LONG'
     ? i.entry * (1 - inv + i.maintMargin)

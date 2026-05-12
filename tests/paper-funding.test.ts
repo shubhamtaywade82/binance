@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FundingEngine } from '../src/execution/paper/funding';
 
-function makeEngine(now: { t: number }): FundingEngine {
+const makeEngine = (now: { t: number }): FundingEngine => {
   return new FundingEngine({
     binanceRestBase: 'https://example.test',
     pollSec: 60,

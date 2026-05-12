@@ -2,16 +2,16 @@ import type { BinanceRestClient } from './rest-client';
 
 // ─── Listen Key ────────────────────────────────────────────────────────────
 
-export async function createListenKey(client: BinanceRestClient): Promise<string> {
+export const createListenKey = async (client: BinanceRestClient): Promise<string> => {
   const res = await client.signedPost<{ listenKey: string }>('/fapi/v1/listenKey');
   return res.listenKey;
 }
 
-export async function keepAliveListenKey(client: BinanceRestClient, listenKey: string): Promise<void> {
+export const keepAliveListenKey = async (client: BinanceRestClient, listenKey: string): Promise<void> => {
   await client.signedPut('/fapi/v1/listenKey', { listenKey });
 }
 
-export async function deleteListenKey(client: BinanceRestClient, listenKey: string): Promise<void> {
+export const deleteListenKey = async (client: BinanceRestClient, listenKey: string): Promise<void> => {
   await client.signedDelete('/fapi/v1/listenKey', { listenKey });
 }
 
@@ -59,18 +59,15 @@ export interface FuturesPositionRisk {
   updateTime: number;
 }
 
-export async function getAccountInfo(client: BinanceRestClient): Promise<FuturesAccount> {
+export const getAccountInfo = async (client: BinanceRestClient): Promise<FuturesAccount> => {
   return client.signedGet<FuturesAccount>('/fapi/v2/account');
 }
 
-export async function getBalances(client: BinanceRestClient): Promise<FuturesBalance[]> {
+export const getBalances = async (client: BinanceRestClient): Promise<FuturesBalance[]> => {
   return client.signedGet<FuturesBalance[]>('/fapi/v2/balance');
 }
 
-export async function getPositionRisk(
-  client: BinanceRestClient,
-  symbol?: string,
-): Promise<FuturesPositionRisk[]> {
+export const getPositionRisk = async (client: BinanceRestClient, symbol?: string): Promise<FuturesPositionRisk[]> => {
   const params: Record<string, string> = {};
   if (symbol) params.symbol = symbol.toUpperCase();
   return client.signedGet<FuturesPositionRisk[]>('/fapi/v2/positionRisk', params);
@@ -84,11 +81,7 @@ export interface LeverageResult {
   maxNotionalValue: string;
 }
 
-export async function setLeverage(
-  client: BinanceRestClient,
-  symbol: string,
-  leverage: number,
-): Promise<LeverageResult> {
+export const setLeverage = async (client: BinanceRestClient, symbol: string, leverage: number): Promise<LeverageResult> => {
   return client.signedPost<LeverageResult>('/fapi/v1/leverage', {
     symbol: symbol.toUpperCase(),
     leverage,
@@ -97,11 +90,7 @@ export async function setLeverage(
 
 export type MarginType = 'ISOLATED' | 'CROSSED';
 
-export async function setMarginType(
-  client: BinanceRestClient,
-  symbol: string,
-  marginType: MarginType,
-): Promise<void> {
+export const setMarginType = async (client: BinanceRestClient, symbol: string, marginType: MarginType): Promise<void> => {
   try {
     await client.signedPost('/fapi/v1/marginType', {
       symbol: symbol.toUpperCase(),
@@ -178,10 +167,7 @@ export interface OrderResult {
   priceRate?: string;
 }
 
-export async function placeOrder(
-  client: BinanceRestClient,
-  params: PlaceOrderParams,
-): Promise<OrderResult> {
+export const placeOrder = async (client: BinanceRestClient, params: PlaceOrderParams): Promise<OrderResult> => {
   const body: Record<string, string | number | boolean> = {
     symbol: params.symbol.toUpperCase(),
     side: params.side,
@@ -204,38 +190,24 @@ export async function placeOrder(
   return client.signedPost<OrderResult>('/fapi/v1/order', body);
 }
 
-export async function cancelOrder(
-  client: BinanceRestClient,
-  symbol: string,
-  orderId: number,
-): Promise<OrderResult> {
+export const cancelOrder = async (client: BinanceRestClient, symbol: string, orderId: number): Promise<OrderResult> => {
   return client.signedDelete<OrderResult>('/fapi/v1/order', {
     symbol: symbol.toUpperCase(),
     orderId,
   });
 }
 
-export async function cancelAllOrders(
-  client: BinanceRestClient,
-  symbol: string,
-): Promise<{ code: number; msg: string }> {
+export const cancelAllOrders = async (client: BinanceRestClient, symbol: string): Promise<{ code: number; msg: string }> => {
   return client.signedDelete('/fapi/v1/allOpenOrders', { symbol: symbol.toUpperCase() });
 }
 
-export async function getOpenOrders(
-  client: BinanceRestClient,
-  symbol?: string,
-): Promise<OrderResult[]> {
+export const getOpenOrders = async (client: BinanceRestClient, symbol?: string): Promise<OrderResult[]> => {
   const params: Record<string, string> = {};
   if (symbol) params.symbol = symbol.toUpperCase();
   return client.signedGet<OrderResult[]>('/fapi/v1/openOrders', params);
 }
 
-export async function getOrder(
-  client: BinanceRestClient,
-  symbol: string,
-  orderId: number,
-): Promise<OrderResult> {
+export const getOrder = async (client: BinanceRestClient, symbol: string, orderId: number): Promise<OrderResult> => {
   return client.signedGet<OrderResult>('/fapi/v1/order', {
     symbol: symbol.toUpperCase(),
     orderId,
@@ -244,10 +216,7 @@ export async function getOrder(
 
 // ─── Batch Orders ──────────────────────────────────────────────────────────
 
-export async function placeBatchOrders(
-  client: BinanceRestClient,
-  orders: PlaceOrderParams[],
-): Promise<OrderResult[]> {
+export const placeBatchOrders = async (client: BinanceRestClient, orders: PlaceOrderParams[]): Promise<OrderResult[]> => {
   const batchOrders = orders.map((p) => {
     const o: Record<string, string | number | boolean> = {
       symbol: p.symbol.toUpperCase(),
@@ -315,10 +284,7 @@ interface AlgoOrderListResponse {
   orders: AlgoOrderResult[];
 }
 
-export async function placeAlgoOrder(
-  client: BinanceRestClient,
-  params: AlgoOrderParams,
-): Promise<AlgoOrderResult> {
+export const placeAlgoOrder = async (client: BinanceRestClient, params: AlgoOrderParams): Promise<AlgoOrderResult> => {
   const body: Record<string, string | number | boolean> = {
     symbol: params.symbol.toUpperCase(),
     side: params.side,
@@ -337,28 +303,18 @@ export async function placeAlgoOrder(
   return client.signedPost<AlgoOrderResult>('/fapi/v1/algoOrder', body);
 }
 
-export async function cancelAlgoOrder(
-  client: BinanceRestClient,
-  symbol: string,
-  strategyId: number,
-): Promise<AlgoOrderResult> {
+export const cancelAlgoOrder = async (client: BinanceRestClient, symbol: string, strategyId: number): Promise<AlgoOrderResult> => {
   return client.signedDelete<AlgoOrderResult>('/fapi/v1/algoOrder', {
     symbol: symbol.toUpperCase(),
     strategyId,
   });
 }
 
-export async function cancelAllAlgoOrders(
-  client: BinanceRestClient,
-  symbol: string,
-): Promise<{ code: number; msg: string }> {
+export const cancelAllAlgoOrders = async (client: BinanceRestClient, symbol: string): Promise<{ code: number; msg: string }> => {
   return client.signedDelete('/fapi/v1/algoOpenOrders', { symbol: symbol.toUpperCase() });
 }
 
-export async function getOpenAlgoOrders(
-  client: BinanceRestClient,
-  symbol?: string,
-): Promise<AlgoOrderResult[]> {
+export const getOpenAlgoOrders = async (client: BinanceRestClient, symbol?: string): Promise<AlgoOrderResult[]> => {
   const params: Record<string, string> = {};
   if (symbol) params.symbol = symbol.toUpperCase();
   const res = await client.signedGet<AlgoOrderListResponse>('/fapi/v1/openAlgoOrders', params);
@@ -367,7 +323,7 @@ export async function getOpenAlgoOrders(
 
 // ─── Server Time ───────────────────────────────────────────────────────────
 
-export async function getServerTime(client: BinanceRestClient): Promise<number> {
+export const getServerTime = async (client: BinanceRestClient): Promise<number> => {
   const res = await client.publicGet<{ serverTime: number }>('/fapi/v1/time');
   return res.serverTime;
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Candle } from '../src/types';
 import { evaluateSmcConfluence } from '../src/strategy/smc-confluence';
 
-function mk(up = true, n = 60): Candle[] {
+const mk = (up = true, n = 60): Candle[] => {
   const out: Candle[] = [];
   let p = 100;
   for (let i = 0; i < n; i++) {

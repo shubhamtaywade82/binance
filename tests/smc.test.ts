@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { analyzeSmc } from '../src/strategy/smc';
 import type { Candle } from '../src/types';
 
-function mk(o: number, h: number, l: number, c: number, i: number, v = 100): Candle {
+const mk = (o: number, h: number, l: number, c: number, i: number, v = 100): Candle => {
   return { openTime: i * 60_000, open: o, high: h, low: l, close: c, volume: v };
 }
 

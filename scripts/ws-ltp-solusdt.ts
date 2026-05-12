@@ -40,14 +40,14 @@ interface AggTradePayload {
   q?: string;
 }
 
-function unwrapPayload(msg: Record<string, unknown>): AggTradePayload | null {
+const unwrapPayload = (msg: Record<string, unknown>): AggTradePayload | null => {
   if (msg.stream && msg.data && typeof msg.data === 'object') {
     return msg.data as AggTradePayload;
   }
   return msg as AggTradePayload;
 }
 
-function parseAggTrade(raw: WebSocket.RawData): { price: number; qty: number; symbol: string; eventTime: number } | null {
+const parseAggTrade = (raw: WebSocket.RawData): { price: number; qty: number; symbol: string; eventTime: number } | null => {
   try {
     const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
     const d = unwrapPayload(msg);
@@ -99,7 +99,7 @@ ws.on('close', (code, reason) => {
   console.log(`WebSocket closed code=${code} reason=${reason.toString()}`);
 });
 
-function shutdown(): void {
+const shutdown = (): void => {
   ws.close();
   process.exit(0);
 }

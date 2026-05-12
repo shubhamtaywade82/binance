@@ -1,10 +1,10 @@
 import type { Candle } from '../types';
 
-export function emaSeries(values: number[], period: number): number[] {
+export const emaSeries = (values: number[], period: number): number[] => {
   return ema(values, period);
 }
 
-export function ema(values: number[], period: number): number[] {
+export const ema = (values: number[], period: number): number[] => {
   const out: number[] = [];
   if (values.length === 0 || period <= 0) return out;
   const k = 2 / (period + 1);
@@ -27,7 +27,7 @@ export function ema(values: number[], period: number): number[] {
   return out;
 }
 
-export function rsi(closes: number[], period = 14): number[] {
+export const rsi = (closes: number[], period = 14): number[] => {
   const out: number[] = new Array(closes.length).fill(NaN);
   if (closes.length <= period) return out;
   let gainSum = 0;
@@ -57,12 +57,7 @@ export interface MacdResult {
   hist: number[];
 }
 
-export function macd(
-  closes: number[],
-  fast = 12,
-  slow = 26,
-  signalPeriod = 9,
-): MacdResult {
+export const macd = (closes: number[], fast = 12, slow = 26, signalPeriod = 9): MacdResult => {
   const efast = ema(closes, fast);
   const eslow = ema(closes, slow);
   const macdLine: number[] = closes.map((_, i) =>
@@ -88,7 +83,7 @@ export function macd(
   return { macd: macdLine, signal, hist };
 }
 
-export function atr(candles: Candle[], period = 14): number[] {
+export const atr = (candles: Candle[], period = 14): number[] => {
   const out: number[] = new Array(candles.length).fill(NaN);
   if (candles.length <= period) return out;
   const trs: number[] = [];
@@ -119,11 +114,7 @@ export interface SupertrendResult {
   dir: ('LONG' | 'SHORT')[];
 }
 
-export function supertrend(
-  candles: Candle[],
-  period = 10,
-  mult = 3,
-): SupertrendResult {
+export const supertrend = (candles: Candle[], period = 10, mult = 3): SupertrendResult => {
   const n = candles.length;
   const value: number[] = new Array(n).fill(NaN);
   const dir: ('LONG' | 'SHORT')[] = new Array(n).fill('LONG');
@@ -163,7 +154,7 @@ export interface SwingStructure {
   ll: boolean;
 }
 
-export function swingStructure(candles: Candle[], lookback = 10): SwingStructure {
+export const swingStructure = (candles: Candle[], lookback = 10): SwingStructure => {
   const empty = { hh: false, hl: false, lh: false, ll: false };
   if (candles.length < lookback * 2) return empty;
   const last = candles.slice(-lookback);
@@ -185,7 +176,7 @@ export interface SwingPoints {
   lows: { index: number; price: number }[];
 }
 
-export function swingHighsLows(candles: Candle[], lookback = 5): SwingPoints {
+export const swingHighsLows = (candles: Candle[], lookback = 5): SwingPoints => {
   const highs: { index: number; price: number }[] = [];
   const lows: { index: number; price: number }[] = [];
   const n = candles.length;
@@ -205,11 +196,7 @@ export function swingHighsLows(candles: Candle[], lookback = 5): SwingPoints {
   return { highs, lows };
 }
 
-export function volumeConfirms(
-  candles: Candle[],
-  lookback = 20,
-  threshold = 0.8,
-): boolean {
+export const volumeConfirms = (candles: Candle[], lookback = 20, threshold = 0.8): boolean => {
   if (candles.length < lookback + 1) return false;
   const recent = candles.slice(-lookback - 1, -1);
   const avg = recent.reduce((s, c) => s + c.volume, 0) / recent.length;

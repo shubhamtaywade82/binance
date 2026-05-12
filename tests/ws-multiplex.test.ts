@@ -21,7 +21,7 @@ class FakeSocket extends EventEmitter {
   pong(payload: Buffer): void { this.pongPayloads.push(payload); }
 }
 
-function deliver(sock: FakeSocket, payload: Record<string, unknown>): void {
+const deliver = (sock: FakeSocket, payload: Record<string, unknown>): void => {
   sock.emit('message', Buffer.from(JSON.stringify(payload)));
 }
 
@@ -69,35 +69,35 @@ describe('buildStreamList', () => {
 });
 
 describe('BinanceMultiplexWs', () => {
-  function build(cb = {}) {
-    const sockets: Array<{ url: string; sock: FakeSocket }> = [];
-    const mx = new BinanceMultiplexWs(
-      {
-        baseWsUrl: 'wss://fstream.binance.com',
-        symbols: ['SOLUSDT'],
-        timeframes: ['15m'],
-        product: 'usdm',
-        useBookTicker: true,
-        useAggTrade: true,
-        depthLevels: 20,
-        depthSpeed: '100ms',
-        useMarkPrice: true,
-        wsFactory: (url) => {
-          const sock = new FakeSocket();
-          sockets.push({ url, sock });
-          return sock as unknown as WebSocket;
-        },
-      },
-      cb,
-    );
-    return { mx, sockets };
-  }
+  const build = (cb = {}) => {
+        const sockets: Array<{ url: string; sock: FakeSocket }> = [];
+        const mx = new BinanceMultiplexWs(
+          {
+            baseWsUrl: 'wss://fstream.binance.com',
+            symbols: ['SOLUSDT'],
+            timeframes: ['15m'],
+            product: 'usdm',
+            useBookTicker: true,
+            useAggTrade: true,
+            depthLevels: 20,
+            depthSpeed: '100ms',
+            useMarkPrice: true,
+            wsFactory: (url) => {
+              const sock = new FakeSocket();
+              sockets.push({ url, sock });
+              return sock as unknown as WebSocket;
+            },
+          },
+          cb,
+        );
+        return { mx, sockets };
+      }
 
-  function socketFor(sockets: Array<{ url: string; sock: FakeSocket }>, route: 'market' | 'public'): FakeSocket {
-    const found = sockets.find((s) => s.url.includes(`/${route}/`));
-    if (!found) throw new Error(`missing ${route} socket`);
-    return found.sock;
-  }
+  const socketFor = (sockets: Array<{ url: string; sock: FakeSocket }>, route: 'market' | 'public'): FakeSocket => {
+        const found = sockets.find((s) => s.url.includes(`/${route}/`));
+        if (!found) throw new Error(`missing ${route} socket`);
+        return found.sock;
+      }
 
   it('dispatches kline, bookTicker, aggTrade events', () => {
     const onKline = vi.fn();

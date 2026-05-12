@@ -6,7 +6,7 @@ import { computeSignalVerdict, DIR_CLASS, DIR_LABEL, fmtSignalPrice } from './si
 
 export const SIGNAL_HUD_STORAGE_KEY = 'qt_signal_hud';
 
-export function readSignalHudEnabled() {
+export const readSignalHudEnabled = () => {
   try {
     return localStorage.getItem(SIGNAL_HUD_STORAGE_KEY) !== '0';
   } catch {
@@ -14,7 +14,7 @@ export function readSignalHudEnabled() {
   }
 }
 
-export function storeSignalHudEnabled(on) {
+export const storeSignalHudEnabled = (on) => {
   try {
     localStorage.setItem(SIGNAL_HUD_STORAGE_KEY, on ? '1' : '0');
   } catch {
@@ -22,7 +22,7 @@ export function storeSignalHudEnabled(on) {
   }
 }
 
-function escapeHtml(s) {
+const escapeHtml = (s) => {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -30,17 +30,13 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-function matrixGlyph(dir) {
+const matrixGlyph = (dir) => {
   if (dir === 'LONG') return '▲';
   if (dir === 'SHORT') return '▼';
   return '—';
 }
 
-/**
- * @param {HTMLElement | null} container
- * @param {object | null} signals dashboard payload (no `type` field)
- */
-export function renderStrategyHud(container, signals) {
+export const renderStrategyHud = (container, signals) => {
   if (!container) return;
   if (!signals) {
     container.hidden = true;

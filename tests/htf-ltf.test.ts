@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Candle } from '../src/types';
 import { alignedTrend, biasFromCandles, emaLast } from '../src/strategy/htf-ltf';
 
-function candlesFromCloses(closes: number[], start = 1_000_000): Candle[] {
+const candlesFromCloses = (closes: number[], start = 1_000_000): Candle[] => {
   return closes.map((close, i) => ({
     openTime: start + i * 60_000,
     open: close,

@@ -7,19 +7,15 @@ export interface AppLogger {
   warn(msg: string, meta?: Record<string, unknown>): void;
 }
 
-function consoleLine(msg: string, meta?: Record<string, unknown>): string {
+const consoleLine = (msg: string, meta?: Record<string, unknown>): string => {
   return `${msg} ${meta ? JSON.stringify(meta) : ''}\n`;
 }
 
-function jsonLine(level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>): string {
+const jsonLine = (level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>): string => {
   return `${JSON.stringify({ ts: new Date().toISOString(), level, msg, ...meta })}\n`;
 }
 
-/**
- * Stdout/stderr for humans in the terminal, optional NDJSON file for persistence.
- * Set `APP_LOG_PATH` (e.g. `./logs/app.ndjson`) to append one JSON object per line.
- */
-export function createAppLogger(cfg: AppConfig): AppLogger {
+export const createAppLogger = (cfg: AppConfig): AppLogger => {
   const filePath = (cfg.APP_LOG_PATH ?? '').trim();
   let fileWriteWarned = false;
 

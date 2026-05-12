@@ -60,7 +60,7 @@ const SKIP_ANCESTOR = new Set(['CODE', 'PRE', 'SCRIPT', 'STYLE', 'KBD', 'SAMP'])
 
 let domPurifyHighlightHooked = false;
 
-function ensureHighlightHook() {
+const ensureHighlightHook = () => {
   if (domPurifyHighlightHooked) return;
   domPurifyHighlightHooked = true;
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -74,12 +74,7 @@ function ensureHighlightHook() {
   });
 }
 
-/**
- * @param {Document} doc
- * @param {string} text
- * @returns {DocumentFragment | null}
- */
-function fragmentWithHighlights(doc, text) {
+const fragmentWithHighlights = (doc, text) => {
   const re = new RegExp(HIGHLIGHT_RE.source, HIGHLIGHT_RE.flags);
   const frag = doc.createDocumentFragment();
   let last = 0;
@@ -111,11 +106,7 @@ function fragmentWithHighlights(doc, text) {
   return frag;
 }
 
-/**
- * @param {string} sanitizedHtml
- * @returns {string}
- */
-function applyKeywordHighlights(sanitizedHtml) {
+const applyKeywordHighlights = (sanitizedHtml) => {
   if (typeof DOMParser === 'undefined') return sanitizedHtml;
   const doc = new DOMParser().parseFromString(
     `<div id="ai-brief-hl-root">${sanitizedHtml}</div>`,
@@ -151,10 +142,7 @@ function applyKeywordHighlights(sanitizedHtml) {
   return root.innerHTML;
 }
 
-/**
- * @param {string} s
- */
-export function escapeHtml(s) {
+export const escapeHtml = (s) => {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -162,11 +150,7 @@ export function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * @param {string | null | undefined} markdown
- * @returns {string}
- */
-export function renderAiBriefMarkdown(markdown) {
+export const renderAiBriefMarkdown = (markdown) => {
   const src = typeof markdown === 'string' ? markdown : '';
   if (!src.trim()) {
     return '<p class="ai-brief-empty">—</p>';

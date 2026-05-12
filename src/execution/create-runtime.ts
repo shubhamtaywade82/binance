@@ -20,17 +20,11 @@ export interface ExecutionRuntime {
   stopFunding?: () => void;
 }
 
-function symbolFromPair(cfg: AppConfig, _pair: string): string {
+const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
   return cfg.BINANCE_SYMBOL.trim().toUpperCase();
 }
 
-/**
- * Build the execution runtime based on config:
- *   - `EXECUTION_MODE=paper`              → simulated fills + local ledger
- *   - `EXECUTION_MODE=live` + `BINANCE_EXECUTION_ADAPTER=true` → Binance FAPI REST
- *   - `EXECUTION_MODE=live`               → CoinDCX REST adapter (legacy)
- */
-export function createExecutionRuntime(cfg: AppConfig, cdcx: CoinDcxFuturesClient): ExecutionRuntime {
+export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClient): ExecutionRuntime => {
   const book = new BookTickerFeed({
     wsBase: binanceWsBase(cfg),
     symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],

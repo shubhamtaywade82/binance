@@ -24,7 +24,7 @@ export interface DepthDiff {
 
 export type DesyncCallback = (info: { reason: string; lastU: number; gotU: number; gotUFirst: number }) => void;
 
-function parseSide(rows: Array<[string | number, string | number]>): Map<number, number> {
+const parseSide = (rows: Array<[string | number, string | number]>): Map<number, number> => {
   const m = new Map<number, number>();
   for (const [p, q] of rows) {
     const price = Number(p);
@@ -36,7 +36,7 @@ function parseSide(rows: Array<[string | number, string | number]>): Map<number,
   return m;
 }
 
-function applySide(side: Map<number, number>, rows: Array<[string | number, string | number]>): void {
+const applySide = (side: Map<number, number>, rows: Array<[string | number, string | number]>): void => {
   for (const [p, q] of rows) {
     const price = Number(p);
     const qty = Number(q);

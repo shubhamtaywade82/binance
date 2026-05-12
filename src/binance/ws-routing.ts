@@ -9,7 +9,7 @@ export type BinanceWsRoute = BinanceUsdmWsRoute | 'spot';
 const ROUTED_SUFFIX = /\/(market|public|private)(\/(ws|stream))?$/;
 const STREAM_SUFFIX = /\/(ws|stream)$/;
 
-export function normalizeWsRoot(baseWsUrl: string, product: BinanceProductWs): string {
+export const normalizeWsRoot = (baseWsUrl: string, product: BinanceProductWs): string => {
   let root = baseWsUrl.replace(/\/$/, '');
   if (product === 'usdm') {
     root = root.replace(ROUTED_SUFFIX, '');
@@ -19,7 +19,7 @@ export function normalizeWsRoot(baseWsUrl: string, product: BinanceProductWs): s
   return root;
 }
 
-export function routeForStream(product: BinanceProductWs, stream: string): BinanceWsRoute {
+export const routeForStream = (product: BinanceProductWs, stream: string): BinanceWsRoute => {
   if (product === 'spot') return 'spot';
   const lower = stream.toLowerCase();
   if (
@@ -32,15 +32,11 @@ export function routeForStream(product: BinanceProductWs, stream: string): Binan
   return 'market';
 }
 
-/** Returns true when stream carries liquidation order events. */
-export function isForceOrderStream(stream: string): boolean {
+export const isForceOrderStream = (stream: string): boolean => {
   return stream.toLowerCase().includes('@forceorder');
 }
 
-export function groupStreamsByRoute(
-  product: BinanceProductWs,
-  streams: Iterable<string>,
-): Map<BinanceWsRoute, string[]> {
+export const groupStreamsByRoute = (product: BinanceProductWs, streams: Iterable<string>): Map<BinanceWsRoute, string[]> => {
   const grouped = new Map<BinanceWsRoute, string[]>();
   for (const stream of streams) {
     const route = routeForStream(product, stream);
@@ -51,24 +47,14 @@ export function groupStreamsByRoute(
   return grouped;
 }
 
-export function buildCombinedStreamUrl(
-  baseWsUrl: string,
-  product: BinanceProductWs,
-  route: BinanceWsRoute,
-  streams: string[],
-): string {
+export const buildCombinedStreamUrl = (baseWsUrl: string, product: BinanceProductWs, route: BinanceWsRoute, streams: string[]): string => {
   const root = normalizeWsRoot(baseWsUrl, product);
   const joined = streams.join('/');
   if (product === 'spot') return `${root}/stream?streams=${joined}`;
   return `${root}/${route}/stream?streams=${joined}`;
 }
 
-export function buildRawStreamUrl(
-  baseWsUrl: string,
-  product: BinanceProductWs,
-  route: BinanceWsRoute,
-  stream: string,
-): string {
+export const buildRawStreamUrl = (baseWsUrl: string, product: BinanceProductWs, route: BinanceWsRoute, stream: string): string => {
   const root = normalizeWsRoot(baseWsUrl, product);
   if (product === 'spot') return `${root}/ws/${stream}`;
   return `${root}/${route}/ws/${stream}`;

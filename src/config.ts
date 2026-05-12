@@ -321,8 +321,7 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-/** Binance symbols for multiplex: primary first, then watchlist extras (deduped). */
-export function multiplexBinanceSymbols(cfg: AppConfig): string[] {
+export const multiplexBinanceSymbols = (cfg: AppConfig): string[] => {
   const primary = cfg.BINANCE_SYMBOL.trim().toUpperCase();
   const wl = cfg.BINANCE_WATCHLIST ?? [];
   const extra = wl.filter((s) => s !== primary);
@@ -336,11 +335,11 @@ export const OLLAMA_CLOUD_API_URL = 'https://ollama.com' as const;
 
 export type OllamaTarget = 'local' | 'cloud';
 
-export function ollamaApiUrl(target: OllamaTarget): string {
+export const ollamaApiUrl = (target: OllamaTarget): string => {
   return target === 'cloud' ? OLLAMA_CLOUD_API_URL : OLLAMA_LOCAL_API_URL;
 }
 
-export function applyTradingAssetPreset(cfg: AppConfig): AppConfig {
+export const applyTradingAssetPreset = (cfg: AppConfig): AppConfig => {
   if (cfg.TRADING_ASSET === 'custom') return cfg;
   const p = TRADING_ASSET_PRESETS[cfg.TRADING_ASSET];
   return {
@@ -350,25 +349,19 @@ export function applyTradingAssetPreset(cfg: AppConfig): AppConfig {
   };
 }
 
-export function loadConfig(): AppConfig {
+export const loadConfig = (): AppConfig => {
   const parsed = AppConfigSchema.parse(process.env);
   return applyTradingAssetPreset(parsed);
 }
 
-/** USD-M REST per https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info */
-export function binanceRestBase(cfg: AppConfig): string {
+export const binanceRestBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
 
-/**
- * Stream host root (no `/market` or `/public` suffix). For USD-M, multiplex builds
- * `…/market/stream` vs `…/public/stream` per Binance routed WebSocket docs.
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams
- */
-export function binanceWsBase(cfg: AppConfig): string {
+export const binanceWsBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';

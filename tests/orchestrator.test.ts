@@ -6,7 +6,7 @@ import { BookTickerFeed } from '../src/execution/paper/book-ticker-feed';
 import type { ExecutionRuntime } from '../src/execution/create-runtime';
 import { createStubExecutionAdapter } from './stub-execution-adapter';
 
-function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
+const makeCfg = (over: Partial<AppConfig> = {}): AppConfig => {
   return {
     TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',
@@ -75,7 +75,7 @@ function makeCfg(over: Partial<AppConfig> = {}): AppConfig {
   } as AppConfig;
 }
 
-function stubRuntime(cfg: AppConfig): ExecutionRuntime {
+const stubRuntime = (cfg: AppConfig): ExecutionRuntime => {
   const book = new BookTickerFeed({
     wsBase: 'wss://fstream.binance.com',
     symbols: [cfg.BINANCE_SYMBOL.toUpperCase()],
@@ -88,7 +88,7 @@ function stubRuntime(cfg: AppConfig): ExecutionRuntime {
 
 const noopLog = { info: () => undefined, warn: () => undefined };
 
-function trendingCandles(n: number, start = 100, step = 0.5): Candle[] {
+const trendingCandles = (n: number, start = 100, step = 0.5): Candle[] => {
   return Array.from({ length: n }, (_, i) => {
     const close = start + i * step + Math.sin(i / 2) * 0.1;
     return {
@@ -102,11 +102,11 @@ function trendingCandles(n: number, start = 100, step = 0.5): Candle[] {
   });
 }
 
-function fakeWs() {
+const fakeWs = () => {
   return { start: vi.fn(), stop: vi.fn() } as unknown as import('../src/binance/ws-streams').BinanceMarketWs;
 }
 
-function fakeCdcx() {
+const fakeCdcx = () => {
   return {
     getFuturesInstrumentDetails: vi.fn().mockResolvedValue({}),
     createFuturesOrder: vi.fn(),

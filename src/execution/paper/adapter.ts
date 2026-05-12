@@ -216,6 +216,6 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   }
 }
 
-function sleep(ms: number): Promise<void> {
+const sleep = (ms: number): Promise<void> => {
   return new Promise((r) => setTimeout(r, ms));
 }

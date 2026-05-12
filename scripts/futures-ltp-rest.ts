@@ -35,7 +35,7 @@ interface Premium {
   time?: number;
 }
 
-async function fetchRow(): Promise<void> {
+const fetchRow = async (): Promise<void> => {
   const [t24, prem] = await Promise.all([
     axios.get<Ticker24h>(`${REST_BASE}/fapi/v1/ticker/24hr`, {
       params: { symbol },
@@ -74,7 +74,7 @@ console.log(
 
 let stopping = false;
 
-async function loop(): Promise<void> {
+const loop = async (): Promise<void> => {
   while (!stopping) {
     try {
       await fetchRow();
@@ -85,7 +85,7 @@ async function loop(): Promise<void> {
   }
 }
 
-function shutdown(): void {
+const shutdown = (): void => {
   stopping = true;
   process.exit(0);
 }

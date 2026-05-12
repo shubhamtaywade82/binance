@@ -19,7 +19,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function makeAdapter(opts: { initialUsdt?: number; maint?: number; snapMs?: number } = {}) {
+const makeAdapter = (opts: { initialUsdt?: number; maint?: number; snapMs?: number } = {}) => {
   const book = new BookTickerFeed({ wsBase: 'wss://example', symbols: ['SOLUSDT'] });
   const wallet = new PaperWallet(opts.initialUsdt ?? 10_000);
   const liquidation = new LiquidationEngine(opts.maint ?? 0.005);

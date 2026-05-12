@@ -125,11 +125,11 @@ interface RouteConnection {
   subscriptions: Set<string>;
 }
 
-function isPartialDepthStream(stream: string | undefined): boolean {
+const isPartialDepthStream = (stream: string | undefined): boolean => {
   return stream !== undefined && /@depth(5|10|20)(@|$)/.test(stream.toLowerCase());
 }
 
-export function buildStreamList(opts: MultiplexOptions): string[] {
+export const buildStreamList = (opts: MultiplexOptions): string[] => {
   const out: string[] = [];
   for (const s of opts.symbols) {
     const lower = s.toLowerCase();

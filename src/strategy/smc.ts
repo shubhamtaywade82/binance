@@ -31,7 +31,7 @@ export interface SmcAnalysis {
 
 const SWEEP_PCT = 0.003;
 
-function detectSweep(candles: Candle[]): 'LONG' | 'SHORT' | 'NONE' {
+const detectSweep = (candles: Candle[]): 'LONG' | 'SHORT' | 'NONE' => {
   const n = candles.length;
   if (n < 22) return 'NONE';
   const window = candles.slice(-22, -2);
@@ -46,7 +46,7 @@ function detectSweep(candles: Candle[]): 'LONG' | 'SHORT' | 'NONE' {
   return 'NONE';
 }
 
-function detectOrderBlock(candles: Candle[]): OrderBlock | null {
+const detectOrderBlock = (candles: Candle[]): OrderBlock | null => {
   const n = candles.length;
   if (n < 20) return null;
   const a = atr(candles, 14);
@@ -71,7 +71,7 @@ function detectOrderBlock(candles: Candle[]): OrderBlock | null {
   return null;
 }
 
-function detectFvg(candles: Candle[]): FairValueGap | null {
+const detectFvg = (candles: Candle[]): FairValueGap | null => {
   const n = candles.length;
   if (n < 3) return null;
   for (let i = n - 1; i >= 2; i--) {
@@ -87,7 +87,7 @@ function detectFvg(candles: Candle[]): FairValueGap | null {
   return null;
 }
 
-function detectBosChoch(candles: Candle[]): { bos: SmcDirection; choch: SmcDirection } {
+const detectBosChoch = (candles: Candle[]): { bos: SmcDirection; choch: SmcDirection } => {
   const sw = swingHighsLows(candles, 3);
   const last = candles[candles.length - 1];
   if (sw.highs.length < 2 || sw.lows.length < 2) {
@@ -110,12 +110,7 @@ function detectBosChoch(candles: Candle[]): { bos: SmcDirection; choch: SmcDirec
   return { bos, choch };
 }
 
-export function analyzeSmc(
-  candles: Candle[],
-  _currentPrice: number,
-  htfTrend: TrendBias,
-  opts?: { timeframe?: string },
-): SmcAnalysis {
+export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: TrendBias, opts?: { timeframe?: string }): SmcAnalysis => {
   const timeframe = opts?.timeframe ?? 'ltf';
   const liquidity = runLiquidityEngine(candles, timeframe, {});
   const legacySweep = detectSweep(candles);

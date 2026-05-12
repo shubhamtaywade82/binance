@@ -47,7 +47,7 @@ Respond in GitHub-flavored Markdown only (no HTML tags):
 - End with a separate line: *Not financial advice.*
 Keep total under 140 words.`;
 
-function buildUserContent(snapshot: MarketSignalsSnapshot): string {
+const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
   return JSON.stringify({
     symbol: snapshot.symbol,
     refPrice: snapshot.refPrice,
@@ -62,7 +62,7 @@ function buildUserContent(snapshot: MarketSignalsSnapshot): string {
   });
 }
 
-function createTimeoutFetch(timeoutMs: number): typeof fetch {
+const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
   const ms = Math.max(1000, timeoutMs);
   return (input, init) => {
     const t = AbortSignal.timeout(ms);
@@ -74,10 +74,7 @@ function createTimeoutFetch(timeoutMs: number): typeof fetch {
   };
 }
 
-export async function requestMarketBrief(
-  cfg: OllamaBriefConfig,
-  snapshot: MarketSignalsSnapshot,
-): Promise<{ text: string | null; error: string | null }> {
+export const requestMarketBrief = async (cfg: OllamaBriefConfig, snapshot: MarketSignalsSnapshot): Promise<{ text: string | null; error: string | null }> => {
   const model = cfg.model.trim();
   if (!model) {
     return { text: null, error: 'missing_ollama_model' };

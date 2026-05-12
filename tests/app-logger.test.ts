@@ -5,7 +5,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { createAppLogger } from '../src/logging/app-logger';
 import type { AppConfig } from '../src/config';
 
-function cfgWithLog(file: string): AppConfig {
+const cfgWithLog = (file: string): AppConfig => {
   return {
     TRADING_ASSET: 'sol',
     BINANCE_PRODUCT: 'usdm',

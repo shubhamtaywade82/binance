@@ -12,7 +12,7 @@ import {
 } from '../src/strategy/indicators';
 import type { Candle } from '../src/types';
 
-function mkCandles(closes: number[]): Candle[] {
+const mkCandles = (closes: number[]): Candle[] => {
   return closes.map((close, i) => ({
     openTime: i * 60_000,
     open: close,

@@ -23,7 +23,7 @@ import {
 
 const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
 
-function readBookTopLinesEnabled() {
+const readBookTopLinesEnabled = () => {
   try {
     return localStorage.getItem(BOOK_TOP_STORAGE_KEY) !== '0';
   } catch {
@@ -31,7 +31,7 @@ function readBookTopLinesEnabled() {
   }
 }
 
-function storeBookTopLinesEnabled(on) {
+const storeBookTopLinesEnabled = (on) => {
   try {
     localStorage.setItem(BOOK_TOP_STORAGE_KEY, on ? '1' : '0');
   } catch {

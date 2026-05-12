@@ -3,8 +3,7 @@ import type { AppConfig } from '../config';
 import { binanceRestBase } from '../config';
 import type { Candle } from '../types';
 
-/** Binance kline array shape: [ openTime, open, high, low, close, volume, closeTime, ... ] */
-export function normalizeBinanceKlineRow(row: unknown): Candle | null {
+export const normalizeBinanceKlineRow = (row: unknown): Candle | null => {
   if (!Array.isArray(row) || row.length < 6) return null;
   const openTime = Number(row[0]);
   const open = Number(row[1]);
@@ -27,14 +26,7 @@ export interface FetchKlinesParams {
   endTime?: number;
 }
 
-/**
- * Public klines: spot `/api/v3/klines`, USD-M `/fapi/v1/klines`.
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api
- */
-export async function fetchBinanceKlines(
-  cfg: AppConfig,
-  params: FetchKlinesParams,
-): Promise<Candle[]> {
+export const fetchBinanceKlines = async (cfg: AppConfig, params: FetchKlinesParams): Promise<Candle[]> => {
   const base = binanceRestBase(cfg);
   const path = cfg.BINANCE_PRODUCT === 'spot' ? '/api/v3/klines' : '/fapi/v1/klines';
   const limit = Math.min(1500, Math.max(1, params.limit ?? 500));
@@ -69,14 +61,7 @@ export interface FetchKlinesWindowParams {
   limit?: number;
 }
 
-/**
- * Walks Binance klines in chronological order for an intraday or multi-day window.
- * Uses `startTime` paging until `endTime` is reached or the API returns an empty page.
- */
-export async function fetchBinanceKlinesWindow(
-  cfg: AppConfig,
-  params: FetchKlinesWindowParams,
-): Promise<Candle[]> {
+export const fetchBinanceKlinesWindow = async (cfg: AppConfig, params: FetchKlinesWindowParams): Promise<Candle[]> => {
   const page = Math.min(1500, Math.max(1, params.limit ?? 1500));
   const out: Candle[] = [];
   let start = params.startTime;
@@ -105,15 +90,7 @@ export async function fetchBinanceKlinesWindow(
   return out;
 }
 
-/** Fetch the same wall-clock span for several intervals (e.g. 1m, 15m, 1h) for indicator stacks. */
-export async function fetchBinanceKlinesMultiInterval(
-  cfg: AppConfig,
-  symbol: string,
-  intervals: string[],
-  startTime: number,
-  endTime: number,
-  limitPerPage?: number,
-): Promise<Record<string, Candle[]>> {
+export const fetchBinanceKlinesMultiInterval = async (cfg: AppConfig, symbol: string, intervals: string[], startTime: number, endTime: number, limitPerPage?: number): Promise<Record<string, Candle[]>> => {
   const result: Record<string, Candle[]> = {};
   for (const interval of intervals) {
     result[interval] = await fetchBinanceKlinesWindow(cfg, {

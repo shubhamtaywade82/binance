@@ -13,7 +13,7 @@ import type { InstrumentPrecision } from './mapping/precision';
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const log = createAppLogger(cfg);
 

@@ -24,24 +24,23 @@ const MIN_D1 = 22;
 const MIN_H4 = 30;
 const MIN_STACK = 30;
 
-function bosMatchesDirection(smc: SmcAnalysis, dir: TrendBias): boolean {
+const bosMatchesDirection = (smc: SmcAnalysis, dir: TrendBias): boolean => {
   if (dir === 'LONG') return smc.bos === 'BULLISH';
   if (dir === 'SHORT') return smc.bos === 'BEARISH';
   return false;
 }
 
-function chochMatchesDirection(smc: SmcAnalysis, dir: TrendBias): boolean {
+const chochMatchesDirection = (smc: SmcAnalysis, dir: TrendBias): boolean => {
   if (dir === 'LONG') return smc.choch === 'BULLISH';
   if (dir === 'SHORT') return smc.choch === 'BEARISH';
   return false;
 }
 
-function structureGate(smc: SmcAnalysis, dir: TrendBias): boolean {
+const structureGate = (smc: SmcAnalysis, dir: TrendBias): boolean => {
   return bosMatchesDirection(smc, dir) || chochMatchesDirection(smc, dir);
 }
 
-/** Counts OB + favorable sweep + BOS/CHoCH gate (0–3). Entry needs ≥2. */
-function setupHits(candles: Candle[], refPrice: number, dir: TrendBias): number {
+const setupHits = (candles: Candle[], refPrice: number, dir: TrendBias): number => {
   if (candles.length < MIN_STACK) return 0;
   const smc = analyzeSmc(candles, refPrice, dir);
   let hits = 0;
@@ -55,7 +54,7 @@ function setupHits(candles: Candle[], refPrice: number, dir: TrendBias): number 
   return hits;
 }
 
-function pdhPdlFilter(dir: TrendBias, refPrice: number, d1: Candle[]): boolean {
+const pdhPdlFilter = (dir: TrendBias, refPrice: number, d1: Candle[]): boolean => {
   const last = d1[d1.length - 1];
   if (!last) return false;
   if (dir === 'LONG' && refPrice >= last.high * 0.985) return false;
@@ -63,11 +62,7 @@ function pdhPdlFilter(dir: TrendBias, refPrice: number, d1: Candle[]): boolean {
   return true;
 }
 
-/**
- * Institutional-style MTF stack: daily bias → 4h structure → 1h/15m setups → 5m trigger.
- * Designed for USD-M SOL with execution on the 5m timeframe close.
- */
-export function evaluateSolMtfStrategy(input: SolMtfStrategyInput): SolMtfStrategyResult {
+export const evaluateSolMtfStrategy = (input: SolMtfStrategyInput): SolMtfStrategyResult => {
   const reasons: string[] = [];
   const { candles, refPrice, minConfidence } = input;
   const d1 = candles['1d'];

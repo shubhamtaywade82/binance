@@ -25,8 +25,7 @@ const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
 const rolling1m = new Rolling1mTradeStats();
 
-/** Best bid / first ask row from depth snapshot (same ordering as OrderBookManager). */
-function topOfBookFromDepth(depth) {
+const topOfBookFromDepth = (depth) => {
   const b = depth?.bids?.[0]?.price;
   const a = depth?.asks?.[0]?.price;
   if (Number.isFinite(b) && Number.isFinite(a) && b <= a) return { bid: b, ask: a };
@@ -36,12 +35,12 @@ function topOfBookFromDepth(depth) {
 /** Multiplex watch symbol for this browser (matches server `getSym`). */
 let activeWatchSymbol = null;
 
-function shortWatchLabel(sym) {
+const shortWatchLabel = (sym) => {
   if (!sym || typeof sym !== 'string') return '';
   return sym.toUpperCase().replace(/USDT$/i, '').replace(/BUSD$/i, '');
 }
 
-function initWatchlistBar(watchlist, _executionSymbol) {
+const initWatchlistBar = (watchlist, _executionSymbol) => {
   const bar = document.getElementById('watchlist-bar');
   if (!bar) return;
   if (!Array.isArray(watchlist) || watchlist.length <= 1) {
@@ -64,20 +63,19 @@ function initWatchlistBar(watchlist, _executionSymbol) {
   }
 }
 
-function selectWatchSymbol(sym) {
+const selectWatchSymbol = (sym) => {
   if (!sym || sym === activeWatchSymbol) return;
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: sym }));
   }
 }
 
-function msgSymbolUpper(msg) {
+const msgSymbolUpper = (msg) => {
   if (msg.symbol == null || msg.symbol === '') return null;
   return String(msg.symbol).toUpperCase();
 }
 
-/** Live messages include `symbol` when multiplex watchlist is enabled. */
-function appliesToActiveWatch(msg) {
+const appliesToActiveWatch = (msg) => {
   const m = msgSymbolUpper(msg);
   if (m == null) return true;
   return m === activeWatchSymbol;
@@ -87,20 +85,20 @@ let lastPrice = null;
 let lastLtpTarget = null;
 
 // ─── Format helpers ───────────────────────────────────────────────────────
-function fmtSpread(spread) {
+const fmtSpread = (spread) => {
   if (spread == null || !Number.isFinite(spread)) return '—';
   const d = Math.min(8, Math.max(1, getLtpDecimalPlaces() + 2));
   return spread.toFixed(d);
 }
 
-function flashPrice(el, up) {
+const flashPrice = (el, up) => {
   el.classList.remove('flash-up', 'flash-down');
   void el.offsetWidth; // force reflow
   el.classList.add(up ? 'flash-up' : 'flash-down');
 }
 
 // ─── Header update ────────────────────────────────────────────────────────
-function updateHeader({ price, mark, bid, ask }) {
+const updateHeader = ({ price, mark, bid, ask }) => {
   const priceEl = document.getElementById('hdr-price');
 
   if (price != null && Number.isFinite(price)) {
@@ -127,14 +125,14 @@ function updateHeader({ price, mark, bid, ask }) {
 }
 
 // ─── WS Status ────────────────────────────────────────────────────────────
-function setWsStatus(state, text) {
+const setWsStatus = (state, text) => {
   const el = document.getElementById('ws-status');
   const txt = document.getElementById('ws-status-text');
   if (el)  el.className = `ws-status ${state}`;
   if (txt) txt.textContent = text;
 }
 
-function dashboardWebSocketUrl() {
+const dashboardWebSocketUrl = () => {
   const fromEnv = import.meta.env?.VITE_DASHBOARD_WS_URL;
   if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim();
 
@@ -155,7 +153,7 @@ let ws = null;
 let reconnectDelay = 1000;
 let reconnectTimer = null;
 
-function connect() {
+const connect = () => {
   setWsStatus('connecting', `Connecting… (${WS_URL})`);
   ws = new WebSocket(WS_URL);
 
@@ -183,7 +181,7 @@ function connect() {
   });
 }
 
-function scheduleReconnect() {
+const scheduleReconnect = () => {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -192,8 +190,7 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
 }
 
-/** 1m row: trade VWAP over last 60s when agg trades exist; else latest 1m candle typical + vol. */
-function syncVwap1mRow() {
+const syncVwap1mRow = () => {
   const fromTrades = rolling1m.snapshot();
   if (fromTrades.vwap != null && fromTrades.volume != null && fromTrades.volume > 0) {
     gauge.updateVwap(fromTrades.vwap, fromTrades.volume);
@@ -208,7 +205,7 @@ function syncVwap1mRow() {
 }
 
 // ─── Message Dispatcher ───────────────────────────────────────────────────
-function dispatch(msg) {
+const dispatch = (msg) => {
   switch (msg.type) {
     /* ── Snapshot (initial load) ─ */
     case 'snapshot': {
@@ -450,14 +447,14 @@ function dispatch(msg) {
 }
 
 // ─── Imbalance helper ─────────────────────────────────────────────────────
-function imbalanceRatio(bids = [], asks = []) {
+const imbalanceRatio = (bids = [], asks = []) => {
   const bidVol = bids.slice(0, 10).reduce((s, r) => s + r.qty * r.price, 0);
   const askVol = asks.slice(0, 10).reduce((s, r) => s + r.qty * r.price, 0);
   const total = bidVol + askVol;
   return total > 0 ? bidVol / total : 0.5;
 }
 
-function initSidebarTabs() {
+const initSidebarTabs = () => {
   const bar = document.querySelector('.sidebar-tab-bar');
   if (!bar) return;
 

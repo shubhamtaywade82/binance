@@ -22,7 +22,7 @@ const baseCfg: AppConfig = {
 
 afterEach(() => nock.cleanAll());
 
-function makeRows(start: number, count: number, stepMs = 60_000): unknown[][] {
+const makeRows = (start: number, count: number, stepMs = 60_000): unknown[][] => {
   const out: unknown[][] = [];
   for (let i = 0; i < count; i += 1) {
     const t = start + i * stepMs;

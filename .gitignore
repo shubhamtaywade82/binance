@@ -5,4 +5,5 @@ dist-ui/
 *.log
 logs/
 coverage/
-paper/
+# Runtime / ledger data at repo root only — do not match `src/execution/paper/` sources.
+/paper/

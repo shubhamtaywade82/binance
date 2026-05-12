@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { analyzeTrend } from '../src/strategy/trend';
 import type { Candle } from '../src/types';
 
-function candles(closes: number[], vols?: number[]): Candle[] {
+const candles = (closes: number[], vols?: number[]): Candle[] => {
   return closes.map((c, i) => ({
     openTime: i * 60_000,
     open: i === 0 ? c : closes[i - 1],

@@ -6,11 +6,7 @@ import {
   futuresWsApiUrlFromConfig,
 } from './futures-ws-api';
 
-/**
- * Builds a `ws-fapi` trading client when enabled and PEM path + API key are set.
- * Returns `null` when disabled or incomplete configuration (safe no-op for hybrid bot).
- */
-export function tryCreateBinanceFapiWsClient(cfg: AppConfig): BinanceFuturesWsApiClient | null {
+export const tryCreateBinanceFapiWsClient = (cfg: AppConfig): BinanceFuturesWsApiClient | null => {
   if (!cfg.BINANCE_FAPI_WS_ENABLED) return null;
   const pemPath = cfg.BINANCE_FAPI_ED25519_PRIVATE_KEY_PATH.trim();
   const apiKey = cfg.BINANCE_FAPI_API_KEY.trim();

@@ -14,7 +14,7 @@
 import { loadConfig } from '../src/config';
 import { tryCreateBinanceFapiWsClient } from '../src/binance/create-futures-ws-api';
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const client = tryCreateBinanceFapiWsClient(cfg);
   if (!client) {

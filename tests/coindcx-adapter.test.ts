@@ -7,7 +7,7 @@ afterEach(() => {
   nock.cleanAll();
 });
 
-function makeClient(): CoinDcxFuturesClient {
+const makeClient = (): CoinDcxFuturesClient => {
   return new CoinDcxFuturesClient({
     apiKey: 'k', apiSecret: 's',
     apiBaseUrl: 'https://api.coindcx.com',
