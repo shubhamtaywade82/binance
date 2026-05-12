@@ -57,11 +57,11 @@ export const roundToTick = (price: number, tick: number): number => {
 
 export const ltpDisplayDecimalPlaces = (tickSize: number, opts: { min?: number; max?: number; fallback?: number } = {}): number => {
   const min = opts.min ?? 1;
-  const max = opts.max ?? 8;
+  const max = opts.max ?? 10;
   const fallback = Math.min(max, Math.max(min, opts.fallback ?? 4));
   if (!Number.isFinite(tickSize) || tickSize <= 0) return fallback;
   const trimmed = tickSize.toFixed(12).replace(/\.?0+$/, '');
   const dot = trimmed.indexOf('.');
   const frac = dot < 0 ? 0 : trimmed.slice(dot + 1).length;
-  return Math.min(max, Math.max(min, frac + 1));
+  return Math.min(max, Math.max(min, frac + 2));
 }

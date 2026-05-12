@@ -908,7 +908,7 @@ export class ChartManager {
   }
 
   /**
-   * Apply per-symbol LTP decimals from dashboard snapshot (`ltpDecimalPlaces` from Binance tickSize).
+   * Apply per-symbol LTP decimals from dashboard snapshot (`ltpDecimalPlaces`: tick fractional digits + 2).
    * Resnaps the LTP line to the same logical price when the scale changes (e.g. watch symbol switch).
    * @param {{ ltpDecimalPlaces?: number | null }} msg
    */

@@ -188,14 +188,14 @@ export class OrderBookManager {
     const t = this.tick;
     if (!Number.isFinite(t) || t <= 0) return 4;
     if (t >= 1) return 0;
-    return Math.min(8, Math.max(0, Math.ceil(-Math.log10(t))));
+    return Math.min(10, Math.max(0, Math.ceil(-Math.log10(t))));
   }
 
   _fmtPrice(p) {
     if (p == null || !Number.isFinite(p)) return '—';
     const fromTick = this._tickDecimals();
     const fromInst = getLtpDecimalPlaces();
-    const d = Math.min(8, Math.max(fromTick, fromInst));
+    const d = Math.min(10, Math.max(fromTick, fromInst));
     return p.toFixed(d);
   }
 

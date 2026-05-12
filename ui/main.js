@@ -1,7 +1,7 @@
 /**
  * Dashboard bootstrap & WebSocket client.
  * WS URL: `VITE_DASHBOARD_WS_URL` if set.
- * LTP decimals: the bot sends `ltpDecimalPlaces` per symbol (from Binance tickSize); `VITE_LTP_DECIMAL_PLACES`
+ * LTP decimals: the bot sends `ltpDecimalPlaces` per symbol (Binance tickSize fractional digits + 2); `VITE_LTP_DECIMAL_PLACES`
  * is the fallback before the first snapshot (see `ui/ltp-precision.js`).
  * Dev (Vite): same host + path `/__dashboard_ws` (proxied to the bot on 127.0.0.1:4001 — see vite.config.js).
  * Production build: `ws(s)://` page host + `VITE_DASHBOARD_WS_PORT` (default 4001).
@@ -87,7 +87,7 @@ let lastLtpTarget = null;
 // ─── Format helpers ───────────────────────────────────────────────────────
 const fmtSpread = (spread) => {
   if (spread == null || !Number.isFinite(spread)) return '—';
-  const d = Math.min(8, Math.max(1, getLtpDecimalPlaces() + 2));
+  const d = Math.min(12, Math.max(1, getLtpDecimalPlaces() + 2));
   return spread.toFixed(d);
 }
 

@@ -46,7 +46,7 @@ export interface DashboardFeeds {
   orderBookSnapshotRing?: OrderBookSnapshotRing | null;
   /**
    * Shared with {@link HybridOrchestrator}: Binance `exchangeInfo` precision per uppercase symbol.
-   * The UI uses `tickSize` to pick LTP decimal places per active watch symbol.
+   * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits + 2).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
 }
