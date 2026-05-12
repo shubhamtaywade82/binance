@@ -42,3 +42,8 @@ export function fmtLtpDisplay(p) {
   if (p == null || !Number.isFinite(p)) return '—';
   return p.toFixed(ltpDecimalPlaces);
 }
+
+/** Current LTP / instrument display decimal count (after {@link setLtpDecimalPlacesFromServer}). */
+export function getLtpDecimalPlaces() {
+  return ltpDecimalPlaces;
+}

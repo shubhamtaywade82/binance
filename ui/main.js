@@ -10,7 +10,7 @@
 
 import { escapeHtml, renderAiBriefMarkdown } from './ai-brief-render.js';
 import { ChartManager } from './chart.js';
-import { fmtLtpDisplay } from './ltp-precision.js';
+import { fmtLtpDisplay, getLtpDecimalPlaces } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
@@ -87,12 +87,10 @@ let lastPrice = null;
 let lastLtpTarget = null;
 
 // ─── Format helpers ───────────────────────────────────────────────────────
-function fmtPrice(p) {
-  if (p == null || !Number.isFinite(p)) return '—';
-  if (p >= 10000) return p.toFixed(1);
-  if (p >= 1000)  return p.toFixed(2);
-  if (p >= 10)    return p.toFixed(3);
-  return p.toFixed(4);
+function fmtSpread(spread) {
+  if (spread == null || !Number.isFinite(spread)) return '—';
+  const d = Math.min(8, Math.max(1, getLtpDecimalPlaces() + 2));
+  return spread.toFixed(d);
 }
 
 function flashPrice(el, up) {
@@ -106,23 +104,25 @@ function updateHeader({ price, mark, bid, ask }) {
   const priceEl = document.getElementById('hdr-price');
 
   if (price != null && Number.isFinite(price)) {
-    priceEl.textContent = fmtPrice(price);
+    priceEl.textContent = fmtLtpDisplay(price);
     if (lastPrice !== null && price !== lastPrice) flashPrice(priceEl, price > lastPrice);
     lastPrice = price;
   }
   if (mark != null) {
     const el = document.getElementById('hdr-mark');
-    if (el) el.textContent = fmtPrice(mark);
+    if (el) el.textContent = fmtLtpDisplay(mark);
   }
   if (bid != null) {
     const el = document.getElementById('hdr-bid');
-    if (el) el.textContent = fmtPrice(bid);
+    if (el) el.textContent = fmtLtpDisplay(bid);
   }
   if (ask != null) {
     const el = document.getElementById('hdr-ask');
-    if (el) el.textContent = fmtPrice(ask);
+    if (el) el.textContent = fmtLtpDisplay(ask);
     const spreadEl = document.getElementById('hdr-spread');
-    if (spreadEl && bid != null) spreadEl.textContent = (ask - bid).toFixed(4);
+    if (spreadEl && bid != null && Number.isFinite(bid)) {
+      spreadEl.textContent = fmtSpread(ask - bid);
+    }
   }
 }
 

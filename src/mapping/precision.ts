@@ -60,7 +60,8 @@ export function roundToTick(price: number, tick: number): number {
 }
 
 /**
- * Decimal places for LTP / chart stepping from Binance `PRICE_FILTER.tickSize`.
+ * Decimal places for LTP / chart stepping: Binance `PRICE_FILTER.tickSize` fractional digits **plus one**
+ * so the UI can show sub-tick movement while order prices still round to the exchange tick.
  * Uses a fixed-point string so float noise (e.g. 0.0099999) does not shrink the scale.
  */
 export function ltpDisplayDecimalPlaces(
@@ -74,5 +75,5 @@ export function ltpDisplayDecimalPlaces(
   const trimmed = tickSize.toFixed(12).replace(/\.?0+$/, '');
   const dot = trimmed.indexOf('.');
   const frac = dot < 0 ? 0 : trimmed.slice(dot + 1).length;
-  return Math.min(max, Math.max(min, frac));
+  return Math.min(max, Math.max(min, frac + 1));
 }

@@ -6,11 +6,11 @@ import {
 } from '../src/mapping/precision';
 
 describe('ltpDisplayDecimalPlaces', () => {
-  it('matches tickSize fractional digits', () => {
-    expect(ltpDisplayDecimalPlaces(0.01)).toBe(2);
-    expect(ltpDisplayDecimalPlaces(0.1)).toBe(1);
-    expect(ltpDisplayDecimalPlaces(0.5)).toBe(1);
-    expect(ltpDisplayDecimalPlaces(0.001)).toBe(3);
+  it('uses tick fractional digits plus one (sub-tick display)', () => {
+    expect(ltpDisplayDecimalPlaces(0.01)).toBe(3);
+    expect(ltpDisplayDecimalPlaces(0.1)).toBe(2);
+    expect(ltpDisplayDecimalPlaces(0.5)).toBe(2);
+    expect(ltpDisplayDecimalPlaces(0.001)).toBe(4);
   });
 
   it('respects min max and fallback', () => {

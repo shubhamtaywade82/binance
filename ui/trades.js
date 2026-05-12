@@ -2,6 +2,8 @@
  * trades.js — Live Trade Tape
  */
 
+import { fmtLtpDisplay } from './ltp-precision.js';
+
 export class TradeTapeManager {
   constructor() {
     this.maxRows = 120;
@@ -81,10 +83,8 @@ export class TradeTapeManager {
   }
 
   _fmtPrice(p) {
-    if (p >= 10000) return p.toFixed(1);
-    if (p >= 1000)  return p.toFixed(2);
-    if (p >= 10)    return p.toFixed(3);
-    return p.toFixed(4);
+    if (p == null || !Number.isFinite(p)) return '—';
+    return fmtLtpDisplay(p);
   }
   _fmtQty(q) {
     if (q >= 1000) return `${(q / 1000).toFixed(2)}K`;

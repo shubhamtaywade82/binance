@@ -10,6 +10,7 @@ import {
   storeCandleThemeId,
 } from './candle-themes.js';
 import {
+  fmtLtpDisplay,
   ltpPriceFromTicks,
   ltpTicksFromPrice,
   setLtpDecimalPlacesFromServer,
@@ -913,6 +914,17 @@ export class ChartManager {
     }
     setLtpDecimalPlacesFromServer(n != null && Number.isFinite(n) ? n : null);
     if (anchor != null && Number.isFinite(anchor)) this._snapLtpTo(anchor);
+    this._syncPriceLocalization();
+  }
+
+  _syncPriceLocalization() {
+    if (!this.chart) return;
+    this.chart.applyOptions({
+      localization: {
+        locale: typeof navigator !== 'undefined' ? navigator.language : 'en-US',
+        priceFormatter: (priceValue) => fmtLtpDisplay(Number(priceValue)),
+      },
+    });
   }
 
   _smoothLtpTo(price) {
@@ -951,6 +963,7 @@ export class ChartManager {
       width: container.clientWidth,
       height: container.clientHeight,
     });
+    this._syncPriceLocalization();
 
     const initialTheme = getCandleTheme(readStoredCandleThemeId());
     this._volumeColorUp = initialTheme.volumeUp;

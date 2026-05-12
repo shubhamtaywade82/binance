@@ -3,6 +3,7 @@
  */
 
 import { aggregateAsks, aggregateBids, defaultTickChoices } from './book-aggregate.js';
+import { getLtpDecimalPlaces } from './ltp-precision.js';
 
 export class OrderBookManager {
   constructor() {
@@ -192,7 +193,10 @@ export class OrderBookManager {
 
   _fmtPrice(p) {
     if (p == null || !Number.isFinite(p)) return '—';
-    return p.toFixed(this._tickDecimals());
+    const fromTick = this._tickDecimals();
+    const fromInst = getLtpDecimalPlaces();
+    const d = Math.min(8, Math.max(fromTick, fromInst));
+    return p.toFixed(d);
   }
 
   _fmtAmt(q) {
