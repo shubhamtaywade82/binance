@@ -67,6 +67,8 @@ const CHART_OPTS = {
     borderColor: 'rgba(255,255,255,0.06)',
     textColor: COLORS.text,
     scaleMargins: { top: 0.08, bottom: 0.28 },
+    alignLabels: true,
+    entireTextOnly: true,
   },
   timeScale: {
     borderColor: 'rgba(255,255,255,0.06)',
@@ -226,14 +228,15 @@ export class ChartManager {
 
   _addSmcPriceLine(price, color, title, lineStyle) {
     if (!this.candleSeries || !Number.isFinite(price)) return;
+    const showAxis = title === 'REF';
     const line = this.candleSeries.createPriceLine({
       price,
       color,
       lineWidth: 1,
       lineStyle: lineStyle ?? LineStyle.Dashed,
       lineVisible: true,
-      axisLabelVisible: Boolean(title),
-      title: title ?? '',
+      axisLabelVisible: showAxis,
+      title: showAxis ? title : '',
       axisLabelColor: color,
     });
     this._smcSignalPriceLines.push(line);
@@ -666,8 +669,8 @@ export class ChartManager {
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         lineVisible: true,
-        axisLabelVisible: true,
-        title: 'BID',
+        axisLabelVisible: false,
+        title: '',
         axisLabelColor: 'rgba(0,230,118,0.95)',
       });
     }
@@ -678,8 +681,8 @@ export class ChartManager {
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         lineVisible: true,
-        axisLabelVisible: true,
-        title: 'ASK',
+        axisLabelVisible: false,
+        title: '',
         axisLabelColor: 'rgba(255,23,68,0.95)',
       });
     }
@@ -701,14 +704,14 @@ export class ChartManager {
     this._bookTopBidLine?.applyOptions({
       price: bid,
       lineVisible: true,
-      axisLabelVisible: true,
+      axisLabelVisible: false,
       color: 'rgba(0,230,118,0.82)',
       axisLabelColor: 'rgba(0,230,118,0.95)',
     });
     this._bookTopAskLine?.applyOptions({
       price: ask,
       lineVisible: true,
-      axisLabelVisible: true,
+      axisLabelVisible: false,
       color: 'rgba(255,23,68,0.82)',
       axisLabelColor: 'rgba(255,23,68,0.95)',
     });
@@ -1207,7 +1210,8 @@ export class ChartManager {
       ...CHART_OPTS.timeScale,
       timeVisible: !dailyLike,
       secondsVisible: false,
-      rightOffset: 10,
+      /** Extra empty space so the last candle is not drawn under stacked price-scale labels. */
+      rightOffset: 22,
       barSpacing: 4,
       fixLeftEdge: false,
       fixRightEdge: false,
