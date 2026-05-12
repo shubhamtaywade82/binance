@@ -22,6 +22,10 @@ const boolFromString = (def: boolean) =>
     .default(def)
     .transform((v) => (typeof v === 'boolean' ? v : v.toLowerCase() === 'true'));
 
+/** Treat empty string as unset so `KEY=` lines work in `.env`. */
+const emptyToUndefined = (v: unknown): unknown =>
+  v === '' || v === undefined || v === null ? undefined : v;
+
 export const AppConfigSchema = z.object({
   /**
    * Primary control: `sol` | `eth` | `btc` sets `BINANCE_SYMBOL` + `COINDCX_PAIR` automatically.
@@ -32,8 +36,8 @@ export const AppConfigSchema = z.object({
     .default('sol')
     .transform((s) => normalizeTradingAsset(s)),
   BINANCE_PRODUCT: BinanceProduct.default('usdm'),
-  BINANCE_REST_BASE: z.string().url().optional(),
-  BINANCE_WS_BASE: z.string().url().optional(),
+  BINANCE_REST_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  BINANCE_WS_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_SYMBOL: z.string().min(1).default('SOLUSDT'),
   BINANCE_KLINE_INTERVAL: z.string().default('15m'),
   BINANCE_HTF_INTERVAL: z.string().default('1h'),
@@ -229,7 +233,7 @@ export const AppConfigSchema = z.object({
   BINANCE_FAPI_API_KEY: z.string().default(''),
   /** PEM file path for Binance API Ed25519 private key (PKCS#8). */
   BINANCE_FAPI_ED25519_PRIVATE_KEY_PATH: z.string().default(''),
-  BINANCE_FAPI_WS_URL: z.string().url().optional(),
+  BINANCE_FAPI_WS_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_FAPI_WS_REQUEST_TIMEOUT_MS: numFromString(30_000),
   /** When true, handshake uses `?returnRateLimits=false`. */
   BINANCE_FAPI_WS_HIDE_RATELIMITS: boolFromString(false),
@@ -238,14 +242,21 @@ export const AppConfigSchema = z.object({
    * Dashboard (`npm run dashboard`): optional LLM narrative from structured signals via `ollama` JS → local Ollama or Ollama Cloud.
    */
   AI_MARKET_BRIEF_ENABLED: boolFromString(false),
-  /** Ollama HTTP API root (local default `http://127.0.0.1:11434`; use `https://ollama.com` for cloud). */
-  OLLAMA_HOST: z.preprocess(
-    (val) => (val === undefined || val === '' ? 'http://127.0.0.1:11434' : val),
-    z.string().url(),
-  ),
+  /**
+   * Which Ollama API base to use (URLs are fixed in code — see `ollamaApiUrl`).
+   * `local` → `http://127.0.0.1:11434` · `cloud` → `https://ollama.com` (set `OLLAMA_API_KEY`).
+   */
+  OLLAMA_TARGET: z
+    .union([z.enum(['local', 'cloud']), z.string()])
+    .default('local')
+    .transform((v) => {
+      const s = String(v).trim().toLowerCase();
+      return s === 'cloud' ? 'cloud' : 'local';
+    })
+    .pipe(z.enum(['local', 'cloud'])),
   /** Model name as known to Ollama (e.g. `llama3.2`, `mistral` — run `ollama pull <name>` locally). */
   OLLAMA_MODEL: z.string().default('llama3.2'),
-  /** Optional Bearer token for Ollama Cloud (`OLLAMA_HOST=https://ollama.com`). */
+  /** Bearer token for Ollama Cloud (required when `OLLAMA_TARGET=cloud`). */
   OLLAMA_API_KEY: z.string().default(''),
   /** Minimum seconds between LLM calls when signals refresh. */
   AI_BRIEF_INTERVAL_SEC: z
@@ -264,6 +275,17 @@ export const AppConfigSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
+
+/** Ollama HTTP API base for `OLLAMA_TARGET=local` (fixed). */
+export const OLLAMA_LOCAL_API_URL = 'http://127.0.0.1:11434' as const;
+/** Ollama HTTP API base for `OLLAMA_TARGET=cloud` (fixed). @see https://github.com/ollama/ollama-js */
+export const OLLAMA_CLOUD_API_URL = 'https://ollama.com' as const;
+
+export type OllamaTarget = 'local' | 'cloud';
+
+export function ollamaApiUrl(target: OllamaTarget): string {
+  return target === 'cloud' ? OLLAMA_CLOUD_API_URL : OLLAMA_LOCAL_API_URL;
+}
 
 export function applyTradingAssetPreset(cfg: AppConfig): AppConfig {
   if (cfg.TRADING_ASSET === 'custom') return cfg;

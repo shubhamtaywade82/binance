@@ -5,7 +5,7 @@
  */
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadConfig, binanceWsBase } from '../config';
+import { loadConfig, binanceWsBase, ollamaApiUrl } from '../config';
 import { BinanceMultiplexWs, type AggTradeEvent, type BookTickerEvent, type DepthPartialEvent } from '../binance/ws-multiplex';
 import { MultiTimeframeStore } from '../binance/multi-tf-store';
 import { LocalOrderBook } from '../binance/orderbook';
@@ -47,6 +47,7 @@ let bestAsk: number | null = null;
 let lastAiBriefAt = 0;
 let aiBriefInflight = false;
 let aiBriefWarnedNoModel = false;
+let aiBriefWarnedCloudKey = false;
 
 function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
   if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
@@ -54,6 +55,13 @@ function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
     if (!aiBriefWarnedNoModel) {
       aiBriefWarnedNoModel = true;
       console.warn('[dashboard] AI_MARKET_BRIEF_ENABLED but OLLAMA_MODEL is empty — skipping.');
+    }
+    return;
+  }
+  if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+    if (!aiBriefWarnedCloudKey) {
+      aiBriefWarnedCloudKey = true;
+      console.warn('[dashboard] OLLAMA_TARGET=cloud but OLLAMA_API_KEY is empty — skipping AI brief.');
     }
     return;
   }
@@ -77,7 +85,7 @@ function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
   aiBriefInflight = true;
   void requestMarketBrief(
     {
-      host: cfg.OLLAMA_HOST,
+      host: ollamaApiUrl(cfg.OLLAMA_TARGET),
       model: cfg.OLLAMA_MODEL,
       apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
       timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
