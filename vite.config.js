@@ -4,7 +4,8 @@ export default defineConfig({
   root: 'ui',
   server: {
     port: 5173,
-    open: true,
+    host: true,
+    open: false,
   },
   build: {
     outDir: '../dist-ui',
