@@ -322,6 +322,30 @@ export class ChartManager {
   }
 
   /**
+   * Valid OHLC + wick clamp (Binance partials can briefly violate h≥l). Returns null if unusable.
+   */
+  _coerceCandle(c) {
+    const t = Number(c.openTime);
+    const o = Number(c.open);
+    const h0 = Number(c.high);
+    const l0 = Number(c.low);
+    const cl = Number(c.close);
+    const v = Number(c.volume);
+    if (![t, o, h0, l0, cl].every(Number.isFinite)) return null;
+    const hi = Math.max(o, cl, h0, l0);
+    const lo = Math.min(o, cl, h0, l0);
+    return {
+      ...c,
+      openTime: t,
+      open: o,
+      high: hi,
+      low: lo,
+      close: cl,
+      volume: Number.isFinite(v) ? v : 0,
+    };
+  }
+
+  /**
    * Canonical candle list: ascending openTime, one row per openTime (last wins).
    * Mirrors server `MultiTimeframeStore.seed` so Lightweight Charts always gets sorted data.
    */
@@ -330,19 +354,9 @@ export class ChartManager {
     const out = [];
     let prevT = -Infinity;
     for (const c of sorted) {
-      const t = Number(c.openTime);
-      if (!Number.isFinite(t)) continue;
-      const row = {
-        ...c,
-        openTime: t,
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-        volume: Number(c.volume),
-      };
-      if (![row.open, row.high, row.low, row.close].every(Number.isFinite)) continue;
-      if (!Number.isFinite(row.volume)) row.volume = 0;
+      const row = this._coerceCandle(c);
+      if (!row) continue;
+      const t = row.openTime;
       if (t === prevT) out[out.length - 1] = row;
       else {
         out.push(row);
@@ -390,7 +404,11 @@ export class ChartManager {
   onSnapshot({ candles, indicators }) {
     this._historyExhausted = {};
     this._historyLoading = {};
-    this.candleMap = candles ?? {};
+    const raw = candles ?? {};
+    this.candleMap = {};
+    for (const [k, v] of Object.entries(raw)) {
+      this.candleMap[k] = Array.isArray(v) ? this._sortedDedupeCandles(v) : v;
+    }
     this.indicMap = indicators ?? {};
     this._loadTf(this.currentTf);
   }
@@ -399,17 +417,8 @@ export class ChartManager {
   onKline(tf, candle, _isFinal) {
     if (!this.candleMap[tf]) this.candleMap[tf] = [];
     const arr = this.candleMap[tf];
-    const ot = Number(candle.openTime);
-    if (!Number.isFinite(ot)) return;
-    const row = {
-      ...candle,
-      openTime: ot,
-      open: Number(candle.open),
-      high: Number(candle.high),
-      low: Number(candle.low),
-      close: Number(candle.close),
-      volume: Number(candle.volume),
-    };
+    const row = this._coerceCandle(candle);
+    if (!row) return;
 
     if (arr.length === 0) {
       arr.push(row);
@@ -430,27 +439,32 @@ export class ChartManager {
     }
     if (arr.length > MAX_STORE_BARS) arr.splice(0, arr.length - MAX_STORE_BARS);
 
+    const canon = this._sortedDedupeCandles(arr);
+    arr.length = 0;
+    arr.push(...canon);
+
     if (tf !== this.currentTf) return;
 
-    const sorted = this._sortedDedupeCandles(arr);
-    const tail = sorted[sorted.length - 1];
+    if (!canon.some((c) => c.openTime === row.openTime)) return;
+
+    const tail = canon[canon.length - 1];
     /** `update()` only matches LW semantics for the latest bar; any other edit needs full setData. */
     if (!tail || tail.openTime !== row.openTime) {
       this._loadTf(tf);
       return;
     }
 
-    const t = Math.floor(row.openTime / 1000);
+    const t = Math.floor(tail.openTime / 1000);
     if (!Number.isFinite(t)) return;
-    const bar = { time: t, open: row.open, high: row.high, low: row.low, close: row.close };
+    const bar = { time: t, open: tail.open, high: tail.high, low: tail.low, close: tail.close };
     if (![bar.open, bar.high, bar.low, bar.close].every(Number.isFinite)) return;
-    const vol = Number.isFinite(row.volume) ? row.volume : 0;
+    const vol = tail.volume;
     try {
       this.candleSeries.update(bar);
       this.volumeSeries.update({
         time: t,
         value: vol,
-        color: row.close >= row.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+        color: tail.close >= tail.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
       });
     } catch (e) {
       console.warn('[chart] candle update failed, resyncing series', e);
