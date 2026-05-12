@@ -117,10 +117,22 @@
               </div>
               <div class="book-toolbar">
                 <span class="book-toolbar-title">Book</span>
-                <label class="book-precision-wrap">
-                  <span class="visually-hidden">Price group</span>
-                  <select id="book-precision" class="book-precision" aria-label="Order book price group"></select>
-                </label>
+                <div class="book-precision-wrap" id="book-precision-wrap">
+                  <span class="visually-hidden" id="book-precision-a11y">Price group</span>
+                  <button
+                    type="button"
+                    id="book-precision-trigger"
+                    class="book-precision book-precision-trigger"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                    aria-controls="book-precision-menu"
+                    aria-labelledby="book-precision-a11y book-precision-label"
+                  >
+                    <span id="book-precision-label" class="book-precision-label">—</span>
+                    <span class="book-precision-chevron" aria-hidden="true"></span>
+                  </button>
+                  <div id="book-precision-menu" class="book-precision-menu" role="listbox" hidden></div>
+                </div>
               </div>
               <div class="book-mark-block">
                 <div id="book-mark-val" class="book-mark-val">—</div>

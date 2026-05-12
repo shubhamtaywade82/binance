@@ -15,20 +15,99 @@ export class OrderBookManager {
     this.amountMode = 'vol';
     this._precisionBound = false;
     this._wired = false;
+    /** @type {(() => void) | null} */
+    this._docCloseUnsub = null;
+  }
+
+  /** @returns {{ trigger: HTMLButtonElement; menu: HTMLElement; label: HTMLElement; wrap: HTMLElement } | null} */
+  _precisionEls() {
+    const trigger = document.getElementById('book-precision-trigger');
+    const menu = document.getElementById('book-precision-menu');
+    const label = document.getElementById('book-precision-label');
+    const wrap = document.getElementById('book-precision-wrap');
+    if (!trigger || !menu || !label || !wrap) return null;
+    return { trigger, menu, label, wrap };
+  }
+
+  _syncPrecisionLabel() {
+    const els = this._precisionEls();
+    if (!els) return;
+    for (const node of els.menu.querySelectorAll('[role="option"]')) {
+      const v = Number(node.getAttribute('data-value'));
+      if (Number.isFinite(v) && Math.abs(v - this.tick) < 1e-12) {
+        els.label.textContent = node.textContent?.trim() ?? String(this.tick);
+        return;
+      }
+    }
+    els.label.textContent = String(this.tick);
+  }
+
+  _setOptionSelection() {
+    const els = this._precisionEls();
+    if (!els) return;
+    els.menu.querySelectorAll('[role="option"]').forEach((node) => {
+      const v = Number(node.getAttribute('data-value'));
+      const on = Number.isFinite(v) && Math.abs(v - this.tick) < 1e-12;
+      node.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  }
+
+  _closePrecisionMenu() {
+    const els = this._precisionEls();
+    if (!els) return;
+    els.menu.hidden = true;
+    els.trigger.setAttribute('aria-expanded', 'false');
+    if (this._docCloseUnsub) {
+      this._docCloseUnsub();
+      this._docCloseUnsub = null;
+    }
+  }
+
+  _openPrecisionMenu() {
+    const els = this._precisionEls();
+    if (!els) return;
+    els.menu.hidden = false;
+    els.trigger.setAttribute('aria-expanded', 'true');
+    this._setOptionSelection();
+    if (this._docCloseUnsub) return;
+    const onDoc = (e) => {
+      if (!els.wrap.contains(e.target)) this._closePrecisionMenu();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') this._closePrecisionMenu();
+    };
+    document.addEventListener('mousedown', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
+    this._docCloseUnsub = () => {
+      document.removeEventListener('mousedown', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
   }
 
   /** Wire controls once the Live tab DOM exists. */
   init() {
     if (this._wired) return;
-    const sel = document.getElementById('book-precision');
+    const els = this._precisionEls();
     const root = document.getElementById('book-panel');
-    if (!sel || !root) return;
+    if (!els || !root) return;
     this._wired = true;
 
-    sel.addEventListener('change', () => {
-      this.tick = Number(sel.value);
-      if (!Number.isFinite(this.tick) || this.tick <= 0) this.tick = 0.01;
+    els.trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (els.menu.hidden) this._openPrecisionMenu();
+      else this._closePrecisionMenu();
+    });
+
+    els.menu.addEventListener('click', (e) => {
+      const btn = e.target.closest('[role="option"]');
+      if (!btn || !els.menu.contains(btn)) return;
+      const v = Number(btn.getAttribute('data-value'));
+      if (!Number.isFinite(v) || v <= 0) return;
+      this.tick = v;
+      this._syncPrecisionLabel();
+      this._setOptionSelection();
       this._render();
+      this._closePrecisionMenu();
     });
 
     root.querySelectorAll('[data-book-filter]').forEach((btn) => {
@@ -78,14 +157,19 @@ export class OrderBookManager {
   }
 
   _ensurePrecisionOptions() {
-    const sel = document.getElementById('book-precision');
-    if (!sel) return;
+    const els = this._precisionEls();
+    if (!els) return;
     const mid = this._midRef();
     if (mid == null) return;
 
     if (!this._precisionBound) {
       const choices = defaultTickChoices(mid);
-      sel.innerHTML = choices.map((c) => `<option value="${c.value}">${c.label}</option>`).join('');
+      els.menu.innerHTML = choices
+        .map(
+          (c) =>
+            `<button type="button" class="book-precision-option" role="option" data-value="${c.value}">${c.label}</button>`,
+        )
+        .join('');
       const hasCurrent = choices.some((c) => Math.abs(c.tick - this.tick) < 1e-12);
       if (!hasCurrent) {
         const nearest = choices.reduce((best, c) =>
@@ -93,7 +177,8 @@ export class OrderBookManager {
         choices[0]);
         this.tick = nearest.tick;
       }
-      sel.value = String(this.tick);
+      this._syncPrecisionLabel();
+      this._setOptionSelection();
       this._precisionBound = true;
     }
   }

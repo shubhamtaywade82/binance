@@ -59,7 +59,7 @@
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; background: var(--bg-base); color: var(--text-primary); font-family: var(--font-ui); font-size: 13px; }
+html, body { height: 100%; overflow: hidden; background: var(--bg-base); color: var(--text-primary); font-family: var(--font-ui); font-size: 13px; color-scheme: dark; }
 
 .visually-hidden {
   position: absolute;
@@ -370,7 +370,11 @@ body::before {
   color: var(--text-dim);
 }
 
-.book-precision-wrap { flex-shrink: 0; }
+.book-precision-wrap {
+  flex-shrink: 0;
+  position: relative;
+  min-width: 5.5rem;
+}
 .book-precision {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -383,9 +387,78 @@ body::before {
   cursor: pointer;
   min-width: 64px;
 }
-.book-precision:focus {
+.book-precision-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.book-precision-label { flex: 1; min-width: 0; }
+.book-precision-chevron {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-secondary);
+  opacity: 0.9;
+  transition: transform 0.15s ease;
+  transform-origin: 50% 35%;
+}
+.book-precision-trigger[aria-expanded="true"] .book-precision-chevron {
+  transform: rotate(180deg);
+}
+.book-precision:focus,
+.book-precision-trigger:focus-visible {
   outline: none;
   border-color: var(--border-accent);
+}
+.book-precision-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 200;
+  width: max(100%, 7.5rem);
+  padding: 4px 0;
+  margin: 0;
+  list-style: none;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  max-height: min(280px, 50vh);
+  overflow-y: auto;
+}
+.book-precision-menu[hidden] {
+  display: none !important;
+}
+.book-precision-option {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.book-precision-option:hover,
+.book-precision-option:focus-visible {
+  background: var(--bg-row-hover);
+  outline: none;
+}
+.book-precision-option[aria-selected="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
 }
 
 .book-mark-block {
