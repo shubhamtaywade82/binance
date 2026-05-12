@@ -19,6 +19,16 @@ export class SignalsPanel {
   _render(s) {
     if (!s) return;
 
+    const meta = s.signalMeta;
+    if (meta) {
+      const hl = document.getElementById('sig-htf-label');
+      if (hl) hl.textContent = `HTF Bias (${meta.htf})`;
+      const tl = document.getElementById('sig-trend-label');
+      if (tl) tl.textContent = `Trend (${meta.trendSeriesTf})`;
+      const mh = document.getElementById('sig-matrix-header');
+      if (mh) mh.textContent = `Trend Matrix (${meta.trendSeriesTf})`;
+    }
+
     // HTF Bias
     this._setVal('sig-htf', s.htfBias, DIR_LABEL[s.htfBias] ?? s.htfBias, DIR_CLASS[s.htfBias] ?? 'neutral');
     // LTF

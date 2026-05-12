@@ -38,6 +38,27 @@ export interface DashboardBridge {
   stop: () => Promise<void>;
 }
 
+/** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
+export interface DashboardSignalsPayload {
+  refPrice: number;
+  refPriceTf: string;
+  htfBias: string;
+  ltfDirection: string;
+  ltfConfidence: number;
+  ltfScore: number;
+  ltfSignals: unknown;
+  smc: {
+    score: number;
+    liquiditySweep: string;
+    orderBlock: { type: string; low: number; high: number } | null;
+    fvg: { type: string } | null;
+    bos: string;
+    choch: string;
+  };
+  solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
+  signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
+}
+
 export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: DashboardFeeds): DashboardBridge {
   const { store, orderbook, tradeTape } = feeds;
   const symbolUpper = cfg.BINANCE_SYMBOL.trim().toUpperCase();
@@ -48,8 +69,8 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   const htfTf = cfg.BINANCE_TIMEFRAMES[1] ?? cfg.BINANCE_HTF_INTERVAL;
   const depthLevelsUi = cfg.BINANCE_DEPTH_LEVELS > 0 ? cfg.BINANCE_DEPTH_LEVELS : 20;
 
-  /** Last chart TF selected in UI (WS `set_chart_tf`) — drives `refPrice` for SMC / AI so it matches the visible chart. */
-  let activeRefTf: string = chartTfsOnStream[0] ?? ltfTf;
+  /** Per-dashboard-client chart TF — drives ref price + trend + SMC series for that browser only. */
+  const refTfByClient = new Map<WebSocket, string>();
 
   let lastMark: number | null = null;
   let bestBid: number | null = null;
@@ -90,7 +111,27 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     return out;
   }
 
-  function maybeRefreshAiBrief(signals: ReturnType<typeof computeSignals>): void {
+  function defaultChartRefTf(): string {
+    return chartTfsOnStream[0] ?? ltfTf;
+  }
+
+  function firstOpenWebSocket(): WebSocket | undefined {
+    for (const c of wss.clients) {
+      if (c.readyState === WebSocket.OPEN) return c;
+    }
+    return undefined;
+  }
+
+  function broadcastSignalsPerClient(): void {
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const tf = refTfByClient.get(client) ?? defaultChartRefTf();
+      const payload = computeSignalsForRefTf(tf);
+      client.send(JSON.stringify({ type: 'signals', ...payload }));
+    }
+  }
+
+  function maybeRefreshAiBrief(signals: DashboardSignalsPayload): void {
     if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
     if (!cfg.OLLAMA_MODEL.trim()) {
       if (!aiBriefWarnedNoModel) {
@@ -204,31 +245,34 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     indicatorDebounce = setTimeout(flush, INDICATOR_BROADCAST_MIN_MS);
   }
 
-  function resolveRefTf(): string {
-    if (chartTfBroadcastSet.has(activeRefTf)) return activeRefTf;
-    return chartTfsOnStream[0] ?? ltfTf;
-  }
-
   function refPriceFromTf(tf: string): number | undefined {
     const s = store.getSeries(symbolUpper, tf);
     const c = s[s.length - 1]?.close;
     return Number.isFinite(c) ? c : undefined;
   }
 
-  function computeSignals() {
+  /** SMC sweep logic needs ~22 bars on the series passed in. */
+  const SMC_MIN_BARS = 22;
+
+  function computeSignalsForRefTf(requestedTf: string): DashboardSignalsPayload {
     const rows = getCandlesByChartTf();
     const candlesLtf = store.getSeries(symbolUpper, ltfTf);
     const candlesHtf = store.getSeries(symbolUpper, htfTf);
-    const refTf = resolveRefTf();
+    const effectiveTf = chartTfBroadcastSet.has(requestedTf) ? requestedTf : defaultChartRefTf();
+    const refSeries = store.getSeries(symbolUpper, effectiveTf);
+
+    const candlesTrend = refSeries.length >= 2 ? refSeries : candlesLtf;
+    const candlesSmc = refSeries.length >= SMC_MIN_BARS ? refSeries : candlesLtf;
+
     const refPrice =
-      refPriceFromTf(refTf) ??
+      refPriceFromTf(effectiveTf) ??
       refPriceFromTf(ltfTf) ??
       (typeof lastMark === 'number' && Number.isFinite(lastMark) ? lastMark : undefined) ??
       0;
 
-    const htfBias = biasFromCandles(candlesHtf);
-    const ltfTrend = analyzeTrend(candlesLtf);
-    const smc = analyzeSmc(candlesLtf, refPrice, htfBias);
+    const htfBiasRaw = biasFromCandles(candlesHtf);
+    const ltfTrend = analyzeTrend(candlesTrend);
+    const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw);
 
     let solMtf = null;
     const c5 = rows['5m'];
@@ -253,8 +297,8 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
     return {
       refPrice,
-      refPriceTf: refTf,
-      htfBias,
+      refPriceTf: effectiveTf,
+      htfBias: String(htfBiasRaw),
       ltfDirection: ltfTrend.direction,
       ltfConfidence: +ltfTrend.confidence.toFixed(3),
       ltfScore: ltfTrend.score,
@@ -268,11 +312,18 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
         choch: smc.choch,
       },
       solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
+      signalMeta: {
+        trendSeriesTf: effectiveTf,
+        htf: htfTf,
+        executionLtf: ltfTf,
+      },
     };
   }
 
-  function buildSnapshot() {
+  function buildSnapshot(forWs: WebSocket): Record<string, unknown> {
     const rows = getCandlesByChartTf();
+    const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
+    const signals = computeSignalsForRefTf(refTf);
     return {
       symbol: symbolUpper,
       availableTimeframes: [...chartTfsOnStream],
@@ -289,7 +340,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       depth: orderbook.topLevels(depthLevelsUi),
       trades: tradeTape.recent(60),
       indicators: computeIndicatorsFromRows(rows),
-      signals: computeSignals(),
+      signals,
     };
   }
 
@@ -320,6 +371,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       store.prependOlder(symbolUpper, tf, older);
       broadcast({ type: 'history_chunk', tf, candles: older });
       broadcast({ type: 'indicators', ...computeIndicatorsFromRows(getCandlesByChartTf()) });
+      broadcastSignalsPerClient();
     } catch (e) {
       ws.send(JSON.stringify({ type: 'history_error', tf, error: (e as Error).message }));
     } finally {
@@ -329,7 +381,8 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
   wss.on('connection', (ws) => {
     log.info('dashboard_client_connected', { clients: wss.clients.size });
-    const snap = buildSnapshot();
+    refTfByClient.set(ws, defaultChartRefTf());
+    const snap = buildSnapshot(ws);
     ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
 
     ws.on('message', (raw) => {
@@ -342,8 +395,9 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       if (msg.type === 'set_chart_tf' && typeof msg.tf === 'string') {
         const tf = msg.tf.trim().toLowerCase();
         if (chartTfBroadcastSet.has(tf)) {
-          activeRefTf = tf;
-          broadcast({ type: 'signals', ...computeSignals() });
+          refTfByClient.set(ws, tf);
+          const payload = computeSignalsForRefTf(tf);
+          ws.send(JSON.stringify({ type: 'signals', ...payload }));
         }
         return;
       }
@@ -353,6 +407,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     });
 
     ws.on('close', () => {
+      refTfByClient.delete(ws);
       log.info('dashboard_client_disconnected', { clients: wss.clients.size });
     });
     ws.on('error', (e) => log.warn('dashboard_client_error', { err: e.message }));
@@ -381,9 +436,10 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
         scheduleIndicatorBroadcast(isFinal);
       }
       if (isFinal && tf === ltfTf) {
-        const signals = computeSignals();
-        broadcast({ type: 'signals', ...signals });
-        void maybeRefreshAiBrief(signals);
+        broadcastSignalsPerClient();
+        const lead = firstOpenWebSocket();
+        const leadTf = lead ? (refTfByClient.get(lead) ?? defaultChartRefTf()) : defaultChartRefTf();
+        void maybeRefreshAiBrief(computeSignalsForRefTf(leadTf));
       }
     },
     onMarkPrice: (u) => {
@@ -454,12 +510,13 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     }, 10_000);
 
     signalsTimer = setInterval(() => {
-      const signals = computeSignals();
-      broadcast({ type: 'signals', ...signals });
-      void maybeRefreshAiBrief(signals);
+      broadcastSignalsPerClient();
+      const lead = firstOpenWebSocket();
+      const leadTf = lead ? (refTfByClient.get(lead) ?? defaultChartRefTf()) : defaultChartRefTf();
+      void maybeRefreshAiBrief(computeSignalsForRefTf(leadTf));
     }, 60_000);
 
-    const bootSignals = computeSignals();
+    const bootSignals = computeSignalsForRefTf(defaultChartRefTf());
     void maybeRefreshAiBrief(bootSignals);
   }
 

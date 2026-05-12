@@ -4,8 +4,16 @@
  */
 import { createChart, LineStyle } from 'lightweight-charts';
 
-/** Per-frame lerp toward target LTP on the custom price line (same-bar ticks only). */
-const LTP_ANIM_ALPHA = 0.22;
+/** LTP line steps by one 0.0001 tick per animation frame (same-bar updates only). */
+const LTP_TICK_SCALE = 10_000;
+
+function ltpTicksFromPrice(p) {
+  return Math.round(Number(p) * LTP_TICK_SCALE);
+}
+
+function ltpPriceFromTicks(ticks) {
+  return ticks / LTP_TICK_SCALE;
+}
 
 const COLORS = {
   bull: '#00e676',
@@ -101,10 +109,10 @@ export class ChartManager {
     this._onNeedHistory = null;
     /** Custom dashed LTP line (series default price line jumps on each tick). */
     this._ltpPriceLine = null;
+    /** Integer price × 10_000 — sequential steps ±1 toward `_ltpTargetTicks`. */
+    this._ltpDisplayTicks = null;
     /** @type {number | null} */
-    this._ltpAnimDisplay = null;
-    /** @type {number | null} */
-    this._ltpTarget = null;
+    this._ltpTargetTicks = null;
     /** @type {number | null} */
     this._ltpRafId = null;
     /** @type {((tf: string) => void) | null} */
@@ -193,8 +201,8 @@ export class ChartManager {
 
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
-    this._ltpTarget = null;
-    this._ltpAnimDisplay = null;
+    this._ltpTargetTicks = null;
+    this._ltpDisplayTicks = null;
     if (this._ltpPriceLine && this.candleSeries) {
       try {
         this.candleSeries.removePriceLine(this._ltpPriceLine);
@@ -220,25 +228,24 @@ export class ChartManager {
 
   _ltpAnimStep() {
     this._ltpRafId = null;
-    const t = this._ltpTarget;
-    const d0 = this._ltpAnimDisplay;
-    if (this._ltpPriceLine == null || t == null || d0 == null || !Number.isFinite(t) || !Number.isFinite(d0)) {
+    if (
+      this._ltpPriceLine == null ||
+      this._ltpDisplayTicks == null ||
+      this._ltpTargetTicks == null ||
+      !Number.isFinite(this._ltpTargetTicks)
+    ) {
       return;
     }
-    let d = d0;
-    const diff = t - d;
-    const eps = Math.max(1e-9 * Math.max(1, Math.abs(t)), 1e-12);
-    if (Math.abs(diff) <= eps) {
-      this._ltpAnimDisplay = t;
-      this._ltpPriceLine.applyOptions({ price: t });
-      this._emitLtpDisplay(t);
+    if (this._ltpDisplayTicks === this._ltpTargetTicks) {
       return;
     }
-    d = d + diff * LTP_ANIM_ALPHA;
-    this._ltpAnimDisplay = d;
-    this._ltpPriceLine.applyOptions({ price: d });
-    this._emitLtpDisplay(d);
-    this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
+    this._ltpDisplayTicks += this._ltpDisplayTicks < this._ltpTargetTicks ? 1 : -1;
+    const p = ltpPriceFromTicks(this._ltpDisplayTicks);
+    this._ltpPriceLine.applyOptions({ price: p });
+    this._emitLtpDisplay(p);
+    if (this._ltpDisplayTicks !== this._ltpTargetTicks) {
+      this._ltpRafId = requestAnimationFrame(() => this._ltpAnimStep());
+    }
   }
 
   _snapLtpTo(price) {
@@ -248,17 +255,19 @@ export class ChartManager {
       return;
     }
     this._cancelLtpAnim();
-    this._ltpTarget = price;
-    this._ltpAnimDisplay = price;
-    this._ensureLtpPriceLine(price);
+    const ticks = ltpTicksFromPrice(price);
+    this._ltpTargetTicks = ticks;
+    this._ltpDisplayTicks = ticks;
+    const p = ltpPriceFromTicks(ticks);
+    this._ensureLtpPriceLine(p);
     this._ltpPriceLine.applyOptions({
-      price,
+      price: p,
       lineVisible: true,
       axisLabelVisible: true,
       color: COLORS.bear,
       axisLabelColor: COLORS.bear,
     });
-    this._emitLtpDisplay(price);
+    this._emitLtpDisplay(p);
   }
 
   _smoothLtpTo(price) {
@@ -267,10 +276,19 @@ export class ChartManager {
       this._emitLtpDisplay(null);
       return;
     }
-    this._ltpTarget = price;
-    this._ensureLtpPriceLine(this._ltpAnimDisplay ?? price);
-    if (this._ltpAnimDisplay == null || !Number.isFinite(this._ltpAnimDisplay)) {
+    const targetTicks = ltpTicksFromPrice(price);
+    this._ltpTargetTicks = targetTicks;
+    const startP = ltpPriceFromTicks(this._ltpDisplayTicks ?? targetTicks);
+    this._ensureLtpPriceLine(startP);
+    if (this._ltpDisplayTicks == null || !Number.isFinite(this._ltpDisplayTicks)) {
       this._snapLtpTo(price);
+      return;
+    }
+    if (this._ltpDisplayTicks === this._ltpTargetTicks) {
+      const p = ltpPriceFromTicks(this._ltpDisplayTicks);
+      this._ensureLtpPriceLine(p);
+      this._ltpPriceLine.applyOptions({ price: p });
+      this._emitLtpDisplay(p);
       return;
     }
     if (this._ltpRafId == null) {
@@ -461,8 +479,8 @@ export class ChartManager {
           from: logicalBefore.from + delta,
           to: logicalBefore.to + delta,
         });
-      } catch {
-        /* ignore */
+      } catch (e) {
+        console.warn('[chart] setVisibleLogicalRange after history', e);
       }
     }
     const rawClose = candles[candles.length - 1]?.close;

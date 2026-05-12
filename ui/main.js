@@ -162,13 +162,19 @@ function dispatch(msg) {
         (Number.isFinite(lastSnap) ? lastSnap : null) ??
         (Number.isFinite(msg.mark) ? msg.mark : null);
       updateHeader({
-        price: ltp,
         mark: Number.isFinite(msg.mark) ? msg.mark : null,
         bid: msg.bestBid,
         ask: msg.bestAsk,
       });
       if (Number.isFinite(msg.mark)) obMgr.setMarkPrice(msg.mark);
       lastLtpTarget = Number.isFinite(ltp) ? ltp : null;
+      if (Number.isFinite(ltp)) {
+        lastPrice = ltp;
+        if (chart.getLastCloseForTf(chart.getCurrentTf()) == null) {
+          const priceEl = document.getElementById('hdr-price');
+          if (priceEl) priceEl.textContent = ltp.toFixed(4);
+        }
+      }
 
       // Compute initial signals from snapshot data
       if (msg.signals) signals.update(msg.signals);
@@ -382,7 +388,7 @@ window.addEventListener('DOMContentLoaded', () => {
       priceEl.textContent = '—';
       return;
     }
-    priceEl.textContent = fmtPrice(p);
+    priceEl.textContent = p.toFixed(4);
   });
   chart.setTfChangeHandler((tf) => {
     if (ws?.readyState === WebSocket.OPEN) {
