@@ -24,6 +24,14 @@ const SYMBOL = cfg.BINANCE_SYMBOL.toUpperCase();
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
 /** Must match UI candle buffer (`buildSnapshot` slice) so MACD/EMA align with price bars. */
 const CHART_BARS_5M = 300;
+/** Snapshot / chart candle counts per timeframe — indicator arrays must use the same slice. */
+const CHART_BARS: Record<string, number> = {
+  '5m': CHART_BARS_5M,
+  '15m': 200,
+  '1h': 100,
+  '4h': 60,
+  '1d': 30,
+};
 const DEPTH_LEVELS = 20;
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -79,15 +87,15 @@ function buildSnapshot() {
     bestBid,
     bestAsk,
     candles: {
-      '5m': candles5m.slice(-CHART_BARS_5M),
-      '15m': candles15m.slice(-200),
-      '1h': candles1h.slice(-100),
-      '4h': candles4h.slice(-60),
-      '1d': candles1d.slice(-30),
+      '5m': candles5m.slice(-CHART_BARS['5m']),
+      '15m': candles15m.slice(-CHART_BARS['15m']),
+      '1h': candles1h.slice(-CHART_BARS['1h']),
+      '4h': candles4h.slice(-CHART_BARS['4h']),
+      '1d': candles1d.slice(-CHART_BARS['1d']),
     },
     depth: orderbook.topLevels(DEPTH_LEVELS),
     trades: tradeTape.recent(60),
-    indicators: computeIndicators(candles5m, candles15m, candles1h),
+    indicators: computeIndicators(candles5m, candles15m, candles1h, candles4h, candles1d),
   };
 }
 
@@ -97,42 +105,53 @@ function finiteSeries(arr: number[]): (number | null)[] {
   return arr.map((v) => (Number.isFinite(v) ? v : null));
 }
 
-function computeIndicators(c5m: Candle[], _c15m: Candle[], c1h: Candle[]) {
-  const cap = CHART_BARS_5M;
-  const c5 = c5m.slice(-cap);
-  const closes5m = c5.map((c) => c.close);
-  const closes1h = c1h.map((c) => c.close);
-
-  const ema9_5m = ema(closes5m, 9);
-  const ema21_5m = ema(closes5m, 21);
-  const ema50_5m = ema(closes5m, 50);
-  const ema9_1h = ema(closes1h, 9);
-  const ema21_1h = ema(closes1h, 21);
-
-  const rsi14_5m = rsi(closes5m, 14);
-
-  const macd5m = macd(closes5m);
-  const st5m = supertrend(c5, 10, 3);
-
+/** One chart timeframe: EMA / RSI / MACD / supertrend aligned to `candles` length. */
+function chartIndicatorBundle(candles: Candle[]) {
+  if (candles.length < 2) return null;
+  const closes = candles.map((c) => c.close);
+  const m = macd(closes);
+  const st = supertrend(candles, 10, 3);
   return {
-    '5m': {
-      ema9: finiteSeries(ema9_5m),
-      ema21: finiteSeries(ema21_5m),
-      ema50: finiteSeries(ema50_5m),
-      rsi: finiteSeries(rsi14_5m),
-      macdHist: finiteSeries(macd5m.hist),
-      macdLine: finiteSeries(macd5m.macd),
-      macdSignal: finiteSeries(macd5m.signal),
-      supertrend: {
-        value: finiteSeries(st5m.value),
-        dir: st5m.dir,
-      },
-    },
-    '1h': {
-      ema9: finiteSeries(ema9_1h).slice(-100),
-      ema21: finiteSeries(ema21_1h).slice(-100),
+    ema9: finiteSeries(ema(closes, 9)),
+    ema21: finiteSeries(ema(closes, 21)),
+    ema50: finiteSeries(ema(closes, 50)),
+    rsi: finiteSeries(rsi(closes, 14)),
+    macdHist: finiteSeries(m.hist),
+    macdLine: finiteSeries(m.macd),
+    macdSignal: finiteSeries(m.signal),
+    supertrend: {
+      value: finiteSeries(st.value),
+      dir: st.dir,
     },
   };
+}
+
+type ChartTfBundle = NonNullable<ReturnType<typeof chartIndicatorBundle>>;
+
+function computeIndicators(
+  c5m: Candle[],
+  c15m: Candle[],
+  c1h: Candle[],
+  c4h: Candle[],
+  c1d: Candle[],
+): Record<string, ChartTfBundle> {
+  const out: Record<string, ChartTfBundle> = {};
+  for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) {
+    const cap = CHART_BARS[tf];
+    const series =
+      tf === '5m'
+        ? c5m
+        : tf === '15m'
+          ? c15m
+          : tf === '1h'
+            ? c1h
+            : tf === '4h'
+              ? c4h
+              : c1d;
+    const bundle = chartIndicatorBundle(series.slice(-cap));
+    if (bundle) out[tf] = bundle;
+  }
+  return out;
 }
 
 // ─── Signal Computation ──────────────────────────────────────────────────────
@@ -227,13 +246,14 @@ const multiplex = new BinanceMultiplexWs(
 
       broadcast({ type: 'kline', tf, candle, isFinal });
 
-      // MACD/EMA must track the same 5m series as the price chart — refresh on every 5m tick
-      // (partial + final), not only on bar close, or the lower panel freezes while candles move.
-      if (tf === '5m') {
+      // Overlays must match the active TF chart — recompute all cached TFs on every kline tick.
+      if (['5m', '15m', '1h', '4h', '1d'].includes(tf)) {
         const c5m = store.getSeries(SYMBOL, '5m');
         const c15m = store.getSeries(SYMBOL, '15m');
         const c1h = store.getSeries(SYMBOL, '1h');
-        const indicators = computeIndicators(c5m, c15m, c1h);
+        const c4h = store.getSeries(SYMBOL, '4h');
+        const c1d = store.getSeries(SYMBOL, '1d');
+        const indicators = computeIndicators(c5m, c15m, c1h, c4h, c1d);
         broadcast({ type: 'indicators', ...indicators });
       }
 
@@ -327,10 +347,10 @@ setInterval(() => {
   await seedHistory();
   multiplex.start();
 
-  httpServer.listen(PORT, () => {
-    console.log(`\n🚀 Dashboard WS Bridge running at ws://localhost:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 Dashboard WS Bridge on ws://0.0.0.0:${PORT} (all interfaces)`);
     console.log(`   Symbol: ${SYMBOL} | Timeframes: ${TIMEFRAMES.join(', ')}`);
-    console.log(`   Open the UI at http://localhost:5173\n`);
+    console.log(`   UI: npm run ui:dev → http://localhost:5173\n`);
   });
 })();
 

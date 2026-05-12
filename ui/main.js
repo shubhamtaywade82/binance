@@ -1,6 +1,7 @@
 /**
- * main.js — Dashboard Bootstrap & WebSocket Client
- * Connects to ws://localhost:4001 and routes all messages to panel modules.
+ * Dashboard bootstrap & WebSocket client.
+ * WS URL: `VITE_DASHBOARD_WS_URL`, else same host as this page + `VITE_DASHBOARD_WS_PORT` (default 4001).
+ * Run the bridge: `npm run dashboard` (in parallel with `npm run ui:dev`).
  */
 
 import { ChartManager }     from './chart.js';
@@ -68,14 +69,25 @@ function setWsStatus(state, text) {
   if (txt) txt.textContent = text;
 }
 
+function dashboardWebSocketUrl() {
+  const fromEnv = import.meta.env?.VITE_DASHBOARD_WS_URL;
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim();
+
+  const port = import.meta.env?.VITE_DASHBOARD_WS_PORT ?? '4001';
+  const { protocol, hostname } = window.location;
+  const host = hostname || 'localhost';
+  const wsScheme = protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsScheme}//${host}:${port}`;
+}
+
 // ─── WebSocket connection ─────────────────────────────────────────────────
-const WS_URL = 'ws://localhost:4001';
+const WS_URL = dashboardWebSocketUrl();
 let ws = null;
 let reconnectDelay = 1000;
 let reconnectTimer = null;
 
 function connect() {
-  setWsStatus('connecting', 'Connecting…');
+  setWsStatus('connecting', `Connecting… (${WS_URL})`);
   ws = new WebSocket(WS_URL);
 
   ws.addEventListener('open', () => {
@@ -89,7 +101,7 @@ function connect() {
   });
 
   ws.addEventListener('error', () => {
-    setWsStatus('disconnected', 'Error — retrying…');
+    setWsStatus('disconnected', 'WS error — is `npm run dashboard` running?');
   });
 
   ws.addEventListener('message', (ev) => {
