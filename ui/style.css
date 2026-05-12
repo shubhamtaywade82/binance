@@ -109,6 +109,37 @@ body::before {
 /* Pair badge */
 .pair-badge { display: flex; align-items: center; gap: 6px; background: var(--accent-dim); border: 1px solid var(--border-accent); border-radius: var(--radius-sm); padding: 4px 10px; }
 .pair-badge #hdr-symbol { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text-primary); }
+
+.watchlist-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+}
+.watchlist-bar.hidden {
+  display: none !important;
+}
+.watch-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.watch-chip:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+.watch-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
 .badge-tag { font-size: 10px; font-weight: 600; color: var(--accent); background: rgba(124, 77, 255, 0.2); border-radius: 3px; padding: 1px 5px; }
 
 /* Price cluster */
@@ -452,12 +483,127 @@ body::before {
 .toggle-ctrl.toggle-ctrl-static { cursor: default; }
 .toggle-ctrl.toggle-ctrl-static:hover { color: var(--text-dim); }
 
-/* ── Chart Container ─────────────────────────────────────────────────────── */
-#chart-container {
-  flex: 1; min-height: 0;
+/* ── Chart surface (HUD + LW container) ─────────────────────────────────── */
+.chart-surface {
+  flex: 1;
+  min-height: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
-#chart-container { padding: 0; }
+#chart-container {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding: 0;
+}
+
+.chart-signal-hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 6;
+  max-width: min(380px, 46vw);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+.chart-signal-hud--bull .chart-signal-hud-verdict {
+  color: var(--bull);
+  border-color: var(--bull-glow);
+  background: var(--bull-dim);
+}
+.chart-signal-hud--bear .chart-signal-hud-verdict {
+  color: var(--bear);
+  border-color: var(--bear-glow);
+  background: var(--bear-dim);
+}
+.chart-signal-hud--neutral .chart-signal-hud-verdict {
+  color: var(--neutral);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+.chart-signal-hud-verdict {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  margin-bottom: 6px;
+}
+.chart-signal-hud-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-bottom: 4px;
+}
+.chart-signal-hud-row--dense {
+  margin-bottom: 5px;
+}
+.chart-signal-hud-k {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.35px;
+}
+.chart-signal-hud-val {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+.chart-signal-hud-sep {
+  color: var(--text-dim);
+  opacity: 0.5;
+  user-select: none;
+}
+.chart-signal-hud-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+}
+.chart-signal-hud-tag--bull {
+  background: var(--bull-dim);
+  color: var(--bull);
+}
+.chart-signal-hud-tag--bear {
+  background: var(--bear-dim);
+  color: var(--bear);
+}
+.chart-signal-hud-tag--neutral {
+  background: transparent;
+  color: var(--neutral);
+}
+.chart-signal-hud-smc,
+.chart-signal-hud-mtf,
+.chart-signal-hud-matrix {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-secondary);
+  opacity: 0.95;
+  word-break: break-word;
+}
+.chart-signal-hud-smc {
+  margin-bottom: 3px;
+  color: #c4b5fd;
+}
+.chart-signal-hud-mtf {
+  margin-bottom: 2px;
+}
+.chart-signal-hud-matrix {
+  opacity: 0.88;
+}
 
 /* ── Order Book (mirrored ladder) ─────────────────────────────────────────── */
 #book-panel {

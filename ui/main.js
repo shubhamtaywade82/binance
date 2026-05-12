@@ -24,7 +24,55 @@ const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
 const rolling1m = new Rolling1mTradeStats();
 
-// ─── Price tracker ────────────────────────────────────────────────────────
+/** Multiplex watch symbol for this browser (matches server `getSym`). */
+let activeWatchSymbol = null;
+
+function shortWatchLabel(sym) {
+  if (!sym || typeof sym !== 'string') return '';
+  return sym.toUpperCase().replace(/USDT$/i, '').replace(/BUSD$/i, '');
+}
+
+function initWatchlistBar(watchlist, _executionSymbol) {
+  const bar = document.getElementById('watchlist-bar');
+  if (!bar) return;
+  if (!Array.isArray(watchlist) || watchlist.length <= 1) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.innerHTML = '';
+  for (const raw of watchlist) {
+    const s = String(raw).toUpperCase();
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'watch-chip' + (s === activeWatchSymbol ? ' active' : '');
+    b.dataset.symbol = s;
+    b.textContent = shortWatchLabel(s);
+    b.setAttribute('aria-pressed', s === activeWatchSymbol ? 'true' : 'false');
+    b.addEventListener('click', () => selectWatchSymbol(s));
+    bar.appendChild(b);
+  }
+}
+
+function selectWatchSymbol(sym) {
+  if (!sym || sym === activeWatchSymbol) return;
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: sym }));
+  }
+}
+
+function msgSymbolUpper(msg) {
+  if (msg.symbol == null || msg.symbol === '') return null;
+  return String(msg.symbol).toUpperCase();
+}
+
+/** Live messages include `symbol` when multiplex watchlist is enabled. */
+function appliesToActiveWatch(msg) {
+  const m = msgSymbolUpper(msg);
+  if (m == null) return true;
+  return m === activeWatchSymbol;
+}
 let lastPrice = null;
 /** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
 let lastLtpTarget = null;
@@ -155,6 +203,11 @@ function dispatch(msg) {
   switch (msg.type) {
     /* ── Snapshot (initial load) ─ */
     case 'snapshot': {
+      activeWatchSymbol = msg.symbol ? String(msg.symbol).toUpperCase() : activeWatchSymbol;
+      const hdrSym = document.getElementById('hdr-symbol');
+      if (hdrSym && activeWatchSymbol) hdrSym.textContent = activeWatchSymbol;
+      initWatchlistBar(msg.watchlist, msg.executionSymbol);
+
       // Feed chart
       chart.onSnapshot({
         candles: msg.candles,
@@ -202,7 +255,10 @@ function dispatch(msg) {
       }
 
       // Compute initial signals from snapshot data
-      if (msg.signals) signals.update(msg.signals);
+      if (msg.signals) {
+        signals.update(msg.signals);
+        chart.applySignalOverlays(msg.signals);
+      }
 
       // Gauge from initial depth
       if (msg.depth) {
@@ -219,6 +275,7 @@ function dispatch(msg) {
 
     /* ── Kline ─ */
     case 'kline': {
+      if (!appliesToActiveWatch(msg)) break;
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
       if (msg.tf === '1m') syncVwap1mRow();
       if (msg.tf === chart.getCurrentTf()) {
@@ -242,11 +299,13 @@ function dispatch(msg) {
     }
 
     case 'history_chunk': {
+      if (msg.symbol && String(msg.symbol).toUpperCase() !== activeWatchSymbol) break;
       chart.onHistoryChunk(msg.tf, msg.candles);
       break;
     }
 
     case 'history_end': {
+      if (msg.symbol && String(msg.symbol).toUpperCase() !== activeWatchSymbol) break;
       chart.onHistoryEnd(msg.tf);
       break;
     }
@@ -263,6 +322,7 @@ function dispatch(msg) {
 
     /* ── Mark Price (futures mark ≠ last; do not put mark on the main LTP slot) ─ */
     case 'mark_price': {
+      if (!appliesToActiveWatch(msg)) break;
       updateHeader({ mark: msg.price });
       if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
       break;
@@ -270,6 +330,7 @@ function dispatch(msg) {
 
     /* ── 24hr Ticker: 24h stats only — main LTP stays chart/kline (avoids fighting aggTrade). ─ */
     case 'ticker_24hr': {
+      if (!appliesToActiveWatch(msg)) break;
       const changeEl = document.getElementById('hdr-change');
       if (!changeEl) break;
       let pctStr = null;
@@ -297,12 +358,14 @@ function dispatch(msg) {
 
     /* ── Book Ticker ─ */
     case 'book_ticker': {
+      if (!appliesToActiveWatch(msg)) break;
       updateHeader({ bid: msg.bid, ask: msg.ask });
       break;
     }
 
     /* ── Depth ─ */
     case 'depth': {
+      if (!appliesToActiveWatch(msg)) break;
       obMgr.update({ bids: msg.bids, asks: msg.asks });
       const ratio = imbalanceRatio(msg.bids, msg.asks);
       gauge.update(ratio);
@@ -311,6 +374,7 @@ function dispatch(msg) {
 
     /* ── Agg Trade (tape only; header LTP follows chart close via kline) ─ */
     case 'agg_trade': {
+      if (!appliesToActiveWatch(msg)) break;
       tape.addTrade(msg);
       rolling1m.ingest(msg.price, msg.qty, msg.ts);
       syncVwap1mRow();
@@ -319,7 +383,9 @@ function dispatch(msg) {
 
     /* ── Strategy Signals ─ */
     case 'signals': {
-      signals.update(msg);
+      const { type: _sigType, ...sigRest } = msg;
+      signals.update(sigRest);
+      chart.applySignalOverlays(sigRest);
       break;
     }
 
@@ -351,6 +417,7 @@ function dispatch(msg) {
       if (msg.connected === true)  setWsStatus('connected', 'Live');
       if (msg.connected === false) setWsStatus('disconnected', 'Disconnected');
       if (msg.reconnecting) setWsStatus('connecting', `Reconnecting #${msg.attempt}…`);
+      if (Array.isArray(msg.watchlist)) initWatchlistBar(msg.watchlist, msg.symbol);
       break;
     }
 

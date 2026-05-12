@@ -10,6 +10,11 @@ import {
   storeCandleThemeId,
 } from './candle-themes.js';
 import { ltpPriceFromTicks, ltpTicksFromPrice } from './ltp-precision.js';
+import {
+  readSignalHudEnabled,
+  renderStrategyHud,
+  storeSignalHudEnabled,
+} from './chart-strategy-hud.js';
 
 const COLORS = {
   bull: '#00e676',
@@ -49,8 +54,8 @@ const CHART_OPTS = {
     borderColor: 'rgba(255,255,255,0.06)',
     timeVisible: true,
     secondsVisible: false,
-    /** Stops ultra-dense zoom where LW merges wicks/bodies and candles look like flat hash marks. */
-    minBarSpacing: 2,
+    /** LW default 0.5; keep a small floor so extreme zoom stays readable (was 2 for wider minimum gap). */
+    minBarSpacing: 1,
   },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
   handleScale: { mouseWheel: true, pinch: true },
@@ -79,6 +84,8 @@ const DEFAULT_VISIBLE_BARS = {
 
 /** Tab order when picking a default TF (must match `.tf-btn` data-tf). */
 const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
+
+const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
 
 export class ChartManager {
   constructor(containerId) {
@@ -123,8 +130,216 @@ export class ChartManager {
     /** Histogram bar colors (from candle theme). */
     this._volumeColorUp = '';
     this._volumeColorDown = '';
+    /** Smoothed volume for the in-progress bar (monotonic toward exchange total). */
+    this._volDisplay = null;
+    this._volTarget = null;
+    this._volAnimBarTime = null;
+    this._volAnimColor = '';
+    /** @type {number | null} */
+    this._volRafId = null;
     /** @type {(() => void) | null} */
     this._candleThemeDocCloseUnsub = null;
+    /** Horizontal SMC / ref levels (not the LTP line). */
+    this._smcSignalPriceLines = [];
+    this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
+    /** Latest WS `signals` payload for redraw after `setData`. */
+    this._lastSignalsForChart = null;
+    this._signalHudEnabled = readSignalHudEnabled();
+  }
+
+  _readSmcOverlayEnabled() {
+    try {
+      return localStorage.getItem(SMC_OVERLAY_STORAGE_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  _storeSmcOverlayEnabled(on) {
+    try {
+      localStorage.setItem(SMC_OVERLAY_STORAGE_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _clearSmcChartVisuals() {
+    if (this.candleSeries && this._smcSignalPriceLines?.length) {
+      for (const pl of this._smcSignalPriceLines) {
+        try {
+          this.candleSeries.removePriceLine(pl);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    this._smcSignalPriceLines = [];
+    try {
+      this.candleSeries?.setMarkers([]);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Map server SMC bar index → chart unix seconds (LW `time`). */
+  _signalBarTimeSec(tf, idx) {
+    const raw = this.candleMap[tf];
+    if (!raw?.length || idx == null || !Number.isFinite(idx)) return null;
+    const sorted = this._sortedDedupeCandles(raw);
+    const i = Math.trunc(idx);
+    if (i < 0 || i >= sorted.length) return null;
+    const t = Math.floor(sorted[i].openTime / 1000);
+    return Number.isFinite(t) ? t : null;
+  }
+
+  _lastVisibleBarTimeSec(tf) {
+    const raw = this.candleMap[tf];
+    if (!raw?.length) return null;
+    const sorted = this._sortedDedupeCandles(raw);
+    const t = Math.floor(sorted[sorted.length - 1].openTime / 1000);
+    return Number.isFinite(t) ? t : null;
+  }
+
+  _addSmcPriceLine(price, color, title, lineStyle) {
+    if (!this.candleSeries || !Number.isFinite(price)) return;
+    const line = this.candleSeries.createPriceLine({
+      price,
+      color,
+      lineWidth: 1,
+      lineStyle: lineStyle ?? LineStyle.Dashed,
+      lineVisible: true,
+      axisLabelVisible: Boolean(title),
+      title: title ?? '',
+      axisLabelColor: color,
+    });
+    this._smcSignalPriceLines.push(line);
+  }
+
+  _paintSmcFromStoredSignals() {
+    this._clearSmcChartVisuals();
+    if (!this._smcSignalsOverlayEnabled || !this._lastSignalsForChart || !this.candleSeries) return;
+    const s = this._lastSignalsForChart;
+    const refTf = s.refPriceTf;
+    if (typeof refTf !== 'string' || refTf !== this.currentTf) return;
+
+    const smc = s.smc;
+    if (!smc) return;
+
+    const markers = [];
+
+    const ob = smc.orderBlock;
+    if (ob && Number.isFinite(ob.index)) {
+      const t = this._signalBarTimeSec(refTf, ob.index);
+      if (t != null) {
+        const bull = ob.type === 'BULLISH';
+        markers.push({
+          time: t,
+          position: bull ? 'belowBar' : 'aboveBar',
+          shape: 'square',
+          color: bull ? '#26a69a' : '#ef5350',
+          text: 'OB',
+          id: 'smc-ob',
+        });
+      }
+      if (Number.isFinite(ob.high)) this._addSmcPriceLine(ob.high, '#7c4dff', 'OB+', LineStyle.Dashed);
+      if (Number.isFinite(ob.low)) this._addSmcPriceLine(ob.low, '#7c4dff', 'OB−', LineStyle.Dashed);
+    }
+
+    const fvg = smc.fvg;
+    if (fvg && Number.isFinite(fvg.low) && Number.isFinite(fvg.high)) {
+      const t = Number.isFinite(fvg.index) ? this._signalBarTimeSec(refTf, fvg.index) : null;
+      if (t != null) {
+        markers.push({
+          time: t,
+          position: 'aboveBar',
+          shape: 'circle',
+          color: '#ffab00',
+          text: 'FVG',
+          id: 'smc-fvg',
+        });
+      }
+      this._addSmcPriceLine(fvg.high, 'rgba(255,171,0,0.85)', 'FVG+', LineStyle.Dotted);
+      this._addSmcPriceLine(fvg.low, 'rgba(255,171,0,0.85)', 'FVG−', LineStyle.Dotted);
+    }
+
+    const lastT = this._lastVisibleBarTimeSec(refTf);
+    if (lastT != null) {
+      if (smc.bos && smc.bos !== 'NONE') {
+        const bull = smc.bos === 'BULLISH';
+        markers.push({
+          time: lastT,
+          position: 'aboveBar',
+          shape: bull ? 'arrowUp' : 'arrowDown',
+          color: '#b388ff',
+          text: 'BOS',
+          id: 'smc-bos',
+        });
+      }
+      if (smc.choch && smc.choch !== 'NONE') {
+        const bull = smc.choch === 'BULLISH';
+        markers.push({
+          time: lastT,
+          position: 'belowBar',
+          shape: bull ? 'arrowUp' : 'arrowDown',
+          color: '#80cbc4',
+          text: 'CHoCH',
+          id: 'smc-choch',
+        });
+      }
+      if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE') {
+        markers.push({
+          time: lastT,
+          position: 'inBar',
+          shape: 'circle',
+          color: '#ff80ab',
+          text: 'LS',
+          id: 'smc-ls',
+        });
+      }
+    }
+
+    if (Number.isFinite(s.refPrice)) {
+      this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
+    }
+
+    if (markers.length) {
+      try {
+        this.candleSeries.setMarkers(markers);
+      } catch (e) {
+        console.warn('[chart] SMC markers', e);
+      }
+    }
+  }
+
+  /**
+   * Draw SMC zones / markers from dashboard `signals` (same payload as Strategy Signals panel).
+   * @param {object | null} signals — omit or null to clear.
+   */
+  applySignalOverlays(signals) {
+    if (!signals) {
+      this._lastSignalsForChart = null;
+      this._clearSmcChartVisuals();
+      this.updateStrategyHud(null);
+      return;
+    }
+    this._lastSignalsForChart = signals;
+    this._paintSmcFromStoredSignals();
+    this.updateStrategyHud(signals);
+  }
+
+  /**
+   * Floating readout (verdict, HTF/LTF, SMC / MTF summary). Independent of SMC price lines.
+   * @param {object | null} signals — same payload as `applySignalOverlays`; null clears.
+   */
+  updateStrategyHud(signals) {
+    const el = document.getElementById('chart-signal-hud');
+    if (!el) return;
+    if (!this._signalHudEnabled) {
+      el.hidden = true;
+      el.textContent = '';
+      return;
+    }
+    renderStrategyHud(el, signals);
   }
 
   _volumeBarColor(candleRow) {
@@ -147,7 +362,7 @@ export class ChartManager {
     this.candleSeries?.applyOptions(t.candle);
     this.volumeSeries?.applyOptions({ color: t.volumeUp });
     const raw = this.candleMap[this.currentTf];
-    if (raw?.length) this._loadTf(this.currentTf);
+    if (raw?.length) this._loadTf(this.currentTf, { preserveVisibleRange: true });
     this._syncCandleThemeDropdown(t.id);
   }
 
@@ -295,6 +510,110 @@ export class ChartManager {
     }
   }
 
+  _cancelVolAnim() {
+    if (this._volRafId != null) {
+      cancelAnimationFrame(this._volRafId);
+      this._volRafId = null;
+    }
+  }
+
+  _resetVolumeAnimState() {
+    this._cancelVolAnim();
+    this._volDisplay = null;
+    this._volTarget = null;
+    this._volAnimBarTime = null;
+    this._volAnimColor = '';
+  }
+
+  _snapVolumeDisplay(time, value, color) {
+    this._cancelVolAnim();
+    this._volAnimBarTime = time;
+    this._volDisplay = value;
+    this._volTarget = value;
+    this._volAnimColor = color;
+    if (!this.volumeSeries) return;
+    try {
+      this.volumeSeries.update({ time, value, color });
+    } catch (e) {
+      console.warn('[chart] volume snap failed', e);
+    }
+  }
+
+  /**
+   * While the current candle is forming, Binance volume is non-decreasing. Ease the displayed bar
+   * height toward the server value so the histogram rises in small steps instead of jumping.
+   */
+  _smoothVolumeTo(time, targetVol, color) {
+    if (!this.volumeSeries || !Number.isFinite(time) || !Number.isFinite(targetVol)) return;
+    if (Number.isFinite(this._volDisplay) && targetVol < this._volDisplay) {
+      this._snapVolumeDisplay(time, targetVol, color);
+      return;
+    }
+    this._volAnimColor = color;
+    if (this._volAnimBarTime !== time) {
+      this._snapVolumeDisplay(time, targetVol, color);
+      return;
+    }
+    if (this._volDisplay == null || !Number.isFinite(this._volDisplay)) {
+      this._snapVolumeDisplay(time, targetVol, color);
+      return;
+    }
+    this._volTarget = targetVol;
+    if (this._volDisplay >= this._volTarget) {
+      this._volDisplay = this._volTarget;
+      try {
+        this.volumeSeries.update({ time, value: this._volDisplay, color });
+      } catch (e) {
+        console.warn('[chart] volume update failed', e);
+      }
+      return;
+    }
+    if (this._volRafId == null) {
+      this._volRafId = requestAnimationFrame(() => this._volAnimStep());
+    }
+  }
+
+  _volAnimStep() {
+    this._volRafId = null;
+    if (
+      this.volumeSeries == null ||
+      this._volAnimBarTime == null ||
+      this._volTarget == null ||
+      this._volDisplay == null
+    ) {
+      return;
+    }
+    if (this._volDisplay >= this._volTarget) {
+      this._volDisplay = this._volTarget;
+      try {
+        this.volumeSeries.update({
+          time: this._volAnimBarTime,
+          value: this._volDisplay,
+          color: this._volAnimColor,
+        });
+      } catch (e) {
+        console.warn('[chart] volume anim failed', e);
+      }
+      return;
+    }
+    const delta = this._volTarget - this._volDisplay;
+    const step = Math.max(1, Math.min(delta, Math.ceil(delta / 12)));
+    this._volDisplay += step;
+    try {
+      this.volumeSeries.update({
+        time: this._volAnimBarTime,
+        value: this._volDisplay,
+        color: this._volAnimColor,
+      });
+    } catch (e) {
+      console.warn('[chart] volume anim step failed', e);
+      return;
+    }
+    if (this._volDisplay < this._volTarget) {
+      this._volRafId = requestAnimationFrame(() => this._volAnimStep());
+    }
+  }
+
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
@@ -338,26 +657,23 @@ export class ChartManager {
     const dispTicks = this._ltpDisplayTicks;
     if (dispTicks == null || !Number.isFinite(dispTicks)) return;
     const truthTicks = ltpTicksFromPrice(ctx.closeTruth);
-    const dispClose = ltpPriceFromTicks(dispTicks);
+    const dispCloseRaw = ltpPriceFromTicks(dispTicks);
     const { time, open, high: hTrue, low: lTrue, closeTruth } = ctx;
     if (![time, open, hTrue, lTrue, closeTruth].every(Number.isFinite)) return;
+
+    /** Keep exchange wicks while close steps — do not shrink H/L toward `dispClose` (that flattens the live bar). */
+    const dispClose = Math.min(hTrue, Math.max(lTrue, dispCloseRaw));
 
     const bar =
       dispTicks === truthTicks
         ? { time, open, high: hTrue, low: lTrue, close: closeTruth }
-        : {
-            time,
-            open,
-            high: Math.max(open, hTrue, dispClose),
-            low: Math.min(open, lTrue, dispClose),
-            close: dispClose,
-          };
+        : { time, open, high: hTrue, low: lTrue, close: dispClose };
     try {
       this.candleSeries.update(bar);
     } catch (e) {
       console.warn('[chart] forming candle update failed, resyncing series', e);
       this._formingBarCtx = null;
-      this._loadTf(this.currentTf);
+      this._loadTf(this.currentTf, { preserveVisibleRange: true });
     }
   }
 
@@ -470,6 +786,7 @@ export class ChartManager {
 
     this.volumeSeries = this.chart.addHistogramSeries({
       color: initialTheme.volumeUp,
+      base: 0,
       priceFormat: { type: 'volume' },
       priceScaleId: 'vol',
       scaleMargins: { top: 0.75, bottom: 0 },
@@ -536,6 +853,27 @@ export class ChartManager {
       });
     }
 
+    const smcToggle = document.getElementById('toggle-smc-overlay');
+    if (smcToggle instanceof HTMLInputElement) {
+      smcToggle.checked = this._smcSignalsOverlayEnabled;
+      smcToggle.addEventListener('change', () => {
+        this._smcSignalsOverlayEnabled = smcToggle.checked;
+        this._storeSmcOverlayEnabled(this._smcSignalsOverlayEnabled);
+        if (this._smcSignalsOverlayEnabled) this._paintSmcFromStoredSignals();
+        else this._clearSmcChartVisuals();
+      });
+    }
+
+    const hudToggle = document.getElementById('toggle-signal-hud');
+    if (hudToggle instanceof HTMLInputElement) {
+      hudToggle.checked = this._signalHudEnabled;
+      hudToggle.addEventListener('change', () => {
+        this._signalHudEnabled = hudToggle.checked;
+        storeSignalHudEnabled(this._signalHudEnabled);
+        this.updateStrategyHud(this._lastSignalsForChart);
+      });
+    }
+
     document.querySelectorAll('.tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.tf-btn').forEach((b) => b.classList.remove('active'));
@@ -545,6 +883,7 @@ export class ChartManager {
           this._historyDebounceTimer = null;
         }
         this.currentTf = btn.dataset.tf;
+        this._clearSmcChartVisuals();
         this._loadTf(this.currentTf);
         this._onTfChange?.(this.currentTf);
       });
@@ -647,6 +986,7 @@ export class ChartManager {
     }));
     this.candleSeries.setData(bars);
     this.volumeSeries.setData(vols);
+    this._resetVolumeAnimState();
     this._paintIndicators(tf);
     if (
       delta > 0 &&
@@ -740,6 +1080,7 @@ export class ChartManager {
       timeVisible: !dailyLike,
       secondsVisible: false,
       rightOffset: 10,
+      barSpacing: 4,
       fixLeftEdge: false,
       fixRightEdge: false,
       rightBarStaysOnScroll: true,
@@ -832,28 +1173,29 @@ export class ChartManager {
     const tail = canon[canon.length - 1];
     /** `update()` only matches LW semantics for the latest bar; any other edit needs full setData. */
     if (!tail || tail.openTime !== row.openTime) {
-      this._loadTf(tf);
+      this._loadTf(tf, { preserveVisibleRange: true });
       return;
     }
 
     const t = Math.floor(tail.openTime / 1000);
     if (!Number.isFinite(t)) return;
     if (![tail.open, tail.high, tail.low, tail.close].every(Number.isFinite)) return;
+    const sameBar = prevLastOpenTime != null && tail.openTime === prevLastOpenTime;
     const vol = tail.volume;
+    const volColor = this._volumeBarColor(tail);
     this._setFormingBarCtxFromQuote(tail);
     try {
-      this.volumeSeries.update({
-        time: t,
-        value: vol,
-        color: this._volumeBarColor(tail),
-      });
-      const sameBar = prevLastOpenTime != null && tail.openTime === prevLastOpenTime;
+      if (sameBar) {
+        this._smoothVolumeTo(t, vol, volColor);
+      } else {
+        this._snapVolumeDisplay(t, vol, volColor);
+      }
       if (sameBar) this._smoothLtpTo(tail.close);
       else this._snapLtpTo(tail.close);
       this._refreshFormingCandleFromCtx();
     } catch (e) {
       console.warn('[chart] candle update failed, resyncing series', e);
-      this._loadTf(tf);
+      this._loadTf(tf, { preserveVisibleRange: true });
     }
   }
 
@@ -862,11 +1204,27 @@ export class ChartManager {
     this._paintIndicators(this.currentTf);
   }
 
-  _loadTf(tf) {
+  /**
+   * @param {string} tf
+   * @param {{ preserveVisibleRange?: boolean }} [opts] — keep bar window after `setData` (resync / theme). New TF or snapshot omit this so default tail zoom applies.
+   */
+  _loadTf(tf, opts = {}) {
+    const preserveVisibleRange = opts.preserveVisibleRange === true;
+    /** Logical bar indices before `setData` — reapplied after paint so zoom is not wiped. */
+    let savedLogicalRange = null;
+    if (preserveVisibleRange && this.chart && tf === this.currentTf) {
+      try {
+        savedLogicalRange = this.chart.timeScale().getVisibleLogicalRange();
+      } catch {
+        savedLogicalRange = null;
+      }
+    }
+
     const raw = this.candleMap[tf];
     this._applyTimeScaleForTf(tf);
 
     if (!raw || raw.length === 0) {
+      this._resetVolumeAnimState();
       this.candleSeries.setData([]);
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
@@ -893,12 +1251,29 @@ export class ChartManager {
 
     this.candleSeries.setData(bars);
     this.volumeSeries.setData(vols);
+    this._resetVolumeAnimState();
 
     this._paintIndicators(tf);
-    this._fitDefaultVisibleRange(tf, candles.length);
+    if (
+      preserveVisibleRange &&
+      savedLogicalRange &&
+      savedLogicalRange.from != null &&
+      savedLogicalRange.to != null &&
+      Number.isFinite(savedLogicalRange.from) &&
+      Number.isFinite(savedLogicalRange.to)
+    ) {
+      try {
+        this.chart.timeScale().setVisibleLogicalRange(savedLogicalRange);
+      } catch {
+        this._fitDefaultVisibleRange(tf, candles.length);
+      }
+    } else {
+      this._fitDefaultVisibleRange(tf, candles.length);
+    }
     this._setFormingBarCtxFromQuote(candles[candles.length - 1] ?? null);
     const lastClose = candles[candles.length - 1]?.close;
     this._snapLtpTo(Number.isFinite(lastClose) ? lastClose : NaN);
+    this._paintSmcFromStoredSignals();
   }
 
   _paintIndicators(tf) {
@@ -914,8 +1289,6 @@ export class ChartManager {
       this._clearOverlaySeries();
       return;
     }
-
-    this._applyTimeScaleForTf(tf);
 
     const n = candles.length;
 

@@ -3,8 +3,32 @@
  * Renders: HTF bias, LTF trend, SMC analysis, MTF stack, trend matrix
  */
 
-const DIR_CLASS = { LONG: 'bull', SHORT: 'bear', BULLISH: 'bull', BEARISH: 'bear', NONE: 'neutral' };
-const DIR_LABEL = { LONG: '▲ LONG', SHORT: '▼ SHORT', BULLISH: '▲ BULL', BEARISH: '▼ BEAR', NONE: '— NONE' };
+export const DIR_CLASS = { LONG: 'bull', SHORT: 'bear', BULLISH: 'bull', BEARISH: 'bear', NONE: 'neutral' };
+export const DIR_LABEL = { LONG: '▲ LONG', SHORT: '▼ SHORT', BULLISH: '▲ BULL', BEARISH: '▼ BEAR', NONE: '— NONE' };
+
+/** @param {number} p */
+export function fmtSignalPrice(p) {
+  if (p == null || !Number.isFinite(p)) return '—';
+  if (p >= 1000) return p.toFixed(2);
+  if (p >= 10) return p.toFixed(3);
+  return p.toFixed(4);
+}
+
+/** @param {object | null | undefined} s */
+export function computeSignalVerdict(s) {
+  if (!s) return { text: 'NEUTRAL', cls: 'neutral' };
+  const htf = s.htfBias;
+  const ltf = s.ltfDirection;
+  const conf = s.ltfConfidence ?? 0;
+  const pass = s.solMtf?.pass;
+
+  if (pass) return { text: `MTF ${s.solMtf.direction}`, cls: DIR_CLASS[s.solMtf.direction] ?? 'neutral' };
+  if (htf === ltf && htf !== 'NONE' && conf >= 0.6) {
+    return { text: `${htf} SIGNAL`, cls: DIR_CLASS[htf] };
+  }
+  if (htf !== 'NONE' && htf === ltf) return { text: `WATCH ${htf}`, cls: DIR_CLASS[htf] };
+  return { text: 'NEUTRAL', cls: 'neutral' };
+}
 
 export class SignalsPanel {
   constructor() {
@@ -44,7 +68,7 @@ export class SignalsPanel {
     const refTfEl = document.getElementById('sig-ref-tf');
     if (refTfEl) {
       const tf = s.refPriceTf ?? '—';
-      const rp = s.refPrice != null && Number.isFinite(s.refPrice) ? this._fmtPrice(s.refPrice) : '—';
+      const rp = s.refPrice != null && Number.isFinite(s.refPrice) ? fmtSignalPrice(s.refPrice) : '—';
       refTfEl.textContent = `${tf} @ ${rp}`;
     }
 
@@ -58,7 +82,7 @@ export class SignalsPanel {
       }
       this._setVal('sig-sweep', null, smc.liquiditySweep ?? '—', smc.liquiditySweep !== 'NONE' ? 'bull' : 'neutral');
       this._setVal('sig-ob', null,
-        smc.orderBlock ? `${smc.orderBlock.type} @ ${this._fmtPrice(smc.orderBlock.low)}–${this._fmtPrice(smc.orderBlock.high)}` : '—',
+        smc.orderBlock ? `${smc.orderBlock.type} @ ${fmtSignalPrice(smc.orderBlock.low)}–${fmtSignalPrice(smc.orderBlock.high)}` : '—',
         smc.orderBlock ? DIR_CLASS[smc.orderBlock.type] : 'neutral');
       this._setVal('sig-fvg', null,
         smc.fvg ? `${smc.fvg.type} FVG` : '—',
@@ -97,27 +121,12 @@ export class SignalsPanel {
     }
 
     // Overall verdict
-    const verdict = this._computeVerdict(s);
+    const verdict = computeSignalVerdict(s);
     const vEl = document.getElementById('signal-verdict');
     if (vEl) {
       vEl.textContent = verdict.text;
       vEl.className = `verdict-badge ${verdict.cls}`;
     }
-  }
-
-  _computeVerdict(s) {
-    if (!s) return { text: 'NEUTRAL', cls: 'neutral' };
-    const htf  = s.htfBias;
-    const ltf  = s.ltfDirection;
-    const conf = s.ltfConfidence ?? 0;
-    const pass = s.solMtf?.pass;
-
-    if (pass) return { text: `MTF ${s.solMtf.direction}`, cls: DIR_CLASS[s.solMtf.direction] ?? 'neutral' };
-    if (htf === ltf && htf !== 'NONE' && conf >= 0.6) {
-      return { text: `${htf} SIGNAL`, cls: DIR_CLASS[htf] };
-    }
-    if (htf !== 'NONE' && htf === ltf) return { text: `WATCH ${htf}`, cls: DIR_CLASS[htf] };
-    return { text: 'NEUTRAL', cls: 'neutral' };
   }
 
   _setVal(id, _key, text, cls) {
@@ -135,10 +144,4 @@ export class SignalsPanel {
     if (valEl) valEl.textContent = overrideText ?? (dir === 'LONG' ? '▲' : dir === 'SHORT' ? '▼' : '—');
   }
 
-  _fmtPrice(p) {
-    if (!p) return '—';
-    if (p >= 1000) return p.toFixed(2);
-    if (p >= 10)   return p.toFixed(3);
-    return p.toFixed(4);
-  }
 }

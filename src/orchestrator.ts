@@ -1,4 +1,4 @@
-import { binanceWsBase, binanceRestBase, type AppConfig } from './config';
+import { binanceWsBase, binanceRestBase, multiplexBinanceSymbols, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
@@ -14,6 +14,7 @@ import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
+import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
 import { fetchHistoricalKlines } from './binance/historical';
 import { fetchBinanceDepthSnapshot } from './binance/rest-depth';
 import { fetchBinanceExchangeInfo } from './binance/rest-exchange-info';
@@ -77,6 +78,8 @@ export interface OrchestratorDeps {
   fetchExchangeInfo?: typeof fetchBinanceExchangeInfo;
   /** Merged after internal multiplex primary callbacks (e.g. dashboard WebSocket bridge). Ignored when `deps.multiplex` is set. */
   multiplexSidecar?: MultiplexCallbacks;
+  /** Per-symbol depth + tape when multiplex streams multiple symbols (dashboard). */
+  marketFeeds?: PerSymbolMarketFeeds;
 }
 
 export class HybridOrchestrator {
@@ -88,6 +91,8 @@ export class HybridOrchestrator {
   private readonly store: MultiTimeframeStore;
   private readonly orderbook: LocalOrderBook;
   private readonly tradeTape: AggTradeTape;
+  private readonly marketFeeds: PerSymbolMarketFeeds | null;
+  private readonly multiplexSymbolList: string[];
   private readonly fetchHistorical: typeof fetchHistoricalKlines;
   private readonly fetchDepth: typeof fetchBinanceDepthSnapshot;
   private readonly fetchExchangeInfo: typeof fetchBinanceExchangeInfo;
@@ -108,7 +113,7 @@ export class HybridOrchestrator {
   private restMarkTimer: ReturnType<typeof setInterval> | null = null;
   private readonly fetchUsdmMarkRest: UsdmMarkRestFetch;
   private restMarkWarned = false;
-  private orderbookBootstrapInflight = false;
+  private readonly depthBootstrapInflight = new Set<string>();
   /** Private user-data stream — non-null when BINANCE_EXECUTION_ADAPTER=true + live. */
   private privateWs: BinancePrivateWs | null = null;
 
@@ -152,6 +157,17 @@ export class HybridOrchestrator {
     }
     this.tradeTape = deps.tradeTape ?? new AggTradeTape(1000);
     this.orderbook = deps.orderbook ?? new LocalOrderBook();
+    this.multiplexSymbolList = multiplexBinanceSymbols(cfg);
+    this.marketFeeds =
+      deps.marketFeeds ??
+      (this.multiplexSymbolList.length > 1
+        ? new PerSymbolMarketFeeds(this.multiplexSymbolList, {
+            tapeCapacity: 1000,
+            primarySymbol: this.pairs.binanceSymbol,
+            primaryBook: this.orderbook,
+            primaryTape: this.tradeTape,
+          })
+        : null);
 
     if (deps.multiplex) {
       this.multiplex = deps.multiplex;
@@ -168,7 +184,7 @@ export class HybridOrchestrator {
       this.multiplex = new BinanceMultiplexWs(
         {
           baseWsUrl: binanceWsBase(cfg),
-          symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
+          symbols: this.multiplexSymbolList,
           timeframes: this.timeframes,
           product: cfg.BINANCE_PRODUCT,
           useBookTicker: cfg.BINANCE_USE_BOOKTICKER,
@@ -287,6 +303,14 @@ export class HybridOrchestrator {
     };
   }
 
+  private obFor(sym: string): LocalOrderBook {
+    return this.marketFeeds?.book(sym) ?? this.orderbook;
+  }
+
+  private tapeFor(sym: string): AggTradeTape {
+    return this.marketFeeds?.tape(sym) ?? this.tradeTape;
+  }
+
   private onWsReconnectMx(attempt: number, reason: string): void {
     this.log.warn('binance_ws_reconnect', { attempt, reason });
     this.ltpConfirmed = false;
@@ -294,8 +318,10 @@ export class HybridOrchestrator {
   }
 
   private onMultiplexKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): void {
-    if (symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
+    const symU = symbol.toUpperCase();
+    if (!this.multiplexSymbolList.includes(symU)) return;
     this.store.applyKline(symbol, tf, candle, isFinal);
+    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
     if (tf === this.ltfTf) {
       const series = this.store.getSeries(symbol, this.ltfTf);
       this.c15.splice(0, this.c15.length, ...series);
@@ -307,57 +333,64 @@ export class HybridOrchestrator {
   }
 
   private onBookTicker(t: BookTickerEvent): void {
-    if (t.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.book.ingest({
-      symbol: t.symbol.toUpperCase(),
+    const symU = t.symbol.toUpperCase();
+    if (!this.multiplexSymbolList.includes(symU)) return;
+    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
+    const tick = {
+      symbol: symU,
       bestBid: t.bestBid,
       bestAsk: t.bestAsk,
       spread: t.bestAsk - t.bestBid,
       ts: t.ts,
-    });
+    };
+    this.book.ingest(tick);
   }
 
   private onAggTradeEvent(t: AggTradeEvent): void {
-    if (t.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.tradeTape.push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
-    this.book.ingestTrade(t.symbol.toUpperCase(), t.price);
+    const symU = t.symbol.toUpperCase();
+    if (!this.multiplexSymbolList.includes(symU)) return;
+    this.tapeFor(symU).push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
+    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
+    this.book.ingestTrade(symU, t.price);
   }
 
   private onDepthDiffEvent(d: import('./binance/orderbook').DepthDiff & { s: string }): void {
-    if (d.s.toUpperCase() !== this.pairs.binanceSymbol) return;
+    const symU = d.s.toUpperCase();
+    if (!this.multiplexSymbolList.includes(symU)) return;
     if (this.cfg.BINANCE_DEPTH_LEVELS > 0) return;
-    if (!this.orderbook.isBootstrapped()) {
-      this.orderbook.buffer(d);
-      if (!this.orderbookBootstrapInflight) {
-        this.orderbookBootstrapInflight = true;
-        void this.finishDiffDepthBootstrap();
+    const ob = this.obFor(symU);
+    if (!ob.isBootstrapped()) {
+      ob.buffer(d);
+      if (!this.depthBootstrapInflight.has(symU)) {
+        this.depthBootstrapInflight.add(symU);
+        void this.finishDepthBootstrapForSymbol(symU, ob);
       }
       return;
     }
-    this.orderbook.applyDiff(d);
+    ob.applyDiff(d);
   }
 
   private onDepthPartialEvent(p: import('./binance/ws-multiplex').DepthPartialEvent): void {
-    const symU = this.pairs.binanceSymbol.toUpperCase();
-    if (p.symbol && p.symbol.toUpperCase() !== symU) return;
-    this.orderbook.replaceFromPartial({ bids: p.bids, asks: p.asks });
+    const symU = (p.symbol ?? this.pairs.binanceSymbol).toUpperCase();
+    if (!this.multiplexSymbolList.includes(symU)) return;
+    this.obFor(symU).replaceFromPartial({ bids: p.bids, asks: p.asks });
   }
 
   /** After buffering diff events, align REST snapshot then replay (Binance depth procedure). */
-  private async finishDiffDepthBootstrap(): Promise<void> {
+  private async finishDepthBootstrapForSymbol(symU: string, ob: LocalOrderBook): Promise<void> {
     try {
-      if (this.orderbook.isBootstrapped()) return;
-      const snap = await this.fetchDepth(this.cfg, this.pairs.binanceSymbol, 1000);
+      if (ob.isBootstrapped()) return;
+      const snap = await this.fetchDepth(this.cfg, symU, 1000);
       if (snap) {
-        this.orderbook.bootstrap(snap);
-        this.log.info('orderbook_bootstrapped', { lastUpdateId: snap.lastUpdateId });
+        ob.bootstrap(snap);
+        this.log.info('orderbook_bootstrapped', { symbol: symU, lastUpdateId: snap.lastUpdateId });
       } else {
-        this.log.warn('orderbook_bootstrap_empty', { symbol: this.pairs.binanceSymbol });
+        this.log.warn('orderbook_bootstrap_empty', { symbol: symU });
       }
     } catch (e) {
-      this.log.warn('orderbook_bootstrap_failed', { err: (e as Error).message });
+      this.log.warn('orderbook_bootstrap_failed', { symbol: symU, err: (e as Error).message });
     } finally {
-      this.orderbookBootstrapInflight = false;
+      this.depthBootstrapInflight.delete(symU);
     }
   }
 
@@ -505,15 +538,17 @@ export class HybridOrchestrator {
   private async seedCandles(): Promise<void> {
     if (this.multiplex) {
       const limit = this.cfg.BINANCE_HISTORY_BARS ?? 500;
-      const sym = this.pairs.binanceSymbol;
-      for (const tf of this.timeframes) {
-        try {
-          const bars = await this.seed(this.cfg, { symbol: sym, interval: tf, limit });
-          this.store.seed(sym, tf, bars);
-        } catch (e) {
-          this.log.warn('candles_seed_failed', { tf, err: (e as Error).message });
+      for (const sym of this.multiplexSymbolList) {
+        for (const tf of this.timeframes) {
+          try {
+            const bars = await this.seed(this.cfg, { symbol: sym, interval: tf, limit });
+            this.store.seed(sym, tf, bars);
+          } catch (e) {
+            this.log.warn('candles_seed_failed', { symbol: sym, tf, err: (e as Error).message });
+          }
         }
       }
+      const sym = this.pairs.binanceSymbol;
       const ltfBars = this.store.getSeries(sym, this.ltfTf);
       const htfBars = this.store.getSeries(sym, this.htfTf);
       this.c15.splice(0, this.c15.length, ...ltfBars);

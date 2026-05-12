@@ -1,11 +1,12 @@
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
-import { loadConfig } from './config';
+import { loadConfig, multiplexBinanceSymbols } from './config';
 import { createDashboardBridge, type DashboardBridge } from './dashboard/bridge';
 import { createAppLogger } from './logging/app-logger';
 import { HybridOrchestrator } from './orchestrator';
 import { Lifecycle } from './lifecycle';
+import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
 
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
@@ -25,11 +26,22 @@ async function main(): Promise<void> {
     const store = new MultiTimeframeStore({ maxBars: cfg.DASHBOARD_STORE_MAX_BARS });
     const orderbook = new LocalOrderBook();
     const tradeTape = new AggTradeTape(1000);
-    dashboardBridge = createDashboardBridge(cfg, log, { store, orderbook, tradeTape });
+    const mxSyms = multiplexBinanceSymbols(cfg);
+    const marketFeeds =
+      mxSyms.length > 1
+        ? new PerSymbolMarketFeeds(mxSyms, {
+            tapeCapacity: 1000,
+            primarySymbol: cfg.BINANCE_SYMBOL,
+            primaryBook: orderbook,
+            primaryTape: tradeTape,
+          })
+        : null;
+    dashboardBridge = createDashboardBridge(cfg, log, { store, orderbook, tradeTape, marketFeeds });
     orch = new HybridOrchestrator(cfg, log, {
       store,
       orderbook,
       tradeTape,
+      marketFeeds: marketFeeds ?? undefined,
       multiplexSidecar: dashboardBridge.multiplexSidecar,
     });
   } else {

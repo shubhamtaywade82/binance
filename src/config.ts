@@ -39,6 +39,17 @@ export const AppConfigSchema = z.object({
   BINANCE_REST_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_WS_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_SYMBOL: z.string().min(1).default('SOLUSDT'),
+  /**
+   * Extra Binance USD-M symbols (comma-separated) for the shared multiplex feed + dashboard watchlist.
+   * `BINANCE_SYMBOL` remains the execution / strategy primary and is always subscribed first.
+   * Example: `ETHUSDT,BTCUSDT` with primary SOLUSDT → SOL + ETH + BTC on one stream.
+   */
+  BINANCE_WATCHLIST: z
+    .string()
+    .default('')
+    .transform((s) =>
+      [...new Set(s.split(',').map((p) => p.trim().toUpperCase()).filter((p) => p.length > 0))],
+    ),
   BINANCE_KLINE_INTERVAL: z.string().default('15m'),
   BINANCE_HTF_INTERVAL: z.string().default('1h'),
   COINDCX_API_KEY: z.string().default(''),
@@ -298,6 +309,14 @@ export const AppConfigSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
+
+/** Binance symbols for multiplex: primary first, then watchlist extras (deduped). */
+export function multiplexBinanceSymbols(cfg: AppConfig): string[] {
+  const primary = cfg.BINANCE_SYMBOL.trim().toUpperCase();
+  const wl = cfg.BINANCE_WATCHLIST ?? [];
+  const extra = wl.filter((s) => s !== primary);
+  return [primary, ...extra];
+}
 
 /** Ollama HTTP API base for `OLLAMA_TARGET=local` (fixed). */
 export const OLLAMA_LOCAL_API_URL = 'http://127.0.0.1:11434' as const;
