@@ -2,9 +2,6 @@
  * orderbook.js — Order Book Ladder + Depth Mountain Chart
  */
 
-const BULL_COLOR = '#00e676';
-const BEAR_COLOR = '#ff1744';
-
 export class OrderBookManager {
   constructor() {
     this.bids = [];

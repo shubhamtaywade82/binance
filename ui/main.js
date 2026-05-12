@@ -19,7 +19,6 @@ const gauge    = new SentimentGauge();
 
 // ─── Price tracker ────────────────────────────────────────────────────────
 let lastPrice  = null;
-let lastMark   = null;
 
 // ─── Format helpers ───────────────────────────────────────────────────────
 function fmtPrice(p) {
@@ -41,13 +40,11 @@ function updateHeader({ price, mark, bid, ask }) {
   const priceEl = document.getElementById('hdr-price');
 
   if (price != null && Number.isFinite(price)) {
-    const wasUp = lastPrice == null || price >= lastPrice;
     priceEl.textContent = fmtPrice(price);
     if (lastPrice !== null && price !== lastPrice) flashPrice(priceEl, price > lastPrice);
     lastPrice = price;
   }
   if (mark != null) {
-    lastMark = mark;
     const el = document.getElementById('hdr-mark');
     if (el) el.textContent = fmtPrice(mark);
   }
@@ -153,7 +150,8 @@ function dispatch(msg) {
 
     /* ── Indicators ─ */
     case 'indicators': {
-      chart.onIndicators(msg);
+      const { type: _t, ...payload } = msg;
+      chart.onIndicators(payload);
       break;
     }
 

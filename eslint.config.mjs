@@ -1,4 +1,5 @@
 import eslint from '@eslint/js';
+import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
@@ -6,6 +7,21 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     ignores: ['dist/**', 'node_modules/**'],
+  },
+  {
+    files: ['ui/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        LightweightCharts: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+    },
   },
   {
     files: ['**/*.ts'],

@@ -127,9 +127,10 @@ export class ChartManager {
     this.macdLineSeries   = this._addLineSeries(COLORS.ema9, 1,   'MACD line', this.macdChart);
     this.macdSignalSeries = this._addLineSeries(COLORS.bear, 1, 'Signal line', this.macdChart);
 
-    // Sync time scales
-    this.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (range) this.macdChart.timeScale().setVisibleLogicalRange(range);
+    // Sync panes by *time*, not logical index: MACD series omit leading NaNs, so this chart
+    // has fewer logical bars than the price chart — logical-range sync leaves MACD empty/wrong.
+    this.chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+      if (range) this.macdChart.timeScale().setVisibleRange(range);
     });
 
     // Resize
@@ -193,7 +194,7 @@ export class ChartManager {
   }
 
   /** Live kline update */
-  onKline(tf, candle, isFinal) {
+  onKline(tf, candle, _isFinal) {
     if (!this.candleMap[tf]) this.candleMap[tf] = [];
     const arr = this.candleMap[tf];
     const t = Math.floor(candle.openTime / 1000);
@@ -209,7 +210,6 @@ export class ChartManager {
     const bar = { time: t, open: candle.open, high: candle.high, low: candle.low, close: candle.close };
     this.candleSeries.update(bar);
 
-    const side = candle.close >= candle.open ? COLORS.vol_up : COLORS.vol_down;
     this.volumeSeries.update({ time: t, value: candle.volume, color: candle.close >= candle.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)' });
   }
 
@@ -308,7 +308,7 @@ export class ChartManager {
     if (ind.macdLine) this.macdLineSeries.setData(toLine(ind.macdLine));
     if (ind.macdSignal) this.macdSignalSeries.setData(toLine(ind.macdSignal));
 
-    const mainRange = this.chart.timeScale().getVisibleLogicalRange();
-    if (mainRange) this.macdChart.timeScale().setVisibleLogicalRange(mainRange);
+    const mainRange = this.chart.timeScale().getVisibleRange();
+    if (mainRange) this.macdChart.timeScale().setVisibleRange(mainRange);
   }
 }
