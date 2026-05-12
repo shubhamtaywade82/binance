@@ -29,9 +29,15 @@ export class SentimentGauge {
 
   updateVwap(vwap, vol) {
     const vwapEl = document.getElementById('vwap-val');
-    const volEl  = document.getElementById('vol-val');
-    if (vwapEl && vwap != null) vwapEl.textContent = this._fmtPrice(vwap);
-    if (volEl && vol != null)   volEl.textContent  = this._fmtQty(vol);
+    const volEl = document.getElementById('vol-val');
+    if (vwapEl) {
+      vwapEl.textContent =
+        vwap != null && Number.isFinite(vwap) ? this._fmtPrice(vwap) : '—';
+    }
+    if (volEl) {
+      volEl.textContent =
+        vol != null && Number.isFinite(vol) && vol >= 0 ? this._fmtQty(vol) : '—';
+    }
   }
 
   _start() {

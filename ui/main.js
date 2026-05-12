@@ -14,6 +14,7 @@ import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
 import { SentimentGauge }  from './sentiment.js';
+import { Rolling1mTradeStats } from './rolling-1m-stats.js';
 
 // ─── Module instances ─────────────────────────────────────────────────────
 const chart    = new ChartManager('chart-container');
@@ -21,6 +22,7 @@ const obMgr    = new OrderBookManager();
 const tape     = new TradeTapeManager();
 const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
+const rolling1m = new Rolling1mTradeStats();
 
 // ─── Price tracker ────────────────────────────────────────────────────────
 let lastPrice = null;
@@ -133,6 +135,21 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
 }
 
+/** 1m row: trade VWAP over last 60s when agg trades exist; else latest 1m candle typical + vol. */
+function syncVwap1mRow() {
+  const fromTrades = rolling1m.snapshot();
+  if (fromTrades.vwap != null && fromTrades.volume != null && fromTrades.volume > 0) {
+    gauge.updateVwap(fromTrades.vwap, fromTrades.volume);
+    return;
+  }
+  const fromBar = chart.getLast1mCandleTypicalAndVolume();
+  if (fromBar.vwap != null && fromBar.volume != null) {
+    gauge.updateVwap(fromBar.vwap, fromBar.volume);
+    return;
+  }
+  gauge.updateVwap(null, null);
+}
+
 // ─── Message Dispatcher ───────────────────────────────────────────────────
 function dispatch(msg) {
   switch (msg.type) {
@@ -150,8 +167,14 @@ function dispatch(msg) {
         obMgr.update(msg.depth);
       }
 
-      // Feed trade tape
-      if (msg.trades?.length) tape.loadHistory(msg.trades);
+      // Feed trade tape + rolling VWAP window
+      rolling1m.reset();
+      if (msg.trades?.length) {
+        tape.loadHistory(msg.trades);
+        for (const t of msg.trades) {
+          rolling1m.ingest(t.price, t.qty, t.ts);
+        }
+      }
 
       // Header — LTP must match chart series (not mark); USD-M had no @ticker before, so LTP could stick on mark.
       const tf = chart.getCurrentTf();
@@ -190,12 +213,14 @@ function dispatch(msg) {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
       }
+      syncVwap1mRow();
       break;
     }
 
     /* ── Kline ─ */
     case 'kline': {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
+      if (msg.tf === '1m') syncVwap1mRow();
       if (msg.tf === chart.getCurrentTf()) {
         const target = chart.getLastCloseForTf(chart.getCurrentTf());
         if (target != null && Number.isFinite(target)) {
@@ -279,16 +304,16 @@ function dispatch(msg) {
     /* ── Depth ─ */
     case 'depth': {
       obMgr.update({ bids: msg.bids, asks: msg.asks });
-      // Update sentiment from depth imbalance
       const ratio = imbalanceRatio(msg.bids, msg.asks);
       gauge.update(ratio);
-      // Update VWAP
       break;
     }
 
     /* ── Agg Trade (tape only; header LTP follows chart close via kline) ─ */
     case 'agg_trade': {
       tape.addTrade(msg);
+      rolling1m.ingest(msg.price, msg.qty, msg.ts);
+      syncVwap1mRow();
       break;
     }
 

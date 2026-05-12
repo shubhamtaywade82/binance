@@ -79,6 +79,23 @@
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-ema" checked /><span>EMA</span></label>
             <span class="toggle-ctrl toggle-ctrl-static" title="Volume always shown"><span>VOL</span></span>
             <label class="toggle-ctrl"><input type="checkbox" id="toggle-supertrend" checked /><span>ST</span></label>
+            <div class="candle-theme-wrap" id="candle-theme-wrap">
+              <span id="candle-theme-heading" class="candle-theme-label">Candles</span>
+              <button
+                type="button"
+                id="candle-theme-trigger"
+                class="candle-theme-trigger"
+                title="Candle colors and body style"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="candle-theme-menu"
+                aria-labelledby="candle-theme-heading candle-theme-trigger-label"
+              >
+                <span id="candle-theme-trigger-label" class="candle-theme-trigger-label"></span>
+                <span class="candle-theme-chevron" aria-hidden="true"></span>
+              </button>
+              <div id="candle-theme-menu" class="candle-theme-menu" role="listbox" hidden></div>
+            </div>
           </div>
         </div>
         <div id="chart-container"></div>
@@ -94,7 +111,7 @@
       <div class="sidebar-tab-panels">
         <div class="sidebar-tab-pane is-active" role="tabpanel" data-tab-pane="live" id="pane-live" aria-labelledby="tab-live">
           <div class="sidebar-live-stack">
-            <div class="panel sidebar-inner-panel panel-sm" id="sentiment-panel">
+            <div class="panel sidebar-inner-panel" id="sentiment-panel">
               <div class="panel-header">
                 <h2 class="panel-title">Market Sentiment</h2>
                 <span id="sentiment-label" class="sentiment-txt neutral">Neutral</span>

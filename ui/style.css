@@ -303,7 +303,8 @@ body::before {
 .sidebar-live-stack {
   display: grid;
   grid-template-rows:
-    minmax(132px, min(18vh, 200px))
+    /* Sentiment = header + 80px gauge + VWAP row; reserve enough height so header is not clipped */
+    minmax(178px, min(24vh, 240px))
     minmax(300px, min(56vh, 520px))
     minmax(140px, min(22vh, 240px));
   gap: var(--gap);
@@ -331,7 +332,120 @@ body::before {
   flex-shrink: 0;
 }
 .panel-title { font-size: 11px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-secondary); }
-.panel-controls { display: flex; gap: 10px; }
+.panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.candle-theme-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  position: relative;
+}
+.candle-theme-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.candle-theme-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  padding-right: 26px;
+  cursor: pointer;
+  max-width: 160px;
+  text-align: left;
+}
+.candle-theme-trigger:hover {
+  border-color: rgba(124, 77, 255, 0.35);
+  color: var(--text-primary);
+}
+.candle-theme-trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.candle-theme-chevron {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  margin-top: -2px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-secondary);
+  opacity: 0.9;
+  pointer-events: none;
+  transition: transform 0.15s ease;
+  transform-origin: 50% 35%;
+}
+.candle-theme-trigger[aria-expanded="true"] .candle-theme-chevron {
+  transform: rotate(180deg);
+}
+.candle-theme-trigger:focus-visible {
+  outline: none;
+  border-color: var(--border-accent);
+}
+.candle-theme-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 250;
+  width: max(100%, 10rem);
+  padding: 4px 0;
+  margin: 0;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  max-height: min(280px, 40vh);
+  overflow-y: auto;
+}
+.candle-theme-menu[hidden] {
+  display: none !important;
+}
+.candle-theme-option {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.candle-theme-option:hover,
+.candle-theme-option:focus-visible {
+  background: var(--bg-row-hover);
+  outline: none;
+}
+.candle-theme-option[aria-selected="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
 .toggle-ctrl { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 .toggle-ctrl input[type=checkbox] { accent-color: var(--accent); width: 12px; height: 12px; cursor: pointer; }
 .toggle-ctrl:hover { color: var(--text-secondary); }
@@ -791,26 +905,23 @@ body::before {
 .trade-ts  { font-family: var(--font-mono); font-size: 9px; color: var(--text-dim); }
 
 /* ── Sentiment ───────────────────────────────────────────────────────────── */
+#sentiment-panel > .panel-header {
+  padding-top: 14px;
+  padding-bottom: 11px;
+}
+#sentiment-panel .panel-title {
+  line-height: 1.35;
+}
 #sentiment-panel #sentiment-gauge-wrap {
   position: relative;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: center;
-  padding: 4px 0 0;
+  padding: 6px 0 2px;
   flex: 1 1 0;
-  min-height: 72px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-#sentiment-panel #sentiment-gauge-wrap::-webkit-scrollbar {
-  width: 5px;
-}
-#sentiment-panel #sentiment-gauge-wrap::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
+  min-height: 80px;
+  overflow: hidden;
 }
 #sentiment-gauge { width: 100%; height: 80px; }
 .gauge-pct {

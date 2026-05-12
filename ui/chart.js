@@ -3,6 +3,12 @@
  * Handles: candlestick, volume, EMA 9/21/50, supertrend
  */
 import { createChart, LineStyle } from 'lightweight-charts';
+import {
+  CANDLE_THEMES,
+  getCandleTheme,
+  readStoredCandleThemeId,
+  storeCandleThemeId,
+} from './candle-themes.js';
 import { ltpPriceFromTicks, ltpTicksFromPrice } from './ltp-precision.js';
 
 const COLORS = {
@@ -114,6 +120,84 @@ export class ChartManager {
     this._ltpDisplayListener = null;
     /** Server truth for the in-progress bar (chart close follows `_ltpDisplayTicks`). */
     this._formingBarCtx = null;
+    /** Histogram bar colors (from candle theme). */
+    this._volumeColorUp = '';
+    this._volumeColorDown = '';
+    /** @type {(() => void) | null} */
+    this._candleThemeDocCloseUnsub = null;
+  }
+
+  _volumeBarColor(candleRow) {
+    const up = this._volumeColorUp;
+    const down = this._volumeColorDown;
+    if (!up || !down) return candleRow.close >= candleRow.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)';
+    return candleRow.close >= candleRow.open ? up : down;
+  }
+
+  /**
+   * @param {string} themeId
+   * @param {{ persist?: boolean }} [opts]
+   */
+  _applyCandleTheme(themeId, opts = {}) {
+    const { persist = true } = opts;
+    const t = getCandleTheme(themeId);
+    if (persist) storeCandleThemeId(t.id);
+    this._volumeColorUp = t.volumeUp;
+    this._volumeColorDown = t.volumeDown;
+    this.candleSeries?.applyOptions(t.candle);
+    this.volumeSeries?.applyOptions({ color: t.volumeUp });
+    const raw = this.candleMap[this.currentTf];
+    if (raw?.length) this._loadTf(this.currentTf);
+    this._syncCandleThemeDropdown(t.id);
+  }
+
+  /** @param {string} themeId */
+  _syncCandleThemeDropdown(themeId) {
+    const t = getCandleTheme(themeId);
+    const labelEl = document.getElementById('candle-theme-trigger-label');
+    const menu = document.getElementById('candle-theme-menu');
+    if (labelEl) labelEl.textContent = t.label;
+    if (menu) {
+      menu.querySelectorAll('[role="option"]').forEach((node) => {
+        const id = node.getAttribute('data-theme-id');
+        node.setAttribute('aria-selected', id === themeId ? 'true' : 'false');
+      });
+    }
+  }
+
+  _closeCandleThemeMenu() {
+    const menu = document.getElementById('candle-theme-menu');
+    const trigger = document.getElementById('candle-theme-trigger');
+    if (menu) menu.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (this._candleThemeDocCloseUnsub) {
+      this._candleThemeDocCloseUnsub();
+      this._candleThemeDocCloseUnsub = null;
+    }
+  }
+
+  _openCandleThemeMenu() {
+    const wrap = document.getElementById('candle-theme-wrap');
+    const menu = document.getElementById('candle-theme-menu');
+    const trigger = document.getElementById('candle-theme-trigger');
+    if (!wrap || !menu || !trigger) return;
+    if (this._candleThemeDocCloseUnsub) return;
+    this._syncCandleThemeDropdown(readStoredCandleThemeId());
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    const onDoc = (e) => {
+      const t = e.target;
+      if (!(t instanceof Node) || !wrap.contains(t)) this._closeCandleThemeMenu();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') this._closeCandleThemeMenu();
+    };
+    document.addEventListener('mousedown', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
+    this._candleThemeDocCloseUnsub = () => {
+      document.removeEventListener('mousedown', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
   }
 
   /** @param {(tf: string) => void} fn */
@@ -145,6 +229,25 @@ export class ChartManager {
     const last = candles[candles.length - 1];
     const c = Number(last?.close);
     return Number.isFinite(c) ? c : null;
+  }
+
+  /**
+   * Typical price (H+L+C)/3 and volume of the latest `1m` candle — fallback when the rolling trade window is empty.
+   * @returns {{ vwap: number | null; volume: number | null }}
+   */
+  getLast1mCandleTypicalAndVolume() {
+    const raw = this.candleMap['1m'];
+    if (!raw?.length) return { vwap: null, volume: null };
+    const sorted = this._sortedDedupeCandles(raw);
+    const c = sorted[sorted.length - 1];
+    if (!c) return { vwap: null, volume: null };
+    const h = Number(c.high);
+    const l = Number(c.low);
+    const cl = Number(c.close);
+    const v = Number(c.volume);
+    if (![h, l, cl, v].every(Number.isFinite)) return { vwap: null, volume: null };
+    const tp = (h + l + cl) / 3;
+    return { vwap: tp, volume: v >= 0 ? v : null };
   }
 
   _applyAvailableTimeframes(list) {
@@ -355,20 +458,18 @@ export class ChartManager {
       height: container.clientHeight,
     });
 
+    const initialTheme = getCandleTheme(readStoredCandleThemeId());
+    this._volumeColorUp = initialTheme.volumeUp;
+    this._volumeColorDown = initialTheme.volumeDown;
+
     this.candleSeries = this.chart.addCandlestickSeries({
-      upColor: COLORS.bull,
-      downColor: COLORS.bear,
-      borderUpColor: COLORS.bull,
-      borderDownColor: COLORS.bear,
-      wickUpColor: COLORS.bull,
-      wickDownColor: COLORS.bear,
-      borderVisible: false,
+      ...initialTheme.candle,
       lastValueVisible: false,
       priceLineVisible: false,
     });
 
     this.volumeSeries = this.chart.addHistogramSeries({
-      color: COLORS.bull,
+      color: initialTheme.volumeUp,
       priceFormat: { type: 'volume' },
       priceScaleId: 'vol',
       scaleMargins: { top: 0.75, bottom: 0 },
@@ -403,6 +504,37 @@ export class ChartManager {
       this.showSupertrend = e.target.checked;
       this.stSeries.applyOptions({ visible: this.showSupertrend });
     });
+
+    const ctWrap = document.getElementById('candle-theme-wrap');
+    const ctTrigger = document.getElementById('candle-theme-trigger');
+    const ctMenu = document.getElementById('candle-theme-menu');
+    if (ctWrap && ctTrigger && ctMenu) {
+      ctMenu.replaceChildren(
+        ...CANDLE_THEMES.map((th) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'candle-theme-option';
+          b.setAttribute('role', 'option');
+          b.setAttribute('data-theme-id', th.id);
+          b.textContent = th.label;
+          return b;
+        }),
+      );
+      this._syncCandleThemeDropdown(initialTheme.id);
+      ctTrigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (ctMenu.hidden) this._openCandleThemeMenu();
+        else this._closeCandleThemeMenu();
+      });
+      ctMenu.addEventListener('click', (e) => {
+        const opt = e.target.closest('[data-theme-id]');
+        if (!opt || !ctMenu.contains(opt)) return;
+        const id = opt.getAttribute('data-theme-id');
+        if (!id) return;
+        this._applyCandleTheme(id, { persist: true });
+        this._closeCandleThemeMenu();
+      });
+    }
 
     document.querySelectorAll('.tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -511,7 +643,7 @@ export class ChartManager {
     const vols = candles.map((c) => ({
       time: Math.floor(c.openTime / 1000),
       value: c.volume,
-      color: c.close >= c.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+      color: this._volumeBarColor(c),
     }));
     this.candleSeries.setData(bars);
     this.volumeSeries.setData(vols);
@@ -713,7 +845,7 @@ export class ChartManager {
       this.volumeSeries.update({
         time: t,
         value: vol,
-        color: tail.close >= tail.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+        color: this._volumeBarColor(tail),
       });
       const sameBar = prevLastOpenTime != null && tail.openTime === prevLastOpenTime;
       if (sameBar) this._smoothLtpTo(tail.close);
@@ -756,7 +888,7 @@ export class ChartManager {
     const vols = candles.map((c) => ({
       time: Math.floor(c.openTime / 1000),
       value: c.volume,
-      color: c.close >= c.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)',
+      color: this._volumeBarColor(c),
     }));
 
     this.candleSeries.setData(bars);
