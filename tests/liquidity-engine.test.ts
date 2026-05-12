@@ -25,7 +25,8 @@ describe('runLiquidityEngine', () => {
     expect(r.classification).toBe('SWEEP_REJECTION');
     expect(r.liquiditySweep).toBe('LONG');
     expect(r.primaryRejection?.outcome).toBe('rejection');
-    expect(r.primaryRejection?.poolKind).toBe('buyside');
+    expect(r.primaryRejection?.raidDirection).toBe('UP');
+    expect(r.primaryRejection?.liquidityBias).toBe('BEARISH');
     expect(r.sweepQualityScore).toBeGreaterThanOrEqual(3);
   });
 });

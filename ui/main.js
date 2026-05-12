@@ -1,7 +1,8 @@
 /**
  * Dashboard bootstrap & WebSocket client.
  * WS URL: `VITE_DASHBOARD_WS_URL` if set.
- * LTP step decimals: `VITE_LTP_DECIMAL_PLACES` (see `ui/ltp-precision.js`).
+ * LTP decimals: the bot sends `ltpDecimalPlaces` per symbol (from Binance tickSize); `VITE_LTP_DECIMAL_PLACES`
+ * is the fallback before the first snapshot (see `ui/ltp-precision.js`).
  * Dev (Vite): same host + path `/__dashboard_ws` (proxied to the bot on 127.0.0.1:4001 — see vite.config.js).
  * Production build: `ws(s)://` page host + `VITE_DASHBOARD_WS_PORT` (default 4001).
  * The WebSocket is served by the bot when `DASHBOARD_ENABLED=true`.
@@ -215,6 +216,8 @@ function dispatch(msg) {
       const hdrSym = document.getElementById('hdr-symbol');
       if (hdrSym && activeWatchSymbol) hdrSym.textContent = activeWatchSymbol;
       initWatchlistBar(msg.watchlist, msg.executionSymbol);
+
+      chart.applyDashboardLtpPrecision(msg);
 
       // Feed chart
       chart.onSnapshot({

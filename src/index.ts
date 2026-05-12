@@ -7,6 +7,8 @@ import { createAppLogger } from './logging/app-logger';
 import { HybridOrchestrator } from './orchestrator';
 import { Lifecycle } from './lifecycle';
 import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
+import { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
+import type { InstrumentPrecision } from './mapping/precision';
 
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
@@ -22,10 +24,15 @@ async function main(): Promise<void> {
   });
   lifecycle.attachProcessHandlers(log);
 
+  const orderBookSnapshotRing = new OrderBookSnapshotRing({
+    depthLevels: Math.max(10, cfg.BINANCE_DEPTH_LEVELS || 20),
+  });
+
   if (cfg.DASHBOARD_ENABLED) {
     const store = new MultiTimeframeStore({ maxBars: cfg.DASHBOARD_STORE_MAX_BARS });
     const orderbook = new LocalOrderBook();
     const tradeTape = new AggTradeTape(1000);
+    const precisionBySymbol = new Map<string, InstrumentPrecision>();
     const mxSyms = multiplexBinanceSymbols(cfg);
     const marketFeeds =
       mxSyms.length > 1
@@ -36,16 +43,25 @@ async function main(): Promise<void> {
             primaryTape: tradeTape,
           })
         : null;
-    dashboardBridge = createDashboardBridge(cfg, log, { store, orderbook, tradeTape, marketFeeds });
+    dashboardBridge = createDashboardBridge(cfg, log, {
+      store,
+      orderbook,
+      tradeTape,
+      marketFeeds,
+      orderBookSnapshotRing,
+      precisionBySymbol,
+    });
     orch = new HybridOrchestrator(cfg, log, {
       store,
       orderbook,
       tradeTape,
       marketFeeds: marketFeeds ?? undefined,
       multiplexSidecar: dashboardBridge.multiplexSidecar,
+      orderBookSnapshotRing,
+      precisionBySymbol,
     });
   } else {
-    orch = new HybridOrchestrator(cfg, log);
+    orch = new HybridOrchestrator(cfg, log, { orderBookSnapshotRing });
   }
 
   const mx = orch.getMultiplexWs();

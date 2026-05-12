@@ -15,13 +15,19 @@ import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
 import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
+import type { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
 import { fetchHistoricalKlines } from './binance/historical';
 import { fetchBinanceDepthSnapshot } from './binance/rest-depth';
-import { fetchBinanceExchangeInfo } from './binance/rest-exchange-info';
+import {
+  fetchBinanceExchangeInfoForSymbols,
+} from './binance/rest-exchange-info';
 import { BinancePrivateWs } from './binance/private-ws';
 import { getPositionRisk, getOpenAlgoOrders } from './binance/rest-trade';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
-import { extractPrecisionFromInstrument, type InstrumentPrecision } from './mapping/precision';
+import {
+  extractPrecisionFromInstrument,
+  type InstrumentPrecision,
+} from './mapping/precision';
 import { resolvePairMap, type ResolvedPairMap } from './mapping/symbol-map';
 import { biasFromCandles } from './strategy/htf-ltf';
 import { analyzeTrend } from './strategy/trend';
@@ -74,12 +80,19 @@ export interface OrchestratorDeps {
   orderbook?: LocalOrderBook;
   /** Optional aggTrade ring buffer. */
   tradeTape?: AggTradeTape;
-  /** Override for tests; default fetches Binance exchangeInfo. */
-  fetchExchangeInfo?: typeof fetchBinanceExchangeInfo;
+  /** Override for tests; default batch-fetches Binance exchangeInfo for all multiplex symbols. */
+  fetchExchangeInfoForSymbols?: typeof fetchBinanceExchangeInfoForSymbols;
+  /**
+   * When set (dashboard mode), populated from Binance exchangeInfo for each multiplex symbol
+   * so the UI can format LTP / prices per `tickSize` without a separate env per asset.
+   */
+  precisionBySymbol?: Map<string, InstrumentPrecision>;
   /** Merged after internal multiplex primary callbacks (e.g. dashboard WebSocket bridge). Ignored when `deps.multiplex` is set. */
   multiplexSidecar?: MultiplexCallbacks;
   /** Per-symbol depth + tape when multiplex streams multiple symbols (dashboard). */
   marketFeeds?: PerSymbolMarketFeeds;
+  /** Optional ring buffer for depth snapshots (liquidity sweep attribution). */
+  orderBookSnapshotRing?: OrderBookSnapshotRing | null;
 }
 
 export class HybridOrchestrator {
@@ -95,7 +108,8 @@ export class HybridOrchestrator {
   private readonly multiplexSymbolList: string[];
   private readonly fetchHistorical: typeof fetchHistoricalKlines;
   private readonly fetchDepth: typeof fetchBinanceDepthSnapshot;
-  private readonly fetchExchangeInfo: typeof fetchBinanceExchangeInfo;
+  private readonly fetchExchangeInfoForSymbols: typeof fetchBinanceExchangeInfoForSymbols;
+  private readonly precisionBySymbol: Map<string, InstrumentPrecision> | null;
   private readonly ltfTf: string;
   private readonly htfTf: string;
   private readonly timeframes: string[];
@@ -114,6 +128,8 @@ export class HybridOrchestrator {
   private readonly fetchUsdmMarkRest: UsdmMarkRestFetch;
   private restMarkWarned = false;
   private readonly depthBootstrapInflight = new Set<string>();
+  /** Depth micro-snapshots keyed by time for liquidity + book confluence. */
+  private readonly orderBookSnapshotRing: OrderBookSnapshotRing | null;
   /** Private user-data stream — non-null when BINANCE_EXECUTION_ADAPTER=true + live. */
   private privateWs: BinancePrivateWs | null = null;
 
@@ -137,7 +153,8 @@ export class HybridOrchestrator {
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
     this.fetchHistorical = deps.fetchHistorical ?? fetchHistoricalKlines;
     this.fetchDepth = deps.fetchDepth ?? fetchBinanceDepthSnapshot;
-    this.fetchExchangeInfo = deps.fetchExchangeInfo ?? fetchBinanceExchangeInfo;
+    this.fetchExchangeInfoForSymbols = deps.fetchExchangeInfoForSymbols ?? fetchBinanceExchangeInfoForSymbols;
+    this.precisionBySymbol = deps.precisionBySymbol ?? null;
     this.store = deps.store ?? new MultiTimeframeStore({ maxBars: 1000 });
     const tfs = (cfg.BINANCE_TIMEFRAMES && cfg.BINANCE_TIMEFRAMES.length > 0)
       ? cfg.BINANCE_TIMEFRAMES
@@ -168,6 +185,7 @@ export class HybridOrchestrator {
             primaryTape: this.tradeTape,
           })
         : null);
+    this.orderBookSnapshotRing = deps.orderBookSnapshotRing ?? null;
 
     if (deps.multiplex) {
       this.multiplex = deps.multiplex;
@@ -368,12 +386,20 @@ export class HybridOrchestrator {
       return;
     }
     ob.applyDiff(d);
+    this.recordDepthSnapshot(symU);
+  }
+
+  private recordDepthSnapshot(symU: string): void {
+    if (!this.orderBookSnapshotRing) return;
+    const ob = this.obFor(symU);
+    this.orderBookSnapshotRing.recordFromBook(symU, ob);
   }
 
   private onDepthPartialEvent(p: import('./binance/ws-multiplex').DepthPartialEvent): void {
     const symU = (p.symbol ?? this.pairs.binanceSymbol).toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
     this.obFor(symU).replaceFromPartial({ bids: p.bids, asks: p.asks });
+    this.recordDepthSnapshot(symU);
   }
 
   /** After buffering diff events, align REST snapshot then replay (Binance depth procedure). */
@@ -529,6 +555,12 @@ export class HybridOrchestrator {
 
   setPrecision(p: InstrumentPrecision): void {
     this.precision = p;
+    this.publishPrecisionToHub(this.pairs.binanceSymbol.toUpperCase(), p);
+  }
+
+  private publishPrecisionToHub(symUpper: string, p: InstrumentPrecision): void {
+    if (!this.precisionBySymbol) return;
+    this.precisionBySymbol.set(symUpper, p);
   }
 
   async evaluateBar(bar: Candle): Promise<void> {
@@ -587,18 +619,28 @@ export class HybridOrchestrator {
   }
 
   private async loadPrecision(): Promise<void> {
-    // Try Binance exchangeInfo first (authoritative for FAPI symbols).
+    const hubSymbols = this.multiplexSymbolList.map((s) => s.toUpperCase());
+    const primaryU = this.pairs.binanceSymbol.toUpperCase();
+
     if (this.cfg.BINANCE_PRODUCT === 'usdm') {
       try {
-        const p = await this.fetchExchangeInfo(
-          binanceRestBase(this.cfg),
-          this.pairs.binanceSymbol,
-        );
-        if (p) {
-          this.precision = p;
+        const map = await this.fetchExchangeInfoForSymbols(binanceRestBase(this.cfg), hubSymbols);
+        for (const symU of hubSymbols) {
+          const row = map.get(symU);
+          if (row) this.publishPrecisionToHub(symU, row);
+        }
+        const primaryPrec = map.get(primaryU);
+        if (primaryPrec) {
+          this.precision = primaryPrec;
+          const missing = hubSymbols.filter((s) => !map.has(s));
           this.log.info('instrument_precision', {
             source: 'binance_exchange_info',
-            ...this.precision,
+            symbols: hubSymbols,
+            resolved: [...map.keys()].filter((k) => hubSymbols.includes(k)),
+            missing: missing.length ? missing : undefined,
+            tickSize: this.precision.tickSize,
+            stepSize: this.precision.stepSize,
+            minQty: this.precision.minQty,
           });
           return;
         }
@@ -606,10 +648,11 @@ export class HybridOrchestrator {
         this.log.warn('binance_exchange_info_failed', { err: (e as Error).message });
       }
     }
-    // Fall back to CoinDCX instrument details.
+
     try {
       const raw = await this.cdcx.getFuturesInstrumentDetails(this.pairs.coindcxPair);
       this.precision = extractPrecisionFromInstrument(raw);
+      this.publishPrecisionToHub(primaryU, this.precision);
       this.log.info('instrument_precision', {
         source: 'coindcx',
         ...this.precision as unknown as Record<string, unknown>,
@@ -617,6 +660,7 @@ export class HybridOrchestrator {
     } catch (e) {
       this.log.warn('instrument_precision_failed', { err: (e as Error).message });
       this.precision = extractPrecisionFromInstrument(null);
+      this.publishPrecisionToHub(primaryU, this.precision);
     }
   }
 

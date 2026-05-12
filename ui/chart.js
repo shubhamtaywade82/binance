@@ -9,7 +9,11 @@ import {
   readStoredCandleThemeId,
   storeCandleThemeId,
 } from './candle-themes.js';
-import { ltpPriceFromTicks, ltpTicksFromPrice } from './ltp-precision.js';
+import {
+  ltpPriceFromTicks,
+  ltpTicksFromPrice,
+  setLtpDecimalPlacesFromServer,
+} from './ltp-precision.js';
 import {
   readSignalHudEnabled,
   renderStrategyHud,
@@ -341,12 +345,13 @@ export class ChartManager {
           const tSweep = this._signalBarTimeSec(refTf, pr.sweepBarIndex);
           if (tSweep != null) {
             const buyRaid = pr.poolKind === 'buyside' || pr.poolKind === 'BUYSIDE';
+            const raidArrow = pr.raidDirection === 'DOWN' ? '↓' : '↑';
             markers.push({
               time: tSweep,
               position: buyRaid ? 'aboveBar' : 'belowBar',
               shape: buyRaid ? 'arrowDown' : 'arrowUp',
               color: '#ff80ab',
-              text: `LQ${Number(pr.score) || 0}`,
+              text: `LQ${raidArrow}${Number(pr.score) || 0}`,
             });
             hasLiqSweepMarker = true;
           }
@@ -893,6 +898,21 @@ export class ChartManager {
     });
     this._emitLtpDisplay(p);
     this._refreshFormingCandleFromCtx();
+  }
+
+  /**
+   * Apply per-symbol LTP decimals from dashboard snapshot (`ltpDecimalPlaces` from Binance tickSize).
+   * Resnaps the LTP line to the same logical price when the scale changes (e.g. watch symbol switch).
+   * @param {{ ltpDecimalPlaces?: number | null }} msg
+   */
+  applyDashboardLtpPrecision(msg) {
+    const n = msg?.ltpDecimalPlaces;
+    let anchor = null;
+    if (this._ltpTargetTicks != null && Number.isFinite(this._ltpTargetTicks)) {
+      anchor = ltpPriceFromTicks(this._ltpTargetTicks);
+    }
+    setLtpDecimalPlacesFromServer(n != null && Number.isFinite(n) ? n : null);
+    if (anchor != null && Number.isFinite(anchor)) this._snapLtpTo(anchor);
   }
 
   _smoothLtpTo(price) {

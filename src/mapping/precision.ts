@@ -58,3 +58,21 @@ export function roundToTick(price: number, tick: number): number {
   const decimals = `${tick}`.includes('.') ? `${tick}`.split('.')[1].length : 0;
   return Number((Math.round(price / tick) * tick).toFixed(Math.min(12, decimals)));
 }
+
+/**
+ * Decimal places for LTP / chart stepping from Binance `PRICE_FILTER.tickSize`.
+ * Uses a fixed-point string so float noise (e.g. 0.0099999) does not shrink the scale.
+ */
+export function ltpDisplayDecimalPlaces(
+  tickSize: number,
+  opts: { min?: number; max?: number; fallback?: number } = {},
+): number {
+  const min = opts.min ?? 1;
+  const max = opts.max ?? 8;
+  const fallback = Math.min(max, Math.max(min, opts.fallback ?? 4));
+  if (!Number.isFinite(tickSize) || tickSize <= 0) return fallback;
+  const trimmed = tickSize.toFixed(12).replace(/\.?0+$/, '');
+  const dot = trimmed.indexOf('.');
+  const frac = dot < 0 ? 0 : trimmed.slice(dot + 1).length;
+  return Math.min(max, Math.max(min, frac));
+}

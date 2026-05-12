@@ -16,17 +16,25 @@ import { biasFromCandles } from '../strategy/htf-ltf';
 import { analyzeTrend } from '../strategy/trend';
 import { analyzeSmc } from '../strategy/smc';
 import type { LiquidityEngineResult } from '../strategy/liquidity-engine';
+import type { OrderBookMicroSnapshot, OrderBookSnapshotRing } from '../liquidity/order-book-snapshot-ring';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
 import { ema, rsi, macd, supertrend } from '../strategy/indicators';
 import type { Candle } from '../types';
 import { requestMarketBrief, type MarketSignalsSnapshot } from '../ai/market-brief';
+import {
+  buildSupertrendTuneSnapshot,
+  requestSupertrendTune,
+} from '../ai/supertrend-tune';
 import type { AppLogger } from '../logging/app-logger';
+import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
 
 const INDICATOR_MAX_BARS = 3000;
 const INDICATOR_BROADCAST_MIN_MS = 150;
+const DEFAULT_SUPERTREND_PERIOD = 10;
+const DEFAULT_SUPERTREND_MULT = 3;
 
 export interface DashboardFeeds {
   store: MultiTimeframeStore;
@@ -34,6 +42,13 @@ export interface DashboardFeeds {
   tradeTape: AggTradeTape;
   /** Present when `BINANCE_WATCHLIST` adds extra multiplex symbols — per-symbol book + tape. */
   marketFeeds?: PerSymbolMarketFeeds | null;
+  /** Ring buffer of depth micro-snapshots (written by orchestrator on depth updates). */
+  orderBookSnapshotRing?: OrderBookSnapshotRing | null;
+  /**
+   * Shared with {@link HybridOrchestrator}: Binance `exchangeInfo` precision per uppercase symbol.
+   * The UI uses `tickSize` to pick LTP decimal places per active watch symbol.
+   */
+  precisionBySymbol: Map<string, InstrumentPrecision>;
 }
 
 export interface DashboardBridge {
@@ -61,13 +76,25 @@ export interface DashboardSignalsPayload {
     bos: string;
     choch: string;
     liquidity: LiquidityEngineResult | null;
+    /** Top-of-book snapshot nearest the sweep candle close (or open); cleared from ring after attach. */
+    liquidityOrderBook: OrderBookMicroSnapshot | null;
+    /** Bar index in `refPriceTf` series for the liquidity raid candle when `liquidityOrderBook` is resolved. */
+    sweepCandleIndex: number | null;
+    sweepCandleOpenTime: number | null;
   };
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
 }
 
 export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: DashboardFeeds): DashboardBridge {
-  const { store, orderbook, tradeTape, marketFeeds = null } = feeds;
+  const {
+    store,
+    orderbook,
+    tradeTape,
+    marketFeeds = null,
+    orderBookSnapshotRing = null,
+    precisionBySymbol,
+  } = feeds;
   const symbolUpper = cfg.BINANCE_SYMBOL.trim().toUpperCase();
   const watchlistSymbols = multiplexBinanceSymbols(cfg);
   const watchlistSet = new Set(watchlistSymbols);
@@ -92,6 +119,8 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   const refTfByClient = new Map<WebSocket, string>();
   /** Per-client symbol from the multiplex watchlist (defaults to execution / primary symbol). */
   const watchSymbolByClient = new Map<WebSocket, string>();
+  /** Sticky depth snapshot for the active sweep bar (survives ring prune after first attach). */
+  const sweepOrderBookMemoBySym = new Map<string, { key: string; snap: OrderBookMicroSnapshot }>();
 
   const lastMarkBySym = new Map<string, number>();
   const lastBookBySym = new Map<string, { bid: number; ask: number }>();
@@ -100,6 +129,12 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
   let aiBriefInflight = false;
   let aiBriefWarnedNoModel = false;
   let aiBriefWarnedCloudKey = false;
+
+  const supertrendParamsBySym = new Map<string, { period: number; mult: number }>();
+  const lastSupertrendTuneAtBySym = new Map<string, number>();
+  const supertrendTuneInflight = new Set<string>();
+  let stTuneWarnedNoModel = false;
+  let stTuneWarnedCloudKey = false;
 
   const indicatorDebounceBySym = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -210,15 +245,75 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     });
   }
 
+  function supertrendParamsForSymbol(sym: string): { period: number; mult: number } {
+    return supertrendParamsBySym.get(sym) ?? {
+      period: DEFAULT_SUPERTREND_PERIOD,
+      mult: DEFAULT_SUPERTREND_MULT,
+    };
+  }
+
+  function maybePeriodicSupertrendTune(sym: string): void {
+    if (!cfg.AI_SUPERTREND_TUNING_ENABLED) return;
+    if (!cfg.OLLAMA_MODEL.trim()) {
+      if (!stTuneWarnedNoModel) {
+        stTuneWarnedNoModel = true;
+        log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_MODEL empty' });
+      }
+      return;
+    }
+    if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+      if (!stTuneWarnedCloudKey) {
+        stTuneWarnedCloudKey = true;
+        log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+      }
+      return;
+    }
+    if (supertrendTuneInflight.has(sym)) return;
+    const gapMs = cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC * 1000;
+    const now = Date.now();
+    const last = lastSupertrendTuneAtBySym.get(sym) ?? 0;
+    if (last > 0 && now - last < gapMs) return;
+
+    const candles = store.getSeries(sym, ltfTf);
+    const cur = supertrendParamsForSymbol(sym);
+    const snapshot = buildSupertrendTuneSnapshot(sym, ltfTf, candles, cur.period, cur.mult);
+    if (!snapshot) return;
+
+    supertrendTuneInflight.add(sym);
+    void requestSupertrendTune(
+      {
+        host: ollamaApiUrl(cfg.OLLAMA_TARGET),
+        model: cfg.OLLAMA_MODEL,
+        apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+        timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+      },
+      snapshot,
+    ).then((r) => {
+      supertrendTuneInflight.delete(sym);
+      lastSupertrendTuneAtBySym.set(sym, Date.now());
+      if (r.params) {
+        supertrendParamsBySym.set(sym, { period: r.params.atrPeriod, mult: r.params.multiplier });
+        log.info('dashboard_supertrend_tune_applied', {
+          symbol: sym,
+          atrPeriod: r.params.atrPeriod,
+          multiplier: r.params.multiplier,
+        });
+        broadcastLatestIndicatorsForSymbol(sym);
+      } else if (r.error) {
+        log.warn('dashboard_supertrend_tune_failed', { symbol: sym, error: r.error });
+      }
+    });
+  }
+
   function finiteSeries(arr: number[]): (number | null)[] {
     return arr.map((v) => (Number.isFinite(v) ? v : null));
   }
 
-  function chartIndicatorBundle(candles: Candle[]) {
+  function chartIndicatorBundle(candles: Candle[], stPeriod: number, stMult: number) {
     if (candles.length < 2) return null;
     const closes = candles.map((c) => c.close);
     const m = macd(closes);
-    const st = supertrend(candles, 10, 3);
+    const st = supertrend(candles, stPeriod, stMult);
     return {
       ema9: finiteSeries(ema(closes, 9)),
       ema21: finiteSeries(ema(closes, 21)),
@@ -236,12 +331,16 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
   type ChartTfBundle = NonNullable<ReturnType<typeof chartIndicatorBundle>>;
 
-  function computeIndicatorsFromRows(rows: Record<ChartTf, Candle[]>): Record<string, ChartTfBundle> {
+  function computeIndicatorsFromRows(
+    rows: Record<ChartTf, Candle[]>,
+    sym: string,
+  ): Record<string, ChartTfBundle> {
+    const st = supertrendParamsForSymbol(sym);
     const out: Record<string, ChartTfBundle> = {};
     for (const tf of CHART_TFS) {
       const series = rows[tf];
       const tail = series.length <= INDICATOR_MAX_BARS ? series : series.slice(-INDICATOR_MAX_BARS);
-      const bundle = chartIndicatorBundle(tail);
+      const bundle = chartIndicatorBundle(tail, st.period, st.mult);
       if (bundle) out[tf] = bundle;
     }
     return out;
@@ -249,7 +348,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
   function broadcastLatestIndicatorsForSymbol(sym: string): void {
     const rows = getCandlesByChartTf(sym);
-    const payload = { type: 'indicators', ...computeIndicatorsFromRows(rows) };
+    const payload = { type: 'indicators', ...computeIndicatorsFromRows(rows, sym) };
     const raw = JSON.stringify(payload);
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
@@ -327,6 +426,36 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       }
     }
 
+    let liquidityOrderBook: OrderBookMicroSnapshot | null = null;
+    let sweepCandleIndex: number | null = null;
+    let sweepCandleOpenTime: number | null = null;
+    const prSweep = smc.liquidity?.primaryRejection;
+    if (orderBookSnapshotRing && prSweep?.outcome === 'rejection' && prSweep.sweepBarIndex != null) {
+      const bar = candlesSmc[prSweep.sweepBarIndex];
+      if (bar) {
+        sweepCandleIndex = prSweep.sweepBarIndex;
+        sweepCandleOpenTime = bar.openTime;
+        const memoKey = `${sym}:${prSweep.sweepBarIndex}:${bar.openTime}`;
+        const cached = sweepOrderBookMemoBySym.get(sym);
+        if (cached?.key === memoKey) {
+          liquidityOrderBook = cached.snap;
+        } else {
+          const targetMs = bar.closeTime ?? bar.openTime;
+          const matchWin = 4000;
+          const snap = orderBookSnapshotRing.nearest(sym, targetMs, matchWin);
+          if (snap) {
+            liquidityOrderBook = snap;
+            sweepOrderBookMemoBySym.set(sym, { key: memoKey, snap });
+            orderBookSnapshotRing.releaseAfterSweep(sym, bar.openTime, matchWin);
+          } else {
+            sweepOrderBookMemoBySym.delete(sym);
+          }
+        }
+      }
+    } else {
+      sweepOrderBookMemoBySym.delete(sym);
+    }
+
     return {
       refPrice,
       refPriceTf: effectiveTf,
@@ -343,6 +472,9 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
         bos: smc.bos,
         choch: smc.choch,
         liquidity: smc.liquidity,
+        liquidityOrderBook,
+        sweepCandleIndex,
+        sweepCandleOpenTime,
       },
       solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
       signalMeta: {
@@ -357,6 +489,31 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     return computeSignalsForSymbol(getSym(client), requestedTf);
   }
 
+  function buildInstrumentPrecisionPayload(sym: string): {
+    instrumentPrecision: InstrumentPrecision | null;
+    ltpDecimalPlaces: number | null;
+    instrumentPrecisionBySymbol: Record<
+      string,
+      InstrumentPrecision & { ltpDecimalPlaces: number }
+    >;
+  } {
+    const instrumentPrecision = precisionBySymbol.get(sym) ?? null;
+    const ltpDecimalPlaces = instrumentPrecision
+      ? ltpDisplayDecimalPlaces(instrumentPrecision.tickSize)
+      : null;
+    const instrumentPrecisionBySymbol: Record<string, InstrumentPrecision & { ltpDecimalPlaces: number }> =
+      {};
+    for (const s of watchlistSymbols) {
+      const p = precisionBySymbol.get(s);
+      if (p)
+        instrumentPrecisionBySymbol[s] = {
+          ...p,
+          ltpDecimalPlaces: ltpDisplayDecimalPlaces(p.tickSize),
+        };
+    }
+    return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
+  }
+
   function buildSnapshot(forWs: WebSocket): Record<string, unknown> {
     const sym = getSym(forWs);
     const rows = getCandlesByChartTf(sym);
@@ -364,6 +521,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     const signals = computeSignalsForClient(forWs, refTf);
     const book = lastBookBySym.get(sym);
     const mark = lastMarkBySym.get(sym);
+    const precPayload = buildInstrumentPrecisionPayload(sym);
     return {
       symbol: sym,
       watchlist: watchlistSymbols,
@@ -372,6 +530,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       mark: mark !== undefined ? mark : null,
       bestBid: book?.bid ?? null,
       bestAsk: book?.ask ?? null,
+      ...precPayload,
       candles: {
         '1m': rows['1m'],
         '5m': rows['5m'],
@@ -382,7 +541,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       },
       depth: obFor(sym).topLevels(depthLevelsUi),
       trades: tapeFor(sym).recent(60),
-      indicators: computeIndicatorsFromRows(rows),
+      indicators: computeIndicatorsFromRows(rows, sym),
       signals,
     };
   }
@@ -422,7 +581,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
       const chunkRaw = JSON.stringify({ type: 'history_chunk', symbol: sym, tf, candles: older });
       const indRaw = JSON.stringify({
         type: 'indicators',
-        ...computeIndicatorsFromRows(getCandlesByChartTf(sym)),
+        ...computeIndicatorsFromRows(getCandlesByChartTf(sym), sym),
       });
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
@@ -512,6 +671,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
         scheduleIndicatorBroadcastForSymbol(symU, isFinal);
       }
       if (isFinal && tf === ltfTf) {
+        maybePeriodicSupertrendTune(symU);
         broadcastSignalsPerClient();
         const lead = firstOpenWebSocket();
         if (lead && lead.readyState === WebSocket.OPEN) {
@@ -603,6 +763,9 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
     }, 10_000);
 
     signalsTimer = setInterval(() => {
+      for (const s of watchlistSymbols) {
+        maybePeriodicSupertrendTune(s);
+      }
       broadcastSignalsPerClient();
       const lead = firstOpenWebSocket();
       if (lead && lead.readyState === WebSocket.OPEN) {

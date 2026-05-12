@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { extractPrecisionFromInstrument, floorToStep } from '../src/mapping/precision';
+import {
+  extractPrecisionFromInstrument,
+  floorToStep,
+  ltpDisplayDecimalPlaces,
+} from '../src/mapping/precision';
+
+describe('ltpDisplayDecimalPlaces', () => {
+  it('matches tickSize fractional digits', () => {
+    expect(ltpDisplayDecimalPlaces(0.01)).toBe(2);
+    expect(ltpDisplayDecimalPlaces(0.1)).toBe(1);
+    expect(ltpDisplayDecimalPlaces(0.5)).toBe(1);
+    expect(ltpDisplayDecimalPlaces(0.001)).toBe(3);
+  });
+
+  it('respects min max and fallback', () => {
+    expect(ltpDisplayDecimalPlaces(1, { min: 2, max: 8 })).toBe(2);
+    expect(ltpDisplayDecimalPlaces(0.000000001, { max: 4 })).toBe(4);
+    expect(ltpDisplayDecimalPlaces(NaN, { fallback: 2, min: 1, max: 8 })).toBe(2);
+  });
+});
 
 describe('extractPrecisionFromInstrument', () => {
   it('uses defaults for empty payload', () => {

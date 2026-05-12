@@ -58,3 +58,20 @@ describe('Ollama dashboard target', () => {
     expect(cfg.OLLAMA_TARGET).toBe('local');
   });
 });
+
+describe('AI SuperTrend tuning env', () => {
+  it('defaults tuning off and interval to 300s', () => {
+    const cfg = AppConfigSchema.parse({});
+    expect(cfg.AI_SUPERTREND_TUNING_ENABLED).toBe(false);
+    expect(cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC).toBe(300);
+  });
+
+  it('parses tuning enabled and interval bounds', () => {
+    const cfg = AppConfigSchema.parse({
+      AI_SUPERTREND_TUNING_ENABLED: 'true',
+      AI_SUPERTREND_TUNING_INTERVAL_SEC: '90',
+    });
+    expect(cfg.AI_SUPERTREND_TUNING_ENABLED).toBe(true);
+    expect(cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC).toBe(90);
+  });
+});

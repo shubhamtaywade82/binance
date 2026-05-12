@@ -32,8 +32,15 @@ export interface LiquidityEventView {
   poolKind: LiquidityPoolKind;
   poolPrice: number;
   state: LiquidityEventState;
-  /** Bar index where raid / max penetration occurred. */
+  /** Bar index where raid / max penetration occurred (the sweep candle in this series). */
   sweepBarIndex: number | null;
+  /** Price raid through the pool: buyside pool = UP, sellside = DOWN. */
+  raidDirection: 'UP' | 'DOWN';
+  /**
+   * Interpreted liquidity bias after the raid window (rejection vs acceptance).
+   * Rejection above buyside → BEARISH; rejection below sellside → BULLISH; acceptance inverts.
+   */
+  liquidityBias: 'BEARISH' | 'BULLISH';
   maxPenetrationPct: number;
   outcome: SweepOutcome;
   score: number;
@@ -237,6 +244,16 @@ function evaluatePoolSide(args: {
         ? displacementAfter(candles, atrSeries, i, pool.kind, opts)
         : false;
 
+    const raidDirection: 'UP' | 'DOWN' = pool.kind === 'buyside' ? 'UP' : 'DOWN';
+    let liquidityBias: 'BEARISH' | 'BULLISH';
+    if (outcome === 'rejection') {
+      liquidityBias = pool.kind === 'buyside' ? 'BEARISH' : 'BULLISH';
+    } else if (outcome === 'acceptance') {
+      liquidityBias = pool.kind === 'buyside' ? 'BULLISH' : 'BEARISH';
+    } else {
+      liquidityBias = pool.kind === 'buyside' ? 'BEARISH' : 'BULLISH';
+    }
+
     let score = 0;
     if (pool.touches >= 2) score += 2;
     if (penIdeal) score += 2;
@@ -262,6 +279,8 @@ function evaluatePoolSide(args: {
       poolPrice: P,
       state,
       sweepBarIndex: i,
+      raidDirection,
+      liquidityBias,
       maxPenetrationPct: +penetrationPct.toFixed(4),
       outcome,
       score,

@@ -66,9 +66,20 @@ export function renderStrategyHud(container, signals) {
       : '—';
     const fvgTxt = smc.fvg ? `${smc.fvg.type} FVG` : '—';
     const liq = smc.liquidity;
+    const pr = liq?.primaryRejection;
+    const book = smc.liquidityOrderBook;
+    const ix = smc.sweepCandleIndex;
     const liqBit =
       liq && typeof liq === 'object'
-        ? ` · LQ ${String(liq.classification ?? '—')} (${liq.sweepQualityScore ?? 0})`
+        ? ` · LQ ${String(liq.classification ?? '—')} (${liq.sweepQualityScore ?? 0})${
+            pr && pr.raidDirection
+              ? ` · raid${pr.raidDirection === 'UP' ? '↑' : '↓'} ${String(pr.liquidityBias ?? '')}`
+              : ''
+          }${ix != null && Number.isFinite(ix) ? ` · bar#${ix}` : ''}${
+            book && Number.isFinite(book.imbalance)
+              ? ` · depthΔ ${(Number(book.imbalance) * 100).toFixed(0)}%`
+              : ''
+          }`
         : '';
     smcBlock = `Score ${smc.score}/5 · Sweep ${smc.liquiditySweep ?? '—'}${liqBit} · OB ${obTxt} · ${fvgTxt} · BOS ${DIR_LABEL[smc.bos] ?? smc.bos} · CH ${DIR_LABEL[smc.choch] ?? smc.choch}`;
   }

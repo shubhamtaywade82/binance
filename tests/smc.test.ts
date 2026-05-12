@@ -32,6 +32,7 @@ describe('analyzeSmc', () => {
     expect(r.liquiditySweep).toBe('LONG');
     expect(r.liquidity?.classification).toBe('SWEEP_REJECTION');
     expect(r.liquidity?.primaryRejection?.poolKind).toBe('buyside');
+    expect(r.liquidity?.primaryRejection?.raidDirection).toBe('UP');
   });
 
   it('scores increases for bullish concepts under LONG htf', () => {

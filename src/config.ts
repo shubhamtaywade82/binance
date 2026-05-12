@@ -303,6 +303,17 @@ export const AppConfigSchema = z.object({
     .default(25_000)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(3000).max(120_000)),
+  /**
+   * When true (and dashboard enabled), periodically asks Ollama for SuperTrend `atrPeriod` + `multiplier`;
+   * the chart still uses deterministic {@link supertrend} math with those parameters.
+   */
+  AI_SUPERTREND_TUNING_ENABLED: boolFromString(false),
+  /** Minimum seconds between SuperTrend tuning Ollama calls per symbol. */
+  AI_SUPERTREND_TUNING_INTERVAL_SEC: z
+    .union([z.number(), z.string()])
+    .default(300)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(60).max(3600)),
 
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
