@@ -17,6 +17,7 @@ import { fetchHistoricalKlines } from './binance/historical';
 import { fetchBinanceDepthSnapshot } from './binance/rest-depth';
 import { fetchBinanceExchangeInfo } from './binance/rest-exchange-info';
 import { BinancePrivateWs } from './binance/private-ws';
+import { getPositionRisk, getOpenAlgoOrders } from './binance/rest-trade';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
 import { extractPrecisionFromInstrument, type InstrumentPrecision } from './mapping/precision';
 import { resolvePairMap, type ResolvedPairMap } from './mapping/symbol-map';
@@ -27,6 +28,7 @@ import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
+import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
 import type { Candle, Side, TrendBias } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
@@ -201,6 +203,14 @@ export class HybridOrchestrator {
   async start(): Promise<void> {
     await this.seedCandles();
     await this.loadPrecision();
+
+    // Push exchange precision into the Binance adapter and reconcile any open position.
+    if (this.cfg.BINANCE_EXECUTION_ADAPTER && this.execution.binanceRestClient) {
+      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
+      if (this.precision) binanceAdapter.setPrecision(this.precision);
+      await this.reconcileExchangePosition(binanceAdapter);
+    }
+
     if (this.multiplex) {
       this.multiplex.start();
     } else if (this.ws) {
@@ -655,6 +665,7 @@ export class HybridOrchestrator {
     this.log.info('binance_order_update', {
       symbol: o.s,
       orderId: o.i,
+      strategyId: o.si,
       status: o.X,
       execType: o.x,
       side: o.S,
@@ -663,6 +674,67 @@ export class HybridOrchestrator {
       filledQty: o.z,
       realizedPnl: o.rp,
     });
+
+    // Reconcile exchange-triggered algo TP/SL fills.
+    // algo orders include a strategyId (si) — regular orders do not.
+    if (
+      o.X === 'FILLED' &&
+      o.x === 'TRADE' &&
+      typeof o.si === 'number' &&
+      o.si > 0 &&
+      this.cfg.BINANCE_EXECUTION_ADAPTER
+    ) {
+      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
+      const fillPrice = Number(o.ap) || Number(o.L) || this.lastMark || 0;
+      if (fillPrice > 0) {
+        const result = binanceAdapter.notifyFilled(o.si, fillPrice);
+        if (result?.fullyFilled) {
+          void this.positionManager.notifyExchangeClose(result.closed.exitPrice, result.closed.reason);
+        }
+      }
+    }
+  }
+
+  /** Fetch open positions and algo orders from Binance on startup; restore state if found. */
+  private async reconcileExchangePosition(adapter: BinanceLiveExecutionAdapter): Promise<void> {
+    if (!this.execution.binanceRestClient) return;
+    const client = this.execution.binanceRestClient;
+    const sym = this.pairs.binanceSymbol;
+    try {
+      const [positions, algoOrders] = await Promise.all([
+        getPositionRisk(client, sym),
+        getOpenAlgoOrders(client, sym),
+      ]);
+      const pos = positions.find(
+        (p) => p.symbol.toUpperCase() === sym && Math.abs(Number(p.positionAmt)) > 0,
+      );
+      if (!pos) {
+        this.log.info('startup_no_open_position', { sym });
+        return;
+      }
+
+      const internalId = adapter.restoreFromExchange(pos, algoOrders);
+      if (!internalId) return;
+
+      const side: Side = Number(pos.positionAmt) > 0 ? 'LONG' : 'SHORT';
+      const entryPrice = Number(pos.entryPrice);
+      const qty = Math.abs(Number(pos.positionAmt));
+      const { takeProfit, stopLoss } = this.risk.targets(entryPrice, side);
+
+      this.positionManager.restoreFromExchange({
+        side,
+        entryPrice,
+        quantity: qty,
+        pair: this.pairs.coindcxPair,
+        orderId: internalId,
+        takeProfit,
+        stopLoss,
+        openedAt: pos.updateTime || Date.now(),
+        notionalUsdt: entryPrice * qty,
+      });
+    } catch (e) {
+      this.log.warn('startup_reconcile_failed', { err: (e as Error).message });
+    }
   }
 
   private onPrivateAccountUpdate(event: AccountUpdate): void {

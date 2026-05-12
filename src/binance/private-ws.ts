@@ -64,6 +64,10 @@ export interface OrderTradeUpdate {
     AP?: string;
     /** Callback rate */
     cr?: string;
+    /** Algo strategy ID (present when order was placed via /fapi/v1/algoOrder). */
+    si?: number;
+    /** Algo strategy status (e.g. TRIGGERED). */
+    ss?: string;
   };
 }
 

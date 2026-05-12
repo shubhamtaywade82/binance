@@ -99,6 +99,12 @@ export const AppConfigSchema = z.object({
     }),
 
   LEVERAGE: numFromString(10),
+  /**
+   * USDT margin per trade for Binance USDT-M Futures (preferred).
+   * When set to a positive value, overrides the INR-based sizing path.
+   * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
+   */
+  CAPITAL_PER_TRADE_USDT: numFromString(0),
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),
   INR_PER_USDT: numFromString(85),

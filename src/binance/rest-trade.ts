@@ -269,6 +269,102 @@ export async function placeBatchOrders(
   });
 }
 
+// ─── Algo Orders (Dec 2025 migration: STOP_MARKET / TAKE_PROFIT_MARKET / TRAILING) ──────────
+
+export type AlgoOrderType = 'STOP_MARKET' | 'TAKE_PROFIT_MARKET' | 'TRAILING_STOP_MARKET';
+
+export interface AlgoOrderParams {
+  symbol: string;
+  side: OrderSide;
+  type: AlgoOrderType;
+  quantity?: number;
+  stopPrice?: number;
+  /** Trailing stop callback rate in %. Required for TRAILING_STOP_MARKET. */
+  callbackRate?: number;
+  /** Trailing stop activation price. */
+  activationPrice?: number;
+  closePosition?: boolean;
+  reduceOnly?: boolean;
+  workingType?: WorkingType;
+  positionSide?: PositionSide;
+  /** GTE_GTC = auto-cancel when position is gone. Recommended for TP/SL algo orders. */
+  timeInForce?: TimeInForce;
+  newClientStrategyId?: string;
+}
+
+export interface AlgoOrderResult {
+  strategyId: number;
+  clientStrategyId: string;
+  symbol: string;
+  side: string;
+  positionSide: string;
+  type: string;
+  origQty: string;
+  price: string;
+  stopPrice: string;
+  workingType: string;
+  reduceOnly: boolean;
+  closePosition: boolean;
+  timeInForce: string;
+  bookTime: number;
+  updateTime: number;
+}
+
+interface AlgoOrderListResponse {
+  total: number;
+  orders: AlgoOrderResult[];
+}
+
+export async function placeAlgoOrder(
+  client: BinanceRestClient,
+  params: AlgoOrderParams,
+): Promise<AlgoOrderResult> {
+  const body: Record<string, string | number | boolean> = {
+    symbol: params.symbol.toUpperCase(),
+    side: params.side,
+    type: params.type,
+  };
+  if (params.quantity !== undefined) body.quantity = params.quantity;
+  if (params.stopPrice !== undefined) body.stopPrice = params.stopPrice;
+  if (params.callbackRate !== undefined) body.callbackRate = params.callbackRate;
+  if (params.activationPrice !== undefined) body.activationPrice = params.activationPrice;
+  if (params.closePosition !== undefined) body.closePosition = params.closePosition;
+  if (params.reduceOnly !== undefined) body.reduceOnly = params.reduceOnly;
+  if (params.workingType !== undefined) body.workingType = params.workingType;
+  if (params.positionSide !== undefined) body.positionSide = params.positionSide;
+  if (params.timeInForce !== undefined) body.timeInForce = params.timeInForce;
+  if (params.newClientStrategyId !== undefined) body.newClientStrategyId = params.newClientStrategyId;
+  return client.signedPost<AlgoOrderResult>('/fapi/v1/algoOrder', body);
+}
+
+export async function cancelAlgoOrder(
+  client: BinanceRestClient,
+  symbol: string,
+  strategyId: number,
+): Promise<AlgoOrderResult> {
+  return client.signedDelete<AlgoOrderResult>('/fapi/v1/algoOrder', {
+    symbol: symbol.toUpperCase(),
+    strategyId,
+  });
+}
+
+export async function cancelAllAlgoOrders(
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<{ code: number; msg: string }> {
+  return client.signedDelete('/fapi/v1/algoOpenOrders', { symbol: symbol.toUpperCase() });
+}
+
+export async function getOpenAlgoOrders(
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<AlgoOrderResult[]> {
+  const params: Record<string, string> = {};
+  if (symbol) params.symbol = symbol.toUpperCase();
+  const res = await client.signedGet<AlgoOrderListResponse>('/fapi/v1/openAlgoOrders', params);
+  return res.orders ?? [];
+}
+
 // ─── Server Time ───────────────────────────────────────────────────────────
 
 export async function getServerTime(client: BinanceRestClient): Promise<number> {

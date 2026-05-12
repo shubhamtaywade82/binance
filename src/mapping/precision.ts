@@ -51,3 +51,10 @@ export function floorToStep(value: number, step: number): number {
   const decimals = `${step}`.includes('.') ? `${step}`.split('.')[1].length : 0;
   return Number(n.toFixed(Math.min(12, decimals)));
 }
+
+/** Round a price to the nearest tick boundary (for order price fields). */
+export function roundToTick(price: number, tick: number): number {
+  if (!Number.isFinite(price) || !Number.isFinite(tick) || tick <= 0) return price;
+  const decimals = `${tick}`.includes('.') ? `${tick}`.split('.')[1].length : 0;
+  return Number((Math.round(price / tick) * tick).toFixed(Math.min(12, decimals)));
+}
