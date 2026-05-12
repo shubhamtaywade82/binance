@@ -1,8 +1,9 @@
 /**
  * Dashboard bootstrap & WebSocket client.
  * WS URL: `VITE_DASHBOARD_WS_URL` if set.
- * LTP decimals: the bot sends `ltpDecimalPlaces` per symbol (Binance tickSize fractional digits + 2); `VITE_LTP_DECIMAL_PLACES`
- * is the fallback before the first snapshot (see `ui/ltp-precision.js`).
+ * LTP: the bot sends `ltpDecimalPlaces` = Binance tick fractional digits (display). The chart uses one extra
+ * decimal internally for smooth LTP stepping; axis / order book / tape use display only. Top bar (LTP, mark,
+ * bid, ask, spread) uses movement precision via `fmtLtpMovement` / `fmtSpreadMovement` (`ui/ltp-precision.js`).
  * Dev (Vite): same host + path `/__dashboard_ws` (proxied to the bot on 127.0.0.1:4001 — see vite.config.js).
  * Production build: `ws(s)://` page host + `VITE_DASHBOARD_WS_PORT` (default 4001).
  * The WebSocket is served by the bot when `DASHBOARD_ENABLED=true`.
@@ -10,7 +11,7 @@
 
 import { escapeHtml, renderAiBriefMarkdown } from './ai-brief-render.js';
 import { ChartManager } from './chart.js';
-import { fmtLtpDisplay, getLtpDecimalPlaces } from './ltp-precision.js';
+import { fmtLtpMovement, fmtSpreadMovement } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
@@ -85,12 +86,6 @@ let lastPrice = null;
 let lastLtpTarget = null;
 
 // ─── Format helpers ───────────────────────────────────────────────────────
-const fmtSpread = (spread) => {
-  if (spread == null || !Number.isFinite(spread)) return '—';
-  const d = Math.min(12, Math.max(1, getLtpDecimalPlaces() + 2));
-  return spread.toFixed(d);
-}
-
 const flashPrice = (el, up) => {
   el.classList.remove('flash-up', 'flash-down');
   void el.offsetWidth; // force reflow
@@ -102,24 +97,24 @@ const updateHeader = ({ price, mark, bid, ask }) => {
   const priceEl = document.getElementById('hdr-price');
 
   if (price != null && Number.isFinite(price)) {
-    priceEl.textContent = fmtLtpDisplay(price);
+    priceEl.textContent = fmtLtpMovement(price);
     if (lastPrice !== null && price !== lastPrice) flashPrice(priceEl, price > lastPrice);
     lastPrice = price;
   }
   if (mark != null) {
     const el = document.getElementById('hdr-mark');
-    if (el) el.textContent = fmtLtpDisplay(mark);
+    if (el) el.textContent = fmtLtpMovement(mark);
   }
   if (bid != null) {
     const el = document.getElementById('hdr-bid');
-    if (el) el.textContent = fmtLtpDisplay(bid);
+    if (el) el.textContent = fmtLtpMovement(bid);
   }
   if (ask != null) {
     const el = document.getElementById('hdr-ask');
-    if (el) el.textContent = fmtLtpDisplay(ask);
+    if (el) el.textContent = fmtLtpMovement(ask);
     const spreadEl = document.getElementById('hdr-spread');
     if (spreadEl && bid != null && Number.isFinite(bid)) {
-      spreadEl.textContent = fmtSpread(ask - bid);
+      spreadEl.textContent = fmtSpreadMovement(ask - bid);
     }
   }
 }
@@ -258,7 +253,7 @@ const dispatch = (msg) => {
         lastPrice = ltp;
         if (chart.getLastCloseForTf(chart.getCurrentTf()) == null) {
           const priceEl = document.getElementById('hdr-price');
-          if (priceEl) priceEl.textContent = fmtLtpDisplay(ltp);
+          if (priceEl) priceEl.textContent = fmtLtpMovement(ltp);
         }
       }
 
@@ -499,7 +494,7 @@ window.addEventListener('DOMContentLoaded', () => {
       priceEl.textContent = '—';
       return;
     }
-    priceEl.textContent = fmtLtpDisplay(p);
+    priceEl.textContent = fmtLtpMovement(p);
   });
   chart.setTfChangeHandler((tf) => {
     if (ws?.readyState === WebSocket.OPEN) {

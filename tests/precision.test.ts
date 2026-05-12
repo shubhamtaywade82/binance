@@ -6,17 +6,18 @@ import {
 } from '../src/mapping/precision';
 
 describe('ltpDisplayDecimalPlaces', () => {
-  it('uses tick fractional digits plus two (sub-tick display)', () => {
-    expect(ltpDisplayDecimalPlaces(0.01)).toBe(4);
-    expect(ltpDisplayDecimalPlaces(0.1)).toBe(3);
-    expect(ltpDisplayDecimalPlaces(0.5)).toBe(3);
-    expect(ltpDisplayDecimalPlaces(0.001)).toBe(5);
+  it('uses tick fractional digits only (exchange default display)', () => {
+    expect(ltpDisplayDecimalPlaces(0.01)).toBe(2);
+    expect(ltpDisplayDecimalPlaces(0.1)).toBe(1);
+    expect(ltpDisplayDecimalPlaces(0.5)).toBe(1);
+    expect(ltpDisplayDecimalPlaces(0.001)).toBe(3);
+    expect(ltpDisplayDecimalPlaces(1)).toBe(0);
   });
 
   it('respects min max and fallback', () => {
-    expect(ltpDisplayDecimalPlaces(1, { min: 2, max: 10 })).toBe(2);
+    expect(ltpDisplayDecimalPlaces(1, { min: 2, max: 8 })).toBe(2);
     expect(ltpDisplayDecimalPlaces(0.000000001, { max: 4 })).toBe(4);
-    expect(ltpDisplayDecimalPlaces(NaN, { fallback: 2, min: 1, max: 10 })).toBe(2);
+    expect(ltpDisplayDecimalPlaces(NaN, { fallback: 2, min: 1, max: 8 })).toBe(2);
   });
 });
 

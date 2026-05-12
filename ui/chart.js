@@ -908,8 +908,8 @@ export class ChartManager {
   }
 
   /**
-   * Apply per-symbol LTP decimals from dashboard snapshot (`ltpDecimalPlaces`: tick fractional digits + 2).
-   * Resnaps the LTP line to the same logical price when the scale changes (e.g. watch symbol switch).
+   * Apply display LTP decimals from dashboard (`ltpDecimalPlaces` = tick fractional digits). Chart LTP motion
+   * uses one extra sub-tick decimal internally; axis labels use display precision via `fmtLtpDisplay`.
    * @param {{ ltpDecimalPlaces?: number | null }} msg
    */
   applyDashboardLtpPrecision(msg) {
