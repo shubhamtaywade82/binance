@@ -46,6 +46,19 @@ export interface MarkPriceMultiplexEvent {
   eventTime: number;
 }
 
+/** Normalized `@ticker` / 24hrTicker fields (Binance `c` last, `p` change, `P` % string). */
+export interface Ticker24hrEvent {
+  symbol: string;
+  lastPrice: number;
+  eventTime: number;
+  /** Absolute change vs 24h open (`p`). */
+  priceChange?: number;
+  /** Signed percent change as displayed (e.g. +1.23 from `P`). */
+  priceChangePercent?: number;
+  /** 24h open (`o`). */
+  openPrice?: number;
+}
+
 /** Liquidation order (forceOrder stream). */
 export interface ForceOrderEvent {
   symbol: string;
@@ -64,8 +77,8 @@ export interface ForceOrderEvent {
 export interface MultiplexCallbacks {
   onKline?: (symbol: string, interval: string, candle: Candle, isFinal: boolean) => void;
   onBookTicker?: (t: BookTickerEvent) => void;
-  /** Spot / USD-M 24h ticker — last price in `c` (LTP; not mark on futures). */
-  on24hrTicker?: (u: { symbol: string; lastPrice: number; eventTime: number }) => void;
+  /** Spot / USD-M 24h ticker — last in `c` (LTP); optional `p`/`P`/`o` for stats. */
+  on24hrTicker?: (u: Ticker24hrEvent) => void;
   onDepthPartial?: (p: DepthPartialEvent) => void;
   onDepthDiff?: (d: DepthDiff & { s: string }) => void;
   onAggTrade?: (t: AggTradeEvent) => void;
@@ -417,7 +430,14 @@ export class BinanceMultiplexWs {
     const lastPrice = Number(data.c);
     const eventTime = Number(data.E ?? Date.now());
     if (!symbol || !Number.isFinite(lastPrice)) return;
-    this.cb.on24hrTicker?.({ symbol, lastPrice, eventTime });
+    const priceChange = Number(data.p);
+    const priceChangePercent = Number(data.P);
+    const openPrice = Number(data.o);
+    const out: Ticker24hrEvent = { symbol, lastPrice, eventTime };
+    if (Number.isFinite(priceChange)) out.priceChange = priceChange;
+    if (Number.isFinite(priceChangePercent)) out.priceChangePercent = priceChangePercent;
+    if (Number.isFinite(openPrice)) out.openPrice = openPrice;
+    this.cb.on24hrTicker?.(out);
   }
 
   private dispatchDiff(data: Record<string, unknown>): void {

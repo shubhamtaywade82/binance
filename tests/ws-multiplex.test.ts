@@ -141,6 +141,39 @@ describe('BinanceMultiplexWs', () => {
     void mx.stop();
   });
 
+  it('dispatches 24hrTicker with change fields from Binance payload', () => {
+    const on24hrTicker = vi.fn();
+    const { mx, sockets } = build({ on24hrTicker });
+    mx.start();
+    const market = socketFor(sockets, 'market');
+    market.emit('open');
+
+    deliver(market, {
+      stream: 'solusdt@ticker',
+      data: {
+        e: '24hrTicker',
+        E: 9_000,
+        s: 'SOLUSDT',
+        c: '150.5',
+        p: '2.5',
+        P: '1.69',
+        o: '148',
+      },
+    });
+
+    expect(on24hrTicker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'SOLUSDT',
+        lastPrice: 150.5,
+        eventTime: 9_000,
+        priceChange: 2.5,
+        priceChangePercent: 1.69,
+        openPrice: 148,
+      }),
+    );
+    void mx.stop();
+  });
+
   it('responds to server ping with pong (echo payload)', () => {
     const { mx, sockets } = build();
     mx.start();

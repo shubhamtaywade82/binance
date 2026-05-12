@@ -15,8 +15,9 @@ In-repo API map: [docs/binance-usdm-perpetual-reference.md](docs/binance-usdm-pe
 ```bash
 cp .env.example .env       # edit credentials + mode
 npm install
-npm run dev                # hot-reload on src/ changes
+npm run dev                # hot-reload on src/ changes (set DASHBOARD_ENABLED=true in `.env` for UI WebSocket)
 npm run dev:once           # single run
+npm run dashboard          # same as the bot with DASHBOARD_ENABLED=true (no separate process)
 npm run check              # typecheck + lint
 npm run readiness:binance  # live-readiness checklist for SOL 1.5%
 ```

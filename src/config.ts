@@ -239,7 +239,30 @@ export const AppConfigSchema = z.object({
   BINANCE_FAPI_WS_HIDE_RATELIMITS: boolFromString(false),
 
   /**
-   * Dashboard (`npm run dashboard`): optional LLM narrative from structured signals via `ollama` JS → local Ollama or Ollama Cloud.
+   * When true, `src/index.ts` serves the dashboard WebSocket on `DASHBOARD_BIND`:`DASHBOARD_PORT`
+   * using the same multiplex-backed store/orderbook/trade tape as the orchestrator (no duplicate Binance WS).
+   */
+  DASHBOARD_ENABLED: boolFromString(false),
+  /** Dashboard WebSocket listen port (browser UI connects here, e.g. via `npm run ui:dev`). */
+  DASHBOARD_PORT: z
+    .string()
+    .default('4001')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 1 || n > 65535) return 4001;
+      return n;
+    }),
+  /** Dashboard HTTP/WS bind address (`127.0.0.1` = local only; use `0.0.0.0` for LAN/Docker). */
+  DASHBOARD_BIND: z.string().default('127.0.0.1'),
+  /** In-memory kline cap per timeframe when the dashboard is enabled (larger = deeper chart history). */
+  DASHBOARD_STORE_MAX_BARS: z
+    .union([z.number(), z.string()])
+    .default(100_000)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(1000).max(500_000)),
+
+  /**
+   * Optional LLM narrative from structured signals via `ollama` JS → local Ollama or Ollama Cloud (dashboard UI).
    */
   AI_MARKET_BRIEF_ENABLED: boolFromString(false),
   /**

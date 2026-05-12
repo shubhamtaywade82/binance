@@ -1,7 +1,8 @@
 /**
  * Dashboard bootstrap & WebSocket client.
  * WS URL: `VITE_DASHBOARD_WS_URL`, else same host as this page + `VITE_DASHBOARD_WS_PORT` (default 4001).
- * Run the bridge: `npm run dashboard` (in parallel with `npm run ui:dev`).
+ * The WebSocket is served by the **bot process** (`npm run dev` / `npm start`) when `DASHBOARD_ENABLED=true`.
+ * Optional: `npm run dashboard` is an alias for the same bot entry with that env var set.
  */
 
 import { ChartManager }     from './chart.js';
@@ -101,7 +102,7 @@ function connect() {
   });
 
   ws.addEventListener('error', () => {
-    setWsStatus('disconnected', 'WS error — is `npm run dashboard` running?');
+    setWsStatus('disconnected', 'WS error — is the bot running with DASHBOARD_ENABLED=true?');
   });
 
   ws.addEventListener('message', (ev) => {
@@ -211,14 +212,29 @@ function dispatch(msg) {
       break;
     }
 
-    /* ── 24hr Ticker (exchange last `c`; USD-M now subscribes so LTP is not mark-only) ─ */
+    /* ── 24hr Ticker: 24h stats only — main LTP stays chart/kline (avoids fighting aggTrade). ─ */
     case 'ticker_24hr': {
-      if (Number.isFinite(msg.price)) updateHeader({ price: msg.price });
       const changeEl = document.getElementById('hdr-change');
-      if (changeEl && msg.priceChange != null) {
-        const pct = ((msg.priceChange / (msg.price - msg.priceChange)) * 100).toFixed(2);
-        changeEl.textContent = `${msg.priceChange >= 0 ? '+' : ''}${pct}%`;
-        changeEl.className = `hdr-change ${msg.priceChange >= 0 ? 'bull' : 'bear'}`;
+      if (!changeEl) break;
+      let pctStr = null;
+      let bull = true;
+      if (msg.priceChangePercent != null && Number.isFinite(msg.priceChangePercent)) {
+        const v = Number(msg.priceChangePercent);
+        bull = v >= 0;
+        pctStr = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+      } else if (
+        msg.priceChange != null &&
+        Number.isFinite(msg.priceChange) &&
+        Number.isFinite(msg.price)
+      ) {
+        const open = msg.price - msg.priceChange;
+        bull = msg.priceChange >= 0;
+        const pct = open !== 0 ? (msg.priceChange / open) * 100 : 0;
+        pctStr = `${msg.priceChange >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+      }
+      if (pctStr != null) {
+        changeEl.textContent = pctStr;
+        changeEl.className = `hdr-change ${bull ? 'bull' : 'bear'}`;
       }
       break;
     }
@@ -240,10 +256,9 @@ function dispatch(msg) {
       break;
     }
 
-    /* ── Agg Trade ─ */
+    /* ── Agg Trade (tape only; header LTP follows chart close via kline) ─ */
     case 'agg_trade': {
       tape.addTrade(msg);
-      if (Number.isFinite(msg.price)) updateHeader({ price: msg.price });
       break;
     }
 

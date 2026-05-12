@@ -10,11 +10,14 @@ export interface MarkPriceUpdate {
   eventTime: number;
 }
 
-/** Spot @ticker — last traded price (`c` in Binance payload). */
+/** Spot / futures @ticker — last (`c`); optional 24h stats from same stream. */
 export interface TickerLtpUpdate {
   symbol: string;
   lastPrice: number;
   eventTime: number;
+  priceChange?: number;
+  priceChangePercent?: number;
+  openPrice?: number;
 }
 
 export interface AggTradeUpdate {

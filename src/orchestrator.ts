@@ -10,6 +10,7 @@ import {
   type DepthSpeed,
   type MultiplexCallbacks,
 } from './binance/ws-multiplex';
+import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
@@ -74,6 +75,8 @@ export interface OrchestratorDeps {
   tradeTape?: AggTradeTape;
   /** Override for tests; default fetches Binance exchangeInfo. */
   fetchExchangeInfo?: typeof fetchBinanceExchangeInfo;
+  /** Merged after internal multiplex primary callbacks (e.g. dashboard WebSocket bridge). Ignored when `deps.multiplex` is set. */
+  multiplexSidecar?: MultiplexCallbacks;
 }
 
 export class HybridOrchestrator {
@@ -158,6 +161,10 @@ export class HybridOrchestrator {
       this.multiplex = null;
     } else {
       this.ws = null;
+      const primaryMx = this.bindMultiplexCallbacks();
+      const multiplexCb = deps.multiplexSidecar
+        ? mergeMultiplexCallbacks(primaryMx, deps.multiplexSidecar)
+        : primaryMx;
       this.multiplex = new BinanceMultiplexWs(
         {
           baseWsUrl: binanceWsBase(cfg),
@@ -172,7 +179,7 @@ export class HybridOrchestrator {
           useForceOrder: cfg.BINANCE_USE_FORCE_ORDER,
           reconnectAfterHours: cfg.BINANCE_WS_RECONNECT_HOURS,
         },
-        this.bindMultiplexCallbacks(),
+        multiplexCb,
       );
     }
 

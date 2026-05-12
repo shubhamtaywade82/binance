@@ -46,7 +46,7 @@ const CHART_OPTS = {
   handleScale: { mouseWheel: true, pinch: true },
 };
 
-/** Match `MAX_STORE_BARS` in `src/dashboard/server.ts` — trim client cache same as server. */
+/** Match `DASHBOARD_STORE_MAX_BARS` / `src/dashboard/bridge.ts` — trim client cache same as server. */
 const MAX_STORE_BARS = 100_000;
 /** When the left edge of the visible window is within this many bars of the oldest loaded bar, request older history. */
 const LAZY_HISTORY_EDGE_BARS = 24;
