@@ -65,7 +65,12 @@ export function renderStrategyHud(container, signals) {
       ? `${smc.orderBlock.type} ${fmtSignalPrice(smc.orderBlock.low)}–${fmtSignalPrice(smc.orderBlock.high)}`
       : '—';
     const fvgTxt = smc.fvg ? `${smc.fvg.type} FVG` : '—';
-    smcBlock = `Score ${smc.score}/5 · Sweep ${smc.liquiditySweep ?? '—'} · OB ${obTxt} · ${fvgTxt} · BOS ${DIR_LABEL[smc.bos] ?? smc.bos} · CH ${DIR_LABEL[smc.choch] ?? smc.choch}`;
+    const liq = smc.liquidity;
+    const liqBit =
+      liq && typeof liq === 'object'
+        ? ` · LQ ${String(liq.classification ?? '—')} (${liq.sweepQualityScore ?? 0})`
+        : '';
+    smcBlock = `Score ${smc.score}/5 · Sweep ${smc.liquiditySweep ?? '—'}${liqBit} · OB ${obTxt} · ${fvgTxt} · BOS ${DIR_LABEL[smc.bos] ?? smc.bos} · CH ${DIR_LABEL[smc.choch] ?? smc.choch}`;
   }
 
   const mtf = signals.solMtf;

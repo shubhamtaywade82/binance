@@ -291,6 +291,7 @@ export class ChartManager {
 
     const lastT = this._lastVisibleBarTimeSec(refTf);
     if (lastT != null) {
+      let hasLiqSweepMarker = false;
       if (smc.bos && smc.bos !== 'NONE') {
         const bull = smc.bos === 'BULLISH';
         markers.push({
@@ -313,14 +314,51 @@ export class ChartManager {
           id: 'smc-choch',
         });
       }
-      if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE') {
+      const liq = smc.liquidity;
+      if (liq && typeof liq === 'object') {
+        const pools = Array.isArray(liq.pools) ? liq.pools : [];
+        let liqLines = 0;
+        for (const p of pools) {
+          if (liqLines >= 4) break;
+          const px = p.price;
+          if (!Number.isFinite(px)) continue;
+          const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
+          this._addSmcPriceLine(
+            px,
+            bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)',
+            bullPool ? 'LQ↑' : 'LQ↓',
+            LineStyle.Dotted,
+          );
+          liqLines++;
+        }
+        const pr = liq.primaryRejection;
+        if (
+          pr &&
+          pr.outcome === 'rejection' &&
+          pr.sweepBarIndex != null &&
+          Number.isFinite(pr.sweepBarIndex)
+        ) {
+          const tSweep = this._signalBarTimeSec(refTf, pr.sweepBarIndex);
+          if (tSweep != null) {
+            const buyRaid = pr.poolKind === 'buyside' || pr.poolKind === 'BUYSIDE';
+            markers.push({
+              time: tSweep,
+              position: buyRaid ? 'aboveBar' : 'belowBar',
+              shape: buyRaid ? 'arrowDown' : 'arrowUp',
+              color: '#ff80ab',
+              text: `LQ${Number(pr.score) || 0}`,
+            });
+            hasLiqSweepMarker = true;
+          }
+        }
+      }
+      if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE' && !hasLiqSweepMarker) {
         markers.push({
           time: lastT,
           position: 'inBar',
           shape: 'circle',
           color: '#ff80ab',
           text: 'LS',
-          id: 'smc-ls',
         });
       }
     }

@@ -15,6 +15,7 @@ import { fetchBinanceKlines } from '../binance/rest-klines';
 import { biasFromCandles } from '../strategy/htf-ltf';
 import { analyzeTrend } from '../strategy/trend';
 import { analyzeSmc } from '../strategy/smc';
+import type { LiquidityEngineResult } from '../strategy/liquidity-engine';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
 import { ema, rsi, macd, supertrend } from '../strategy/indicators';
 import type { Candle } from '../types';
@@ -59,6 +60,7 @@ export interface DashboardSignalsPayload {
     fvg: { type: string; low: number; high: number; index: number } | null;
     bos: string;
     choch: string;
+    liquidity: LiquidityEngineResult | null;
   };
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
@@ -302,7 +304,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
 
     const htfBiasRaw = biasFromCandles(candlesHtf);
     const ltfTrend = analyzeTrend(candlesTrend);
-    const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw);
+    const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
 
     let solMtf = null;
     const c5 = rows['5m'];
@@ -340,6 +342,7 @@ export function createDashboardBridge(cfg: AppConfig, log: AppLogger, feeds: Das
         fvg: smc.fvg,
         bos: smc.bos,
         choch: smc.choch,
+        liquidity: smc.liquidity,
       },
       solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
       signalMeta: {

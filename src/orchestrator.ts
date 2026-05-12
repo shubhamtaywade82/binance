@@ -852,7 +852,7 @@ export class HybridOrchestrator {
 
     const htfBias: TrendBias = biasFromCandles(this.c1h);
     const ltf = analyzeTrend(this.c15);
-    const smc = analyzeSmc(this.c15, refPrice, htfBias);
+    const smc = analyzeSmc(this.c15, refPrice, htfBias, { timeframe: '15m' });
 
     this.log.info('signal_evaluated', {
       htfBias,

@@ -30,6 +30,8 @@ describe('analyzeSmc', () => {
     cs.push(mk(100.4, 100.8, 100, 100.3, 22));
     const r = analyzeSmc(cs, 100.3, 'SHORT');
     expect(r.liquiditySweep).toBe('LONG');
+    expect(r.liquidity?.classification).toBe('SWEEP_REJECTION');
+    expect(r.liquidity?.primaryRejection?.poolKind).toBe('buyside');
   });
 
   it('scores increases for bullish concepts under LONG htf', () => {

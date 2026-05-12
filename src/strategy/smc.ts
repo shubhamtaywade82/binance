@@ -1,5 +1,6 @@
 import type { Candle, TrendBias } from '../types';
 import { atr, swingHighsLows } from './indicators';
+import { runLiquidityEngine, type LiquidityEngineResult } from './liquidity-engine';
 
 export type SmcDirection = 'BULLISH' | 'BEARISH' | 'NONE';
 
@@ -24,6 +25,8 @@ export interface SmcAnalysis {
   bos: SmcDirection;
   choch: SmcDirection;
   score: number;
+  /** Pool registry + sweep state machine output (null only when history is too short). */
+  liquidity: LiquidityEngineResult | null;
 }
 
 const SWEEP_PCT = 0.003;
@@ -111,8 +114,13 @@ export function analyzeSmc(
   candles: Candle[],
   _currentPrice: number,
   htfTrend: TrendBias,
+  opts?: { timeframe?: string },
 ): SmcAnalysis {
-  const liquiditySweep = detectSweep(candles);
+  const timeframe = opts?.timeframe ?? 'ltf';
+  const liquidity = runLiquidityEngine(candles, timeframe, {});
+  const legacySweep = detectSweep(candles);
+  const liquiditySweep =
+    liquidity.liquiditySweep !== 'NONE' ? liquidity.liquiditySweep : legacySweep;
   const orderBlock = detectOrderBlock(candles);
   const fvg = detectFvg(candles);
   const { bos, choch } = detectBosChoch(candles);
@@ -132,5 +140,8 @@ export function analyzeSmc(
     if (choch === 'BEARISH') score++;
   }
 
-  return { liquiditySweep, orderBlock, fvg, bos, choch, score };
+  const liquidityPayload =
+    liquidity.pools.length > 0 || liquidity.events.length > 0 ? liquidity : null;
+
+  return { liquiditySweep, orderBlock, fvg, bos, choch, score, liquidity: liquidityPayload };
 }
