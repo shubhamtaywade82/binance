@@ -713,9 +713,10 @@ export class ChartManager {
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         lineVisible: true,
-        axisLabelVisible: false,
-        title: '',
+        axisLabelVisible: true,
+        title: 'BID',
         axisLabelColor: 'rgba(0,230,118,0.95)',
+        axisLabelTextColor: '#e8f5e9',
       });
     }
     if (!this._bookTopAskLine) {
@@ -725,9 +726,10 @@ export class ChartManager {
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         lineVisible: true,
-        axisLabelVisible: false,
-        title: '',
+        axisLabelVisible: true,
+        title: 'ASK',
         axisLabelColor: 'rgba(255,23,68,0.95)',
+        axisLabelTextColor: '#ffebee',
       });
     }
   }
@@ -748,16 +750,20 @@ export class ChartManager {
     this._bookTopBidLine?.applyOptions({
       price: bid,
       lineVisible: true,
-      axisLabelVisible: false,
+      axisLabelVisible: true,
+      title: 'BID',
       color: 'rgba(0,230,118,0.82)',
       axisLabelColor: 'rgba(0,230,118,0.95)',
+      axisLabelTextColor: '#e8f5e9',
     });
     this._bookTopAskLine?.applyOptions({
       price: ask,
       lineVisible: true,
-      axisLabelVisible: false,
+      axisLabelVisible: true,
+      title: 'ASK',
       color: 'rgba(255,23,68,0.82)',
       axisLabelColor: 'rgba(255,23,68,0.95)',
+      axisLabelTextColor: '#ffebee',
     });
   }
 
