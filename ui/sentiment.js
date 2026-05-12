@@ -1,5 +1,5 @@
 /**
- * sentiment.js — Market Sentiment Gauge + VWAP display
+ * sentiment.js — Market Sentiment horizontal bar + VWAP display
  */
 
 import { fmtLtpDisplay } from './ltp-precision.js';
@@ -24,7 +24,7 @@ export class SentimentGauge {
     if (this.raf === null) this._start();
   }
 
-  /** Redraw after the gauge becomes visible (tab switch). */
+  /** Redraw after the bar becomes visible (tab switch). */
   redraw() {
     this._draw();
   }
@@ -65,72 +65,107 @@ export class SentimentGauge {
     if (!ctx || !canvas) return;
     const parent = canvas.parentElement;
     const W = Math.max(1, parent.clientWidth);
-    /** Logical height — must fit arc + thick stroke (center sits just below canvas so the upper semicircle is in view). */
-    const H = 100;
-    canvas.width  = W * devicePixelRatio;
+    const H = 38;
+    canvas.width = W * devicePixelRatio;
     canvas.height = H * devicePixelRatio;
-    canvas.style.width  = `${W}px`;
+    canvas.style.width = `${W}px`;
     canvas.style.height = `${H}px`;
     ctx.scale(devicePixelRatio, devicePixelRatio);
 
     ctx.clearRect(0, 0, W, H);
 
-    const cx = W / 2;
-    const lineWidth = 18;
-    const r = Math.min(W * 0.42, 78);
-    /** Pivot below the bottom edge so π→2π is the upper semicircle; tuned so y_top − lineWidth/2 ≥ ~8px. */
-    const cy = H + 16;
-    const startAngle = Math.PI;
-    const endAngle   = 2 * Math.PI;
+    const padX = 6;
+    const barH = 16;
+    const y = (H - barH) / 2;
+    const barW = W - 2 * padX;
+    const rad = Math.min(7, barH / 2);
+    const centerX = padX + barW / 2;
+    const markerX = padX + this.ratio * barW;
 
-    // Background arc (dark)
+    const trackPath = () => {
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(padX, y, barW, barH, rad);
+      } else {
+        ctx.rect(padX, y, barW, barH);
+      }
+    };
+
+    trackPath();
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fill();
+
+    /** Clip to a horizontal segment [x0, x1] inside the bar (for center-out fill). */
+    const clipSegment = (x0, x1) => {
+      const left = Math.min(x0, x1);
+      const w = Math.max(0, Math.abs(x1 - x0));
+      ctx.beginPath();
+      ctx.rect(left, y, w, barH);
+    };
+
+    if (markerX > centerX + 0.5) {
+      ctx.save();
+      trackPath();
+      ctx.clip();
+      clipSegment(centerX, markerX);
+      ctx.clip();
+      const grad = ctx.createLinearGradient(centerX, 0, padX + barW, 0);
+      grad.addColorStop(0, 'rgba(255,215,64,0.85)');
+      grad.addColorStop(1, '#00e676');
+      ctx.fillStyle = grad;
+      ctx.fillRect(centerX, y, markerX - centerX, barH);
+      ctx.restore();
+    } else if (markerX < centerX - 0.5) {
+      ctx.save();
+      trackPath();
+      ctx.clip();
+      clipSegment(markerX, centerX);
+      ctx.clip();
+      const grad = ctx.createLinearGradient(padX, 0, centerX, 0);
+      grad.addColorStop(0, '#ff1744');
+      grad.addColorStop(1, 'rgba(255,215,64,0.85)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(markerX, y, centerX - markerX, barH);
+      ctx.restore();
+    }
+
+    // Neutral axis at center (matches "0" row above bar)
     ctx.beginPath();
-    ctx.arc(cx, cy, r, startAngle, endAngle);
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-    ctx.lineWidth = lineWidth;
-    ctx.stroke();
-
-    // Gradient arc (bear → bull)
-    const grad = ctx.createLinearGradient(0, cy, W, cy);
-    grad.addColorStop(0, '#ff1744');
-    grad.addColorStop(0.5, 'rgba(255,215,64,0.6)');
-    grad.addColorStop(1, '#00e676');
-
-    const fillEnd = startAngle + (this.ratio * Math.PI);
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, startAngle, fillEnd);
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = lineWidth;
+    ctx.moveTo(centerX, y - 2);
+    ctx.lineTo(centerX, y + barH + 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.42)';
+    ctx.lineWidth = 1.5;
     ctx.lineCap = 'round';
     ctx.stroke();
 
-    // Needle
-    const needleAngle = startAngle + this.ratio * Math.PI;
-    const nx = cx + (r) * Math.cos(needleAngle);
-    const ny = cy + (r) * Math.sin(needleAngle);
     ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(nx, ny);
-    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.moveTo(markerX, y - 2);
+    ctx.lineTo(markerX, y + barH + 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.88)';
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fill();
 
-    // Pct display
-    const pct = Math.round(this.ratio * 100);
+    // Skew from 50/50: −100 … +100 (bid-notional share vs top-of-book depth)
+    const skewPts = Math.round((this.ratio - 0.5) * 200);
     const pctEl = document.getElementById('sentiment-pct');
-    if (pctEl) pctEl.textContent = `${pct}%`;
+    if (pctEl) {
+      pctEl.textContent = skewPts === 0 ? '0' : skewPts > 0 ? `+${skewPts}` : String(skewPts);
+      pctEl.setAttribute('title', 'Bid-share skew vs 50/50 (notional, top 10 bid vs ask levels)');
+    }
 
-    // Label
     const labelEl = document.getElementById('sentiment-label');
     if (labelEl) {
-      if (this.ratio > 0.65) { labelEl.textContent = 'Bullish'; labelEl.className = 'sentiment-txt bull'; }
-      else if (this.ratio < 0.35) { labelEl.textContent = 'Bearish'; labelEl.className = 'sentiment-txt bear'; }
-      else { labelEl.textContent = 'Neutral'; labelEl.className = 'sentiment-txt neutral'; }
+      if (skewPts > 30) {
+        labelEl.textContent = 'Bullish';
+        labelEl.className = 'sentiment-txt bull';
+      } else if (skewPts < -30) {
+        labelEl.textContent = 'Bearish';
+        labelEl.className = 'sentiment-txt bear';
+      } else {
+        labelEl.textContent = 'Neutral';
+        labelEl.className = 'sentiment-txt neutral';
+      }
     }
   }
 

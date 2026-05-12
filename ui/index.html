@@ -134,8 +134,14 @@
                 <span id="sentiment-label" class="sentiment-txt neutral">Neutral</span>
               </div>
               <div id="sentiment-gauge-wrap">
+                <div class="sentiment-axis" aria-hidden="true">
+                  <span class="sentiment-axis-ask">Ask</span>
+                  <span class="sentiment-axis-mid">0</span>
+                  <span class="sentiment-axis-bid">Bid</span>
+                </div>
                 <canvas id="sentiment-gauge"></canvas>
-                <div id="sentiment-pct" class="gauge-pct">50%</div>
+                <div id="sentiment-pct" class="gauge-pct">0</div>
+                <div class="sentiment-skew-hint">Skew vs 50/50 book (top 10)</div>
               </div>
               <div class="vwap-row">
                 <span class="stat-label">1m VWAP</span>
