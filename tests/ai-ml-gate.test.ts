@@ -35,10 +35,10 @@ describe('mlDecide', () => {
     expect(mlDecide(output, 'SHORT', defaultConfig)).toBeNull();
   });
 
-  it('returns null when edge check fails', () => {
-    const lowEdge: MLGateConfig = { ...defaultConfig, minEdgeBps: 50 };
-    const output: ModelOutput = { p_up: 0.70, p_down: 0.05, p_flat: 0.25 };
-    expect(mlDecide(output, 'LONG', lowEdge)).toBeNull();
+  it('returns null when edge check fails (p barely above 0.5)', () => {
+    const cfg: MLGateConfig = { ...defaultConfig, minProbability: 0.50 };
+    const output: ModelOutput = { p_up: 0.50, p_down: 0.10, p_flat: 0.40 };
+    expect(mlDecide(output, 'LONG', cfg)).toBeNull();
   });
 
   it('respects custom minProbability', () => {

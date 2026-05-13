@@ -293,8 +293,11 @@ Items marked ✅ are already implemented.
 
 ## 16. AI / ML Trading System
 
-> Current state: only Ollama LLM advisory (`market-brief.ts`, `supertrend-tune.ts`).
-> No feature pipeline, no label builder, no ML models, no live inference.
+> **Current state**: Feature pipeline built (`feature-schema.ts`, `feature-normalizer.ts`, `feature-recorder.ts`),
+> inference client with circuit breaker (`inference-client.ts`), ML decision gate (`ml-gate.ts`),
+> prediction logger (`prediction-logger.ts`), wired into orchestrator behind `ML_ENABLED` flag.
+> Python ML bot scaffolding in `ml_bot/` (training, inference server, feature engine).
+> **Next**: Collect training data, train LightGBM baseline, deploy inference server.
 
 ---
 
@@ -321,12 +324,12 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `spread` | Best ask − best bid |
-| ☐ | `microprice` | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` |
-| ☐ | `obi_5` | Top-5 weighted bid/ask volume imbalance |
-| ☐ | `obi_10` | Top-10 weighted bid/ask volume imbalance |
-| ☐ | `weighted_depth_imbalance` | Level-distance weighted OBI |
-| ☐ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff |
+| ✅ | `spread` | Best ask − best bid — `feature-schema.ts` |
+| ✅ | `microprice` | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` — `feature-schema.ts` |
+| ✅ | `obi_5` | Top-5 weighted bid/ask volume imbalance — `feature-schema.ts` |
+| ✅ | `obi_10` | Top-10 weighted bid/ask volume imbalance — `feature-schema.ts` |
+| ✅ | `weighted_depth_imbalance` | Level-distance weighted OBI — `feature-schema.ts` |
+| ✅ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff — `feature-schema.ts` (ofi_cumulative) |
 | ☐ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient |
 | ☐ | `liquidity_gap` | Largest price gap in top-20 levels |
 | ☐ | `cancel_intensity` | Rate of depth level removals |
@@ -337,8 +340,8 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol (from `aggTrade.m`) |
-| ☐ | `trade_intensity_1s` | Trade count per second |
+| ✅ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol — `feature-schema.ts` |
+| ✅ | `trade_intensity_1s` | Trade count per second — `feature-schema.ts` |
 | ☐ | `signed_volume_5s` | Net aggressor volume |
 | ☐ | `burstiness` | Variance of inter-trade arrival times |
 | ☐ | `last_trade_direction_streak` | Consecutive same-side trades |
@@ -348,10 +351,10 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `ret_1m` / `ret_5m` / `ret_15m` | Log returns at each TF |
-| ☐ | `vol_1m` / `vol_5m` | Realized volatility (rolling std of log returns) |
-| ☐ | `candle_body_pct` | `abs(close − open) / (high − low)` |
-| ☐ | `wick_ratio_upper` / `wick_ratio_lower` | Wick size relative to range |
+| ✅ | `ret_1m` / `ret_5m` | Log returns at each TF — `feature-schema.ts` |
+| ✅ | `vol_1m` | Realized volatility — `feature-schema.ts` (rv_1s, rv_5s, rv_1m) |
+| ✅ | `candle_body_pct` | `abs(close − open) / (high − low)` — `feature-schema.ts` |
+| ✅ | `wick_ratio_upper` | Wick size relative to range — `feature-schema.ts` |
 | ☐ | `volume_zscore_1m` | Volume vs rolling mean/std |
 | ☐ | `range_expansion` | Current range vs N-bar avg range |
 | ☐ | `trend_slope` | Linear regression slope over last N bars |
@@ -361,10 +364,10 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `oi_delta_1m` | Change in OI over last minute |
+| ✅ | `oi_delta_1m` | Change in OI — `feature-schema.ts` |
 | ☐ | `oi_delta_5m` | Change in OI over 5 min |
-| ☐ | `oi_zscore` | OI delta z-score vs rolling window |
-| ☐ | `price_oi_regime` | Encoded: price↑+OI↑ / price↑+OI↓ / price↓+OI↑ / price↓+OI↓ |
+| ✅ | `oi_zscore` | OI delta z-score — `feature-schema.ts` |
+| ✅ | `price_oi_regime` | Encoded 0–4 — `feature-schema.ts` |
 | ☐ | `oi_divergence` | OI direction opposing price direction |
 | ☐ | `oi_spike` | OI change > N × rolling std |
 
@@ -372,10 +375,10 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `funding_zscore` | Current funding rate vs rolling 24h mean/std |
+| ✅ | `funding_zscore` | Current funding rate vs rolling 24h mean/std — `feature-schema.ts` |
 | ☐ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` |
-| ☐ | `liquidation_pressure_proxy` | Rolling forced-order volume from `@forceOrder` |
-| ☐ | `funding_extreme_flag` | Funding > 2 std → crowded side signal |
+| ✅ | `liquidation_pressure_proxy` | Rolling forced-order volume — `feature-schema.ts` (liquidation_volume_30s) |
+| ✅ | `funding_extreme_flag` | Funding > 2 std — `feature-schema.ts` |
 
 ---
 
@@ -397,13 +400,13 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Component | Notes |
 |--------|-----------|-------|
-| ☐ | **Rolling feature builder** | Per-event update of feature windows: 100 ms, 1 s, 5 s, 30 s, 1 m, 5 m, 15 m |
-| ☐ | **Feature normalization** | Per-symbol rolling z-score (mean/std over sliding N-bar window) |
+| ✅ | **Rolling feature builder** | `feature-schema.ts` + `buildFeatureVector()` merges all signal snapshots |
+| ✅ | **Feature normalization** | `feature-normalizer.ts` — per-feature rolling z-score (Welford online) with ±5σ winsorization |
 | ☐ | **Stream alignment** | All streams timestamped and aligned to common clock before feature join |
 | ☐ | **Stale-state guard** | Mark book state stale if no depth update in > 500 ms; exclude from features |
-| ☐ | **Feature vector snapshot** | Serialize full feature row at each bar/event to Parquet/ClickHouse |
-| ☐ | **Label join** | After collection, join feature rows with forward-looking labels for each horizon |
-| ☐ | **Walk-forward splits** | Chronological train/val/test split — never random shuffle |
+| ✅ | **Feature vector snapshot** | `feature-recorder.ts` — serialize normalized feature rows to CSV with daily rotation |
+| ✅ | **Label join** | `ml_bot/label_builder.py` — direction/volatility labels at 5s/30s/60s horizons |
+| ✅ | **Walk-forward splits** | `ml_bot/train.py` — chronological 80/20 split, never shuffle |
 | ☐ | **OI poll integration** | Poll `/fapi/v1/openInterest` every 5–10 s; interpolate to feature timestamps |
 
 ---
@@ -446,11 +449,11 @@ Every row in the training set and live inference vector should contain:
 | Status | Component | Notes |
 |--------|-----------|-------|
 | ☐ | **ONNX / TorchScript export** | Export trained model for sub-100 µs inference without Python overhead |
-| ☐ | **Inference server** | Thin async service: receive feature vector → return probability output in < 1 ms |
-| ☐ | **Model output schema** | `{ p_up, p_down, p_chop, vol_regime, expected_return, expected_slippage }` — structured, not just "buy/sell" |
-| ☐ | **Threshold gate** | `if p_up > 0.65 AND regime != chop AND expected_return > fees + slippage + buffer THEN enter` |
+| ✅ | **Inference server** | `ml_bot/inference_server.py` — FastAPI `/infer` endpoint |
+| ✅ | **Model output schema** | `model-types.ts` — `ModelOutput { p_up, p_down, p_flat }` |
+| ✅ | **Threshold gate** | `ml-gate.ts` — `mlDecide()` with probability + chop + edge checks |
 | ☐ | **Model versioning** | Track which model version produced each trade for post-trade attribution |
-| ☐ | **Fallback to rule-based** | If inference latency spikes or model service is down, revert to existing SMC strategy |
+| ✅ | **Fallback to rule-based** | `inference-client.ts` circuit breaker → falls back to SMC when server unavailable |
 
 ---
 
@@ -478,7 +481,7 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Replace naked signal entries** | Wrap existing SMC/trend strategy output with ML probability gate |
+| ✅ | **Replace naked signal entries** | ML gate wraps SMC signal in `orchestrator.ts evaluate()` behind `ML_ENABLED` + `ML_SHADOW_MODE` |
 | ☐ | **Dynamic sizing from volatility forecast** | Scale `CAPITAL_PER_TRADE_USDT` down when `expected_volatility` is high |
 | ☐ | **Hold-time optimization** | Use expected-return horizon to set max hold time before exit |
 | ☐ | **Execution model gating** | Skip entry when `slippage_probability` is high (e.g. thin book, high vol regime) |
@@ -489,12 +492,12 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Offline training script** | Python: load Parquet features → normalize → label join → train → evaluate → export |
-| ☐ | **Walk-forward harness** | Automate rolling train/test windows; report Sharpe / hit-rate / cost-adjusted PnL per fold |
+| ✅ | **Offline training script** | `ml_bot/train.py` — load CSVs → label → LightGBM → classification report → export .pkl |
+| ✅ | **Walk-forward harness** | `ml_bot/train.py` — chronological 80/20 split with early stopping |
 | ☐ | **Concept drift detection** | Monitor live feature distribution vs training distribution; alert when gap exceeds threshold |
 | ☐ | **Scheduled retraining** | Weekly / monthly retrain on newest N weeks of data; gate deployment on walk-forward passing min Sharpe |
 | ☐ | **Model registry** | Store model artifacts with metadata (train period, feature schema version, validation metrics) |
-| ☐ | **Shadow mode testing** | Run new model in parallel with no execution; compare signals vs live model before promoting |
+| ✅ | **Shadow mode testing** | `ML_SHADOW_MODE=true` — logs predictions without overriding SMC decisions |
 
 ---
 
@@ -502,7 +505,7 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Prediction vs outcome log** | Store `(feature_vector, model_output, actual_outcome)` per trade |
+| ✅ | **Prediction vs outcome log** | `prediction-logger.ts` — CSV with `(timestamp, model_output, signal, actual_outcome)` |
 | ☐ | **Calibration check** | Plot predicted `p_up` vs actual win rate at each decile |
 | ☐ | **Feature drift report** | Rolling mean/std of each feature vs training baseline |
 | ☐ | **Signal decay tracking** | Monitor if model accuracy degrades over time (common in alpha signals) |
@@ -512,23 +515,23 @@ THEN enter short
 
 ### 16.10 Updated Build Order (AI/ML additions)
 
-#### P1 — Foundational (add to P1 queue)
-- Feature builder for microstructure: TFI, weighted OBI, microprice, OFI, spread (feeds both existing strategy and future ML)
-- Rolling z-score normalization layer
-- Feature snapshot serialization to Parquet
+#### P1 — Foundational ✅
+- ✅ Feature builder: `feature-schema.ts` (40+ columns from all signal sources)
+- ✅ Rolling z-score normalization: `feature-normalizer.ts` (Welford online, ±5σ winsorize)
+- ✅ Feature snapshot serialization: `feature-recorder.ts` (CSV with daily rotation)
 
-#### P2 — Baseline Model
-- Label builder (direction 30 s, volatility 1 m, multi-horizon)
-- LightGBM direction classifier + walk-forward validation
-- LightGBM volatility regressor for dynamic sizing
-- SHAP feature importance
+#### P2 — Baseline Model (scaffolding ready, needs data)
+- ✅ Label builder: `ml_bot/label_builder.py` (direction 5s/30s/60s + volatility + cost-adjusted)
+- ✅ LightGBM training script: `ml_bot/train.py` (walk-forward validation, early stopping)
+- ☐ LightGBM volatility regressor for dynamic sizing
+- ☐ SHAP feature importance
 
-#### P3 — Live Inference
-- ONNX model export
-- Inference service (< 1 ms target)
-- Probability gate wrapping existing execution engine
-- Model output schema + threshold config
-- Shadow mode harness
+#### P3 — Live Inference ✅
+- ☐ ONNX model export
+- ✅ Inference service: `ml_bot/inference_server.py` (FastAPI `/infer`)
+- ✅ Probability gate: `ml-gate.ts` wraps SMC in orchestrator
+- ✅ Model output schema: `model-types.ts` + threshold config in `config.ts`
+- ✅ Shadow mode: `ML_SHADOW_MODE=true` default
 
 #### P4 — Sequence & Ensemble
 - TCN / Transformer sequence model
