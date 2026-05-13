@@ -4,6 +4,7 @@ import {
   setLeverage,
   setMarginType,
   placeOrder,
+  placeBatchOrders,
   placeAlgoOrder,
   modifyOrder,
   cancelAllOrders,
@@ -13,6 +14,7 @@ import {
   getOpenAlgoOrders,
   type AlgoOrderResult,
   type FuturesPositionRisk,
+  type PlaceOrderParams,
   type OrderResult as BinanceOrderResult,
 } from '../binance/rest-trade';
 import { floorToStep, roundToTick } from '../mapping/precision';
@@ -201,6 +203,121 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
       timestamp: Date.now(),
     };
     return { ok: true, orderId: internalId, fill, positionId: internalId };
+  }
+
+  // ─── Atomic batch entry + bracket ─────────────────────────────────────────
+
+  /**
+   * Submit MARKET entry + STOP SL + TAKE_PROFIT TP as a single batch request.
+   * Uses regular order types (not algo) so all 3 fit in one `POST /fapi/v1/batchOrders`.
+   * Falls back to sequential placement if the batch call fails.
+   *
+   * Note: regular STOP/TAKE_PROFIT orders require a `price` (limit) and `stopPrice` (trigger).
+   * For market-on-trigger behavior, use the existing `placeOrder` flow with algo orders instead.
+   */
+  async placeEntryWithBracket(req: OrderRequest): Promise<OrderResult> {
+    const sym = this.opts.symbol.toUpperCase();
+    const startedAt = Date.now();
+    const { stepSize, tickSize } = this.precision;
+
+    await this.setupSymbol(sym, req.leverage);
+
+    const entrySide: 'BUY' | 'SELL' = req.side === 'LONG' ? 'BUY' : 'SELL';
+    const closeSide: 'BUY' | 'SELL' = req.side === 'LONG' ? 'SELL' : 'BUY';
+    const qty = floorToStep(req.quantity, stepSize);
+    if (qty <= 0) {
+      return this.failResult(req.referencePrice, req.quantity, startedAt, 'quantity below stepSize');
+    }
+
+    const tpPrice = req.takeProfit ?? (req.side === 'LONG' ? req.referencePrice * 1.015 : req.referencePrice * 0.985);
+    const slPrice = req.stopLoss ?? (req.side === 'LONG' ? req.referencePrice * 0.99 : req.referencePrice * 1.01);
+
+    const entryParams: PlaceOrderParams = {
+      symbol: sym,
+      side: entrySide,
+      type: 'MARKET',
+      quantity: qty,
+      newOrderRespType: 'RESULT',
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    const tpParams: PlaceOrderParams = {
+      symbol: sym,
+      side: closeSide,
+      type: 'TAKE_PROFIT',
+      quantity: qty,
+      price: roundToTick(tpPrice, tickSize),
+      stopPrice: roundToTick(tpPrice, tickSize),
+      timeInForce: 'GTC',
+      workingType: 'MARK_PRICE',
+      reduceOnly: true,
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    const slParams: PlaceOrderParams = {
+      symbol: sym,
+      side: closeSide,
+      type: 'STOP',
+      quantity: qty,
+      price: roundToTick(slPrice, tickSize),
+      stopPrice: roundToTick(slPrice, tickSize),
+      timeInForce: 'GTC',
+      workingType: 'MARK_PRICE',
+      reduceOnly: true,
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    try {
+      const results = await placeBatchOrders(this.opts.client, [entryParams, tpParams, slParams]);
+      const entryResult = results[0];
+      if (!entryResult || entryResult.status === 'REJECTED') {
+        return this.failResult(req.referencePrice, qty, startedAt, 'batch entry rejected');
+      }
+
+      const fillPrice = Number(entryResult.avgPrice) || req.referencePrice;
+      const entryFee = fillPrice * qty * this.opts.takerFee;
+      const internalId = randomUUID();
+
+      const trade: OpenLiveTrade = {
+        internalId,
+        binanceOrderId: entryResult.orderId,
+        tp1StrategyId: null,
+        tp2StrategyId: null,
+        slStrategyId: null,
+        side: req.side,
+        symbol: sym,
+        entryPrice: fillPrice,
+        quantity: qty,
+        remainingQty: qty,
+        openedAt: Date.now(),
+        entryFeeUsdt: entryFee,
+        stepSize,
+        tickSize,
+      };
+
+      this.trades.set(internalId, trade);
+      this.log('binance_batch_order_placed', {
+        id: internalId,
+        entryOrderId: entryResult.orderId,
+        tpOrderId: results[1]?.orderId,
+        slOrderId: results[2]?.orderId,
+        fillPrice,
+        qty,
+      });
+
+      const fill: Fill = {
+        price: fillPrice,
+        quantity: qty,
+        feeUsdt: entryFee,
+        slippageUsdt: Math.abs(fillPrice - req.referencePrice) * qty,
+        latencyMs: Date.now() - startedAt,
+        timestamp: Date.now(),
+      };
+      return { ok: true, orderId: internalId, fill, positionId: internalId };
+    } catch (e) {
+      this.log('binance_batch_fallback', { err: (e as Error).message });
+      return this.placeOrder(req);
+    }
   }
 
   // ─── Bot-initiated close (REVERSAL / MANUAL / SL via onMark) ─────────────

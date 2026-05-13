@@ -19,9 +19,9 @@ Items marked ✅ are already implemented.
 | ✅ | `DELETE /fapi/v1/algoOrderList` | Cancel all algo orders for symbol |
 | ✅ | `GET /fapi/v1/openAlgoOrders` | Fetch open TP/SL IDs |
 | ✅ | `PUT /fapi/v1/order` | **Modify Order** — `modifyOrder` in `rest-trade.ts`; amend price/qty in-place |
-| ☐ | `POST /fapi/v1/batchOrders` | **Place Multiple Orders** — atomic multi-leg entries |
-| ☐ | `PUT /fapi/v1/batchOrders` | **Modify Multiple Orders** |
-| ☐ | `DELETE /fapi/v1/batchOrders` | **Cancel Multiple Orders** |
+| ✅ | `POST /fapi/v1/batchOrders` | **Place Multiple Orders** — `placeBatchOrders` + `placeEntryWithBracket` on adapter |
+| ✅ | `PUT /fapi/v1/batchOrders` | **Modify Multiple Orders** — `modifyBatchOrders` in `rest-trade.ts` |
+| ✅ | `DELETE /fapi/v1/batchOrders` | **Cancel Multiple Orders** — `cancelBatchOrders` in `rest-trade.ts` |
 | ✅ | `POST /fapi/v1/countdownCancelAll` | **Auto-Cancel All** — `setCountdownCancelAll`; orchestrator renews when `BINANCE_DEADMAN_COUNTDOWN_MS>0` |
 | ✅ | `GET /fapi/v1/order` | **Query Order** — `getOrder` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/openOrders` | **All Open Orders** — `getOpenOrders`; used at startup reconcile |
@@ -148,7 +148,7 @@ Items marked ✅ are already implemented.
 | ✅ | Algo TP1 / TP2 / SL | Via Algo Service |
 | ✅ | Precision rounding | tick/step size |
 | ✅ | Reduce-only close orders | Via closePosition flag |
-| ☐ | **Batch order submission** | Use `POST /fapi/v1/batchOrders` for atomic entry + bracket in one request |
+| ✅ | **Batch order submission** | `placeBatchOrders` + `placeEntryWithBracket` (MARKET + STOP SL + TP in one request; fallback to sequential) |
 | ✅ | **Modify order in-place** | `modifyOrder` REST + `orderModify` WS + `modifyRegularOrder` / `amendAlgoStopPrice` on adapter |
 | ☐ | **Post-only limit entry** | LIMIT with `timeInForce=GTX` for maker fills and lower fees |
 | ☐ | **Trailing stop** | `TRAILING_STOP_MARKET` order type |
@@ -268,7 +268,7 @@ Items marked ✅ are already implemented.
 8. ✅ Trade Flow Imbalance (TFI) — `microstructure.ts` + tests + orchestrator + dashboard
 9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
 10. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
-11. `POST /fapi/v1/batchOrders` — atomic entry + bracket
+11. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
 12. `GET /fapi/v1/leverageBracket` — accurate liquidation price per notional tier
 13. `GET /fapi/v1/income` — server-side PnL reconciliation
 14. `GET /fapi/v1/commissionRate` — replace hardcoded fee constants

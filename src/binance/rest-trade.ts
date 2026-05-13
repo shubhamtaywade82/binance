@@ -245,27 +245,70 @@ export const getOrder = async (client: BinanceRestClient, symbol: string, orderI
 
 // ─── Batch Orders ──────────────────────────────────────────────────────────
 
+const serializeOrderParams = (p: PlaceOrderParams): Record<string, string | number | boolean> => {
+  const o: Record<string, string | number | boolean> = {
+    symbol: p.symbol.toUpperCase(),
+    side: p.side,
+    type: p.type,
+    newOrderRespType: p.newOrderRespType ?? 'RESULT',
+  };
+  if (p.quantity !== undefined) o.quantity = p.quantity;
+  if (p.price !== undefined) o.price = p.price;
+  if (p.stopPrice !== undefined) o.stopPrice = p.stopPrice;
+  if (p.callbackRate !== undefined) o.callbackRate = p.callbackRate;
+  if (p.timeInForce !== undefined) o.timeInForce = p.timeInForce;
+  if (p.workingType !== undefined) o.workingType = p.workingType;
+  if (p.positionSide !== undefined) o.positionSide = p.positionSide;
+  if (p.reduceOnly !== undefined) o.reduceOnly = p.reduceOnly;
+  if (p.closePosition !== undefined) o.closePosition = p.closePosition;
+  if (p.newClientOrderId !== undefined) o.newClientOrderId = p.newClientOrderId;
+  if (p.activationPrice !== undefined) o.activationPrice = p.activationPrice;
+  return o;
+};
+
+/** Place up to 5 orders atomically. All succeed or all fail. */
 export const placeBatchOrders = async (client: BinanceRestClient, orders: PlaceOrderParams[]): Promise<OrderResult[]> => {
-  const batchOrders = orders.map((p) => {
-    const o: Record<string, string | number | boolean> = {
-      symbol: p.symbol.toUpperCase(),
-      side: p.side,
-      type: p.type,
-      newOrderRespType: p.newOrderRespType ?? 'RESULT',
-    };
-    if (p.quantity !== undefined) o.quantity = p.quantity;
-    if (p.price !== undefined) o.price = p.price;
-    if (p.stopPrice !== undefined) o.stopPrice = p.stopPrice;
-    if (p.timeInForce !== undefined) o.timeInForce = p.timeInForce;
-    if (p.workingType !== undefined) o.workingType = p.workingType;
-    if (p.reduceOnly !== undefined) o.reduceOnly = p.reduceOnly;
-    if (p.closePosition !== undefined) o.closePosition = p.closePosition;
-    return o;
-  });
   return client.signedPost<OrderResult[]>('/fapi/v1/batchOrders', {
-    batchOrders: JSON.stringify(batchOrders),
+    batchOrders: JSON.stringify(orders.map(serializeOrderParams)),
   });
+};
+
+export interface ModifyBatchOrderParams {
+  symbol: string;
+  orderId: number;
+  side: OrderSide;
+  quantity: number;
+  price: number;
 }
+
+/** Modify up to 5 orders atomically. */
+export const modifyBatchOrders = async (
+  client: BinanceRestClient,
+  orders: ModifyBatchOrderParams[],
+): Promise<OrderResult[]> => {
+  const batch = orders.map((o) => ({
+    symbol: o.symbol.toUpperCase(),
+    orderId: o.orderId,
+    side: o.side,
+    quantity: o.quantity,
+    price: o.price,
+  }));
+  return client.signedPut<OrderResult[]>('/fapi/v1/batchOrders', {
+    batchOrders: JSON.stringify(batch),
+  });
+};
+
+/** Cancel up to 10 orders by orderId list. */
+export const cancelBatchOrders = async (
+  client: BinanceRestClient,
+  symbol: string,
+  orderIdList: number[],
+): Promise<OrderResult[]> => {
+  return client.signedDelete<OrderResult[]>('/fapi/v1/batchOrders', {
+    symbol: symbol.toUpperCase(),
+    orderIdList: JSON.stringify(orderIdList),
+  });
+};
 
 // ─── Algo Orders (Dec 2025 migration: STOP_MARKET / TAKE_PROFIT_MARKET / TRAILING) ──────────
 
