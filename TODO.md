@@ -531,3 +531,751 @@ THEN enter short
 - Execution quality head (slippage / adverse-move model)
 - Scheduled retraining pipeline
 - Concept drift monitoring
+
+---
+
+## 17. Concrete Implementation Blueprint
+
+Production-ready skeletons. Wire these in order.
+
+---
+
+### 17.1 Final Feature Schema (exact columns, 1-row = 1 timestamp)
+
+```
+timestamp          # Unix ms
+symbol             # e.g. BTCUSDT
+
+# ── Prices ────────────────────────────────────────────────
+mid_price
+bid_price
+ask_price
+spread             # ask - bid
+
+# ── Order book ────────────────────────────────────────────
+obi_5              # (bid_vol_5 - ask_vol_5) / (bid_vol_5 + ask_vol_5)
+obi_10
+obi_20
+bid_vol_5          # sum qty top-5 bids
+ask_vol_5          # sum qty top-5 asks
+depth_slope        # volume-weighted price gradient bid side
+microprice         # (ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)
+book_pressure      # Σ(bid_vol / dist_from_mid) - Σ(ask_vol / dist_from_mid)
+
+# ── Trade flow ────────────────────────────────────────────
+trade_imbalance_1s # buy_vol - sell_vol over 1 s window
+trade_imbalance_5s
+trade_intensity_1s # trade count per second
+vwap_5s            # volume-weighted avg price last 5 s
+last_trade_dir     # +1 buy / -1 sell
+
+# ── OHLCV multi-timeframe ─────────────────────────────────
+ret_1s             # log(price_t / price_t-1s)
+ret_5s
+ret_1m
+ret_5m
+vol_1m             # rolling std of 1 s log-returns over 60 s
+vol_5m
+candle_body_1m     # abs(close - open) / (high - low)
+wick_ratio_1m      # (high - close) / range  [upper wick]
+
+# ── OI / derivatives ──────────────────────────────────────
+oi                 # raw open interest contracts
+oi_delta_1m        # oi_t - oi_t-60s
+oi_zscore          # (oi_delta - rolling_mean) / rolling_std
+
+# ── Funding / mark ────────────────────────────────────────
+funding_rate       # current funding rate
+funding_zscore     # (funding - 24h_mean) / 24h_std
+mark_price
+basis              # mark_price - mid_price
+
+# ── Regime helpers ────────────────────────────────────────
+rv_1m              # realized volatility 1 m
+rv_5m              # realized volatility 5 m
+vol_regime_flag    # 1 if rv_1m > 2 × rv_5m rolling mean
+trend_strength     # abs(ret_5m) / vol_5m  (signal-to-noise)
+```
+
+**Engineering rules:**
+- Normalize each column with per-symbol rolling z-score (window = 1000 rows)
+- Winsorize at ±5 σ before feeding to model
+- Align all streams to a common clock tick (e.g. every 1 s on the second boundary)
+- Fill OI gaps with last known value (poll latency)
+
+---
+
+### 17.2 Label Specification
+
+```python
+HORIZONS = [5, 30, 60]   # seconds
+THRESHOLD_BPS = 4        # 4 bps = 0.0004
+
+for h in HORIZONS:
+    df[f"future_return_{h}s"] = (
+        df["mid_price"].shift(-h) - df["mid_price"]
+    ) / df["mid_price"]
+
+    def label_direction(x):
+        if x >  THRESHOLD_BPS / 10_000: return  1   # UP
+        if x < -THRESHOLD_BPS / 10_000: return -1   # DOWN
+        return 0                                      # FLAT
+
+    df[f"y_{h}s"] = df[f"future_return_{h}s"].apply(label_direction)
+
+# Volatility label
+df["y_vol_30s"] = df["mid_price"].transform(
+    lambda s: s.pct_change().rolling(30).std().shift(-30)
+)
+
+# Cost-adjusted: strip trades where edge < fees + slippage before training
+TAKER_FEE_BPS = 4   # 0.04% each side = 8 bps round-trip
+df["tradeable"] = df["future_return_30s"].abs() > TAKER_FEE_BPS * 2 / 10_000
+```
+
+| Label | Target | Horizon | Threshold |
+|-------|--------|---------|-----------|
+| `y_5s` | direction | 5 s | ±4 bps |
+| `y_30s` | direction | 30 s | ±4 bps |
+| `y_1m` | direction | 60 s | ±4 bps |
+| `y_vol_30s` | realized vol | 30 s | regression |
+| `y_slippage` | fill cost | execution | regression |
+| `y_adverse_move` | post-fill drawdown | 5 s after fill | regression |
+
+---
+
+### 17.3 Training Pipeline (Python, offline)
+
+```python
+# train.py
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import joblib
+from sklearn.metrics import classification_report
+
+FEATURE_COLS = [
+    "spread", "obi_5", "obi_10", "microprice", "book_pressure",
+    "trade_imbalance_1s", "trade_imbalance_5s", "trade_intensity_1s",
+    "ret_1s", "ret_5s", "ret_1m", "ret_5m", "vol_1m", "vol_5m",
+    "candle_body_1m", "wick_ratio_1m",
+    "oi_delta_1m", "oi_zscore",
+    "funding_zscore", "basis",
+    "rv_1m", "rv_5m", "vol_regime_flag", "trend_strength",
+]
+TARGET = "y_30s"
+
+df = pd.read_parquet("features_labeled.parquet")
+df = df[df["tradeable"]].dropna(subset=FEATURE_COLS + [TARGET])
+
+# Walk-forward split (never shuffle)
+split = int(len(df) * 0.8)
+X_train, X_val = df[FEATURE_COLS].iloc[:split], df[FEATURE_COLS].iloc[split:]
+y_train, y_val = df[TARGET].iloc[:split],        df[TARGET].iloc[split:]
+
+model = lgb.LGBMClassifier(
+    n_estimators=1000,
+    max_depth=6,
+    learning_rate=0.02,
+    num_leaves=63,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    class_weight="balanced",   # handles imbalanced flat class
+)
+model.fit(
+    X_train, y_train,
+    eval_set=[(X_val, y_val)],
+    callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+)
+
+print(classification_report(y_val, model.predict(X_val)))
+joblib.dump(model, "model_direction_30s.pkl")
+```
+
+---
+
+### 17.4 Live Feature Builder (Python, async)
+
+```python
+# feature_engine.py
+import numpy as np
+from collections import deque
+
+class FeatureEngine:
+    WINDOW = 60  # seconds of 1 s ticks
+
+    def __init__(self):
+        self.prices   = deque(maxlen=self.WINDOW)
+        self.buy_vol  = deque(maxlen=5)   # 1 s buckets
+        self.sell_vol = deque(maxlen=5)
+        self.oi_hist  = deque(maxlen=60)
+
+    # ── called on every aggTrade event ──────────────────────────────
+    def on_trade(self, price: float, qty: float, is_buy: bool):
+        self.prices.append(price)
+        if is_buy: self.buy_vol.append(qty)
+        else:      self.sell_vol.append(qty)
+
+    # ── called on every OI poll ──────────────────────────────────────
+    def on_oi(self, oi: float):
+        self.oi_hist.append(oi)
+
+    # ── called every 1 s to produce one feature row ─────────────────
+    def snapshot(self, ob: dict) -> dict | None:
+        if len(self.prices) < 2:
+            return None
+
+        prices = np.array(self.prices)
+        rets   = np.diff(np.log(prices))
+
+        bids = sorted(ob["bids"].items(), reverse=True)[:20]
+        asks = sorted(ob["asks"].items())[:20]
+
+        bid_vol5 = sum(q for _, q in bids[:5])
+        ask_vol5 = sum(q for _, q in asks[:5])
+        total5   = bid_vol5 + ask_vol5 + 1e-9
+        obi5     = (bid_vol5 - ask_vol5) / total5
+
+        bid_px = bids[0][0] if bids else 0.0
+        ask_px = asks[0][0] if asks else 0.0
+        bid_vol_top = bids[0][1] if bids else 0.0
+        ask_vol_top = asks[0][1] if asks else 0.0
+        microprice  = (ask_px * bid_vol_top + bid_px * ask_vol_top) / (bid_vol_top + ask_vol_top + 1e-9)
+
+        buy_v  = sum(self.buy_vol)
+        sell_v = sum(self.sell_vol)
+        tfi1s  = buy_v - sell_v
+
+        rv1m = float(np.std(rets[-60:])) if len(rets) >= 60 else 0.0
+        ret1m = float(np.sum(rets[-60:])) if len(rets) >= 60 else 0.0
+
+        oi_delta = 0.0
+        oi_zscore = 0.0
+        if len(self.oi_hist) >= 2:
+            deltas = np.diff(list(self.oi_hist))
+            oi_delta  = float(deltas[-1])
+            oi_zscore = float((oi_delta - deltas.mean()) / (deltas.std() + 1e-9))
+
+        return {
+            "spread":             ask_px - bid_px,
+            "obi_5":              obi5,
+            "microprice":         microprice,
+            "trade_imbalance_1s": tfi1s,
+            "ret_1m":             ret1m,
+            "vol_1m":             rv1m,
+            "oi_delta_1m":        oi_delta,
+            "oi_zscore":          oi_zscore,
+            # ... remaining cols filled similarly
+        }
+```
+
+---
+
+### 17.5 Inference Server (FastAPI, Python)
+
+```python
+# inference_server.py
+from fastapi import FastAPI
+import joblib, numpy as np
+
+app   = FastAPI()
+model = joblib.load("model_direction_30s.pkl")
+
+FEATURE_ORDER = [
+    "spread", "obi_5", "obi_10", "microprice", "book_pressure",
+    "trade_imbalance_1s", "trade_imbalance_5s", "trade_intensity_1s",
+    "ret_1s", "ret_5s", "ret_1m", "ret_5m", "vol_1m", "vol_5m",
+    "candle_body_1m", "wick_ratio_1m",
+    "oi_delta_1m", "oi_zscore",
+    "funding_zscore", "basis",
+    "rv_1m", "rv_5m", "vol_regime_flag", "trend_strength",
+]
+
+@app.post("/infer")
+def infer(body: dict):
+    x = np.array([[body["features"][f] for f in FEATURE_ORDER]])
+    probs = model.predict_proba(x)[0]
+    classes = model.classes_   # [-1, 0, 1]
+    p = dict(zip(classes.tolist(), probs.tolist()))
+    return {
+        "p_down": p.get(-1, 0.0),
+        "p_flat": p.get( 0, 0.0),
+        "p_up":   p.get( 1, 0.0),
+    }
+```
+
+---
+
+### 17.6 TypeScript Inference Client
+
+```typescript
+// src/ai/inference-client.ts
+
+export interface ModelOutput {
+  p_up:   number;
+  p_down: number;
+  p_flat: number;
+}
+
+export async function infer(features: Record<string, number>): Promise<ModelOutput> {
+  const res = await fetch("http://localhost:8000/infer", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ features }),
+  });
+  if (!res.ok) throw new Error(`inference HTTP ${res.status}`);
+  return res.json() as Promise<ModelOutput>;
+}
+```
+
+---
+
+### 17.7 Decision Gate (wire into orchestrator.ts)
+
+```typescript
+// src/engine/ml-gate.ts
+import { infer, ModelOutput } from "../ai/inference-client.js";
+
+const MIN_P       = 0.65;
+const MIN_EDGE    = 0.0008;  // 8 bps after fees
+const TAKER_ROUND = 0.0008;  // 4 bps each side
+
+export async function mlDecide(
+  features: Record<string, number>,
+  smcSignal: "LONG" | "SHORT" | null,
+): Promise<"LONG" | "SHORT" | null> {
+  const { p_up, p_down, p_flat } = await infer(features);
+
+  const regime_chop = p_flat > 0.50;
+  if (regime_chop) return null;
+
+  const expected_return = Math.max(p_up, p_down) * MIN_EDGE;
+  if (expected_return < TAKER_ROUND + MIN_EDGE) return null;
+
+  if (p_up > MIN_P && smcSignal === "LONG")   return "LONG";
+  if (p_down > MIN_P && smcSignal === "SHORT") return "SHORT";
+  return null;
+}
+```
+
+---
+
+### 17.8 End-to-End Live Pipeline
+
+```
+WS streams (depth@100ms + aggTrade + markPrice@1s)
+  │
+  ▼
+FeatureEngine.on_trade() / on_oi()         ← Python or TS
+  │   every 1 s:
+  ▼
+FeatureEngine.snapshot()  →  feature row
+  │
+  ▼
+POST http://localhost:8000/infer
+  │
+  ▼
+{ p_up, p_down, p_flat }
+  │
+  ▼
+mlDecide(features, smcSignal)              ← gate: p > 0.65 + regime + edge
+  │
+  ▼
+ExecutionEngine.execute(signal, qty)
+  │
+  ▼
+Store (feature_row, model_output, outcome) ← post-trade loop
+```
+
+---
+
+### 17.9 Latency Budget
+
+| Stage | Target |
+|-------|--------|
+| WS ingestion | < 0.5 ms |
+| Feature snapshot | < 0.3 ms |
+| HTTP inference (localhost) | < 1.0 ms |
+| Decision gate | < 0.1 ms |
+| Order send | < 0.5 ms |
+| **Total** | **~2 ms** |
+
+Upgrade path: replace HTTP inference with ONNX runtime via native binding → sub-100 µs.
+
+---
+
+### 17.10 Evaluation Checklist (do not skip)
+
+| Metric | Minimum bar to deploy |
+|--------|-----------------------|
+| Precision on `y_30s ≠ 0` | > 52% |
+| Walk-forward Sharpe | > 1.0 after fees |
+| Max drawdown (validation) | < 15% |
+| Win rate | > 50% on tradeable subset |
+| Cost-adjusted hit rate | Must beat flat-prediction baseline |
+| Calibration | Predicted p_up deciles match actual win rates ± 5% |
+
+---
+
+## 18. Python ML Bot — Standalone Service
+
+A dedicated Python process that runs alongside the TypeScript execution engine.
+TypeScript owns execution + WebSocket ingestion; Python owns feature building, training, and inference.
+They communicate over HTTP (inference server) and optionally Redis (shared state).
+
+---
+
+### 18.1 Project Structure
+
+```
+ml_bot/
+├── config.py
+├── main.py                    # async event loop
+├── ingestion/
+│   └── ws_client.py           # WS multiplexer (depth + aggTrade + bookTicker)
+├── engine/
+│   ├── orderbook.py           # stateful L2 book with diff sync
+│   ├── features.py            # rolling feature builder
+│   └── state.py               # shared mutable trading state
+├── model/
+│   └── inference.py           # load model, predict_proba → structured output
+├── strategy/
+│   ├── decision.py            # threshold gate + regime filter
+│   └── risk.py                # position sizing + daily loss cap
+├── execution/
+│   └── binance.py             # aiohttp signed REST client
+└── utils/
+    └── ringbuffer.py          # Float64 ring buffer, no allocs
+```
+
+---
+
+### 18.2 config.py
+
+```python
+SYMBOL = "btcusdt"
+
+WS_STREAMS = [
+    f"{SYMBOL}@depth@100ms",
+    f"{SYMBOL}@aggTrade",
+    f"{SYMBOL}@bookTicker",
+    f"{SYMBOL}@markPrice@1s",
+]
+
+API_KEY    = "YOUR_KEY"
+API_SECRET = "YOUR_SECRET"
+BASE_URL   = "https://fapi.binance.com"
+
+TRADE_THRESHOLD = 0.65   # min model probability to act
+MIN_EDGE_BPS    = 8      # minimum edge after fees (round-trip ~8 bps)
+MAX_POSITION    = 0.01   # max BTC notional
+MAX_DAILY_LOSS  = 0.03   # 3 % of equity → kill switch
+```
+
+---
+
+### 18.3 ingestion/ws_client.py
+
+```python
+import asyncio, websockets, orjson
+from config import WS_STREAMS
+
+URL = "wss://fstream.binance.com/stream?streams=" + "/".join(WS_STREAMS)
+
+async def start_ws(queue: asyncio.Queue):
+    while True:
+        try:
+            async with websockets.connect(URL, ping_interval=20) as ws:
+                async for msg in ws:
+                    await queue.put(orjson.loads(msg))
+        except Exception as exc:
+            print(f"WS error, reconnecting: {exc}")
+            await asyncio.sleep(2)
+```
+
+---
+
+### 18.4 engine/orderbook.py
+
+```python
+class OrderBook:
+    def __init__(self):
+        self.bids: dict[float, float] = {}
+        self.asks: dict[float, float] = {}
+
+    def update(self, data: dict):
+        for p, q in data["b"]:
+            p, q = float(p), float(q)
+            if q == 0: self.bids.pop(p, None)
+            else:      self.bids[p] = q
+        for p, q in data["a"]:
+            p, q = float(p), float(q)
+            if q == 0: self.asks.pop(p, None)
+            else:      self.asks[p] = q
+
+    def top(self) -> tuple[float, float]:
+        bid = max(self.bids) if self.bids else 0.0
+        ask = min(self.asks) if self.asks else 0.0
+        return bid, ask
+```
+
+> **TODO:** Add snapshot-sync state machine (track `U`/`u` update IDs) so the book is
+> correct after reconnect — same logic as `order-book-sync.ts` in the TS codebase.
+
+---
+
+### 18.5 engine/features.py
+
+```python
+import numpy as np
+from collections import deque
+
+class FeatureEngine:
+    def __init__(self, window: int = 60):
+        self.prices    = deque(maxlen=window)
+        self.buy_vol   = deque(maxlen=window)
+        self.sell_vol  = deque(maxlen=window)
+
+    def on_trade(self, price: float, qty: float, is_maker_sell: bool):
+        self.prices.append(price)
+        if is_maker_sell: self.sell_vol.append(qty)  # aggressor = buyer
+        else:             self.buy_vol.append(qty)   # aggressor = seller
+
+    def compute(self, ob: "OrderBook") -> dict | None:
+        bid, ask = ob.top()
+        if bid == 0 or ask == 0:
+            return None
+
+        mid    = (bid + ask) / 2
+        spread = ask - bid
+
+        bids_sorted = sorted(ob.bids.items(), reverse=True)[:10]
+        asks_sorted = sorted(ob.asks.items())[:10]
+        bid_vol = sum(q for _, q in bids_sorted[:5])
+        ask_vol = sum(q for _, q in asks_sorted[:5])
+        obi5    = (bid_vol - ask_vol) / (bid_vol + ask_vol + 1e-9)
+
+        bid_vol_top = bids_sorted[0][1] if bids_sorted else 0.0
+        ask_vol_top = asks_sorted[0][1] if asks_sorted else 0.0
+        microprice  = (ask * bid_vol_top + bid * ask_vol_top) / (bid_vol_top + ask_vol_top + 1e-9)
+
+        tfi_1s = sum(self.buy_vol) - sum(self.sell_vol)
+
+        prices = np.array(self.prices)
+        rets   = np.diff(np.log(prices)) if len(prices) > 1 else np.array([0.0])
+        vol1m  = float(np.std(rets[-60:])) if len(rets) >= 60 else 0.0
+        ret1m  = float(np.sum(rets[-60:])) if len(rets) >= 60 else 0.0
+
+        return {
+            "spread":             spread,
+            "obi_5":              obi5,
+            "microprice":         microprice,
+            "trade_imbalance_1s": tfi_1s,
+            "ret_1m":             ret1m,
+            "vol_1m":             vol1m,
+            # extend with full schema from Section 17.1
+        }
+```
+
+---
+
+### 18.6 model/inference.py
+
+```python
+import joblib, numpy as np
+
+FEATURE_ORDER = [
+    "spread", "obi_5", "microprice",
+    "trade_imbalance_1s", "ret_1m", "vol_1m",
+    # must match training column order exactly
+]
+
+class Model:
+    def __init__(self, path: str = "model_direction_30s.pkl"):
+        self.clf = joblib.load(path)
+
+    def predict(self, features: dict) -> dict:
+        x     = np.array([[features[f] for f in FEATURE_ORDER]])
+        probs = self.clf.predict_proba(x)[0]
+        p     = dict(zip(self.clf.classes_.tolist(), probs.tolist()))
+        return {
+            "p_down": p.get(-1, 0.0),
+            "p_flat": p.get( 0, 0.0),
+            "p_up":   p.get( 1, 0.0),
+        }
+```
+
+---
+
+### 18.7 strategy/decision.py
+
+```python
+from config import TRADE_THRESHOLD, MIN_EDGE_BPS
+
+TAKER_ROUND_BPS = 8   # 4 bps each side
+
+def decide(pred: dict, vol1m: float) -> str:
+    if pred["p_flat"] > 0.50:           return "HOLD"   # chop regime
+    if vol1m > 0.002:                   return "HOLD"   # high-vol guard
+    edge = max(pred["p_up"], pred["p_down"]) * MIN_EDGE_BPS
+    if edge < TAKER_ROUND_BPS + MIN_EDGE_BPS: return "HOLD"
+
+    if pred["p_up"]   > TRADE_THRESHOLD: return "LONG"
+    if pred["p_down"] > TRADE_THRESHOLD: return "SHORT"
+    return "HOLD"
+```
+
+---
+
+### 18.8 strategy/risk.py
+
+```python
+from config import MAX_POSITION, MAX_DAILY_LOSS
+
+class RiskManager:
+    def __init__(self, equity: float):
+        self.position   = 0.0
+        self.daily_loss = 0.0
+        self.equity     = equity
+        self.killed     = False
+
+    def check_kill(self) -> bool:
+        if self.daily_loss / self.equity > MAX_DAILY_LOSS:
+            self.killed = True
+        return self.killed
+
+    def size(self, signal: str) -> float:
+        if self.killed:                 return 0.0
+        if signal == "HOLD":            return 0.0
+        if signal == "LONG":
+            return min(MAX_POSITION, MAX_POSITION - self.position)
+        return -min(MAX_POSITION, MAX_POSITION + self.position)
+
+    def record_pnl(self, pnl: float):
+        if pnl < 0: self.daily_loss += abs(pnl)
+```
+
+---
+
+### 18.9 execution/binance.py
+
+```python
+import time, hmac, hashlib
+import aiohttp
+from config import API_KEY, API_SECRET, BASE_URL
+
+def _sign(params: dict) -> str:
+    qs  = "&".join(f"{k}={v}" for k, v in params.items())
+    sig = hmac.new(API_SECRET.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    return f"{qs}&signature={sig}"
+
+async def place_order(session: aiohttp.ClientSession, symbol: str, side: str, qty: float) -> dict:
+    params = {
+        "symbol":   symbol.upper(),
+        "side":     "BUY" if side == "LONG" else "SELL",
+        "type":     "MARKET",
+        "quantity": round(qty, 3),
+        "timestamp": int(time.time() * 1000),
+    }
+    qs = _sign(params)
+    async with session.post(
+        f"{BASE_URL}/fapi/v1/order?{qs}",
+        headers={"X-MBX-APIKEY": API_KEY},
+    ) as res:
+        return await res.json()
+```
+
+---
+
+### 18.10 main.py
+
+```python
+import asyncio
+import aiohttp
+from ingestion.ws_client import start_ws
+from engine.orderbook    import OrderBook
+from engine.features     import FeatureEngine
+from model.inference     import Model
+from strategy.decision   import decide
+from strategy.risk       import RiskManager
+from execution.binance   import place_order
+from config              import SYMBOL
+
+async def main():
+    queue    = asyncio.Queue()
+    ob       = OrderBook()
+    features = FeatureEngine()
+    model    = Model()
+    risk     = RiskManager(equity=1000.0)
+
+    asyncio.create_task(start_ws(queue))
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            msg    = await queue.get()
+            stream = msg.get("stream", "")
+            data   = msg.get("data", {})
+
+            if "depth"    in stream: ob.update(data)
+            if "aggTrade" in stream:
+                features.on_trade(
+                    float(data["p"]), float(data["q"]),
+                    is_maker_sell=data["m"],
+                )
+
+            fvec = features.compute(ob)
+            if not fvec:
+                continue
+
+            if risk.check_kill():
+                print("KILL SWITCH ACTIVE — no new trades")
+                continue
+
+            pred   = model.predict(fvec)
+            signal = decide(pred, fvec["vol_1m"])
+            qty    = risk.size(signal)
+
+            if qty != 0:
+                print(f"TRADE {signal} qty={abs(qty):.4f}  p_up={pred['p_up']:.2f}")
+                result = await place_order(session, SYMBOL, signal, abs(qty))
+                print("ORDER:", result)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+---
+
+### 18.11 Production Hardening Checklist
+
+| Status | Item |
+|--------|------|
+| ☐ | Replace `dict`-based orderbook with sorted array (faster top-N) |
+| ☐ | Add orderbook snapshot sync (U/u update-ID tracking) |
+| ☐ | `clientOrderId` per order for idempotent retries |
+| ☐ | Exponential backoff on 429 / 5xx |
+| ☐ | User-data stream for `ORDER_TRADE_UPDATE` (don't poll order state) |
+| ☐ | Private listenKey keep-alive (PUT every 30 min) |
+| ☐ | `countdownCancelAll` keepalive to auto-cancel on crash |
+| ☐ | Prometheus metrics endpoint |
+| ☐ | Structured JSON logging |
+| ☐ | Dockerfile + `systemd` / `supervisor` unit file |
+| ☐ | Deploy to AWS `ap-southeast-1` (Singapore) for lowest Binance latency |
+
+---
+
+### 18.12 Dependencies
+
+```
+pip install websockets orjson aiohttp lightgbm numpy joblib
+```
+
+For inference server (optional):
+```
+pip install fastapi uvicorn
+```
+
+For ONNX upgrade:
+```
+pip install onnxruntime skl2onnx
+```
