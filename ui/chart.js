@@ -5,12 +5,13 @@
  * Browser persistence (localStorage, same tab origin):
  * - `qt_chart_tf` — last chart timeframe (1m … 1d)
  * - `qt_chart_show_ema` / `qt_chart_show_supertrend` — overlay toggles (`1` / `0`)
- * - Book top, SMC overlay, signal HUD, candle theme use their own keys (see respective modules / below)
+ * - Book top, SMC overlay, signal HUD (and HUD detail drawer), candle theme use their own keys (see respective modules / below)
  */
 import { createChart, LineStyle } from 'lightweight-charts';
 import {
   CANDLE_THEMES,
   getCandleTheme,
+  getHistogramBarColors,
   readStoredCandleThemeId,
   storeCandleThemeId,
 } from './candle-themes.js';
@@ -23,6 +24,7 @@ import {
 import {
   readSignalHudEnabled,
   renderStrategyHud,
+  storeSignalHudDetailsOpen,
   storeSignalHudEnabled,
 } from './chart-strategy-hud.js';
 import { SmcZoneBoxesPrimitive } from './chart-smc-zone-primitive.js';
@@ -553,10 +555,11 @@ export class ChartManager {
     const { persist = true } = opts;
     const t = getCandleTheme(themeId);
     if (persist) storeCandleThemeId(t.id);
-    this._volumeColorUp = t.volumeUp;
-    this._volumeColorDown = t.volumeDown;
+    const vol = getHistogramBarColors(t);
+    this._volumeColorUp = vol.up;
+    this._volumeColorDown = vol.down;
     this.candleSeries?.applyOptions(t.candle);
-    this.volumeSeries?.applyOptions({ color: t.volumeUp });
+    this.volumeSeries?.applyOptions({ color: vol.up });
     const raw = this.candleMap[this.currentTf];
     if (raw?.length) this._loadTf(this.currentTf, { preserveVisibleRange: true });
     this._syncCandleThemeDropdown(t.id);
@@ -1097,8 +1100,9 @@ export class ChartManager {
     this._syncPriceLocalization();
 
     const initialTheme = getCandleTheme(readStoredCandleThemeId());
-    this._volumeColorUp = initialTheme.volumeUp;
-    this._volumeColorDown = initialTheme.volumeDown;
+    const initialVol = getHistogramBarColors(initialTheme);
+    this._volumeColorUp = initialVol.up;
+    this._volumeColorDown = initialVol.down;
 
     this.candleSeries = this.chart.addCandlestickSeries({
       ...initialTheme.candle,
@@ -1204,6 +1208,16 @@ export class ChartManager {
         this._signalHudEnabled = hudToggle.checked;
         storeSignalHudEnabled(this._signalHudEnabled);
         this.updateStrategyHud(this._lastSignalsForChart);
+      });
+    }
+
+    const signalHudEl = document.getElementById('chart-signal-hud');
+    if (signalHudEl) {
+      signalHudEl.addEventListener('toggle', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLDetailsElement)) return;
+        if (!t.classList.contains('chart-signal-hud-more')) return;
+        storeSignalHudDetailsOpen(t.open);
       });
     }
 

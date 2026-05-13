@@ -1,10 +1,28 @@
 /**
- * Compact strategy readout drawn over the price chart (pointer-events: none).
+ * Compact strategy readout over the chart. Root uses pointer-events: none; the
+ * details summary uses pointer-events: auto so only the collapse control captures clicks.
  */
 
 import { computeSignalVerdict, DIR_CLASS, DIR_LABEL, fmtSignalPrice } from './signals.js';
 
 export const SIGNAL_HUD_STORAGE_KEY = 'qt_signal_hud';
+export const SIGNAL_HUD_DETAILS_OPEN_KEY = 'qt_signal_hud_details_open';
+
+export const readSignalHudDetailsOpen = () => {
+  try {
+    return localStorage.getItem(SIGNAL_HUD_DETAILS_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+export const storeSignalHudDetailsOpen = (open) => {
+  try {
+    localStorage.setItem(SIGNAL_HUD_DETAILS_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+};
 
 export const readSignalHudEnabled = () => {
   try {
@@ -100,6 +118,7 @@ export const renderStrategyHud = (container, signals) => {
 
   const htfCls = DIR_CLASS[signals.htfBias] ?? 'neutral';
   const ltfCls = DIR_CLASS[signals.ltfDirection] ?? 'neutral';
+  const detailsOpen = readSignalHudDetailsOpen();
 
   container.innerHTML = `
     <div class="chart-signal-hud-verdict">${escapeHtml(verdict.text)}</div>
@@ -116,8 +135,16 @@ export const renderStrategyHud = (container, signals) => {
       <span class="chart-signal-hud-sep">·</span>
       <span class="chart-signal-hud-k">Ref</span> <span class="chart-signal-hud-val">${escapeHtml(String(refTf))} @ ${escapeHtml(refP)}</span>
     </div>
-    <div class="chart-signal-hud-smc">${escapeHtml(smcBlock)}</div>
-    <div class="chart-signal-hud-mtf">${mtfLine}</div>
-    <div class="chart-signal-hud-matrix mono-sm">${escapeHtml(matLine)}</div>
+    <details class="chart-signal-hud-more"${detailsOpen ? ' open' : ''}>
+      <summary class="chart-signal-hud-more-summary">
+        <span class="chart-signal-hud-more-chev" aria-hidden="true"></span>
+        <span>SMC · MTF · Matrix</span>
+      </summary>
+      <div class="chart-signal-hud-more-body">
+        <div class="chart-signal-hud-smc">${escapeHtml(smcBlock)}</div>
+        <div class="chart-signal-hud-mtf">${mtfLine}</div>
+        <div class="chart-signal-hud-matrix mono-sm">${escapeHtml(matLine)}</div>
+      </div>
+    </details>
   `.trim();
 }

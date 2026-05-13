@@ -622,6 +622,51 @@ body::before {
   opacity: 0.88;
 }
 
+.chart-signal-hud-more {
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.chart-signal-hud-more-summary {
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 2px 0 4px;
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+.chart-signal-hud-more-summary::-webkit-details-marker {
+  display: none;
+}
+.chart-signal-hud-more-summary::marker {
+  content: '';
+}
+.chart-signal-hud-more-chev {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 4px solid currentColor;
+  opacity: 0.8;
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.chart-signal-hud-more[open] .chart-signal-hud-more-chev {
+  transform: rotate(90deg);
+}
+.chart-signal-hud-more-body {
+  padding-top: 1px;
+}
+
 /* ── Order Book (mirrored ladder) ─────────────────────────────────────────── */
 #book-panel {
   display: flex;
