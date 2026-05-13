@@ -102,8 +102,10 @@ export interface MultiplexOptions {
   depthLevels: DepthLevels;
   depthSpeed: DepthSpeed;
   useMarkPrice: boolean;
-  /** Stream liquidation events (`@forceOrder`). USD-M only. Default false. */
+  /** Stream per-symbol liquidation events (`@forceOrder`). USD-M only. Default false. */
   useForceOrder?: boolean;
+  /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). USD-M only. Default false. */
+  useGlobalForceOrder?: boolean;
   /** Hours before scheduled reconnect (Binance enforces 24h max). Default 23. */
   reconnectAfterHours?: number;
   /** Override constructor for tests. */
@@ -143,6 +145,7 @@ export const buildStreamList = (opts: MultiplexOptions): string[] => {
     if (opts.useMarkPrice && opts.product === 'usdm') out.push(`${lower}@markPrice@1s`);
     if (opts.useForceOrder && opts.product === 'usdm') out.push(`${lower}@forceOrder`);
   }
+  if (opts.useGlobalForceOrder && opts.product === 'usdm') out.push('!forceOrder@arr');
   return out;
 }
 

@@ -60,11 +60,11 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v1/premiumIndex` | Mark price + funding rate |
 | ☐ | `GET /fapi/v1/ticker/bookTicker` | **REST Best Bid/Ask** — snapshot fallback when WS is unavailable |
 | ☐ | `GET /fapi/v1/ticker/24hr` | **24h Ticker Stats** — REST fallback |
-| ☐ | `GET /fapi/v1/fundingRate` | **Funding Rate History** — used for funding cost prediction |
+| ✅ | `GET /fapi/v1/fundingRate` | **Funding Rate History** — `getFundingRateHistory` in `rest-trade.ts` |
 | ☐ | `GET /fapi/v1/trades` | **Recent Trades** |
 | ☐ | `GET /fapi/v1/historicalTrades` | **Historical Trades** |
-| ☐ | `GET /fapi/v1/openInterest` | **Current Open Interest** — poll every 5–10 s for OI signals |
-| ☐ | `GET /futures/data/openInterestHist` | **OI Statistics History** — 5m/15m/1h/1d intervals |
+| ✅ | `GET /fapi/v1/openInterest` | **Current Open Interest** — `getOpenInterest` in `rest-trade.ts` |
+| ✅ | `GET /futures/data/openInterestHist` | **OI Statistics History** — `getOpenInterestHist` in `rest-trade.ts` |
 
 ---
 
@@ -83,7 +83,7 @@ Items marked ✅ are already implemented.
 | ☐ | `!ticker@arr` | **All-symbol Ticker Array** — global market scan |
 | ☐ | `!miniTicker@arr` | **All-symbol Mini Ticker Array** |
 | ☐ | `!bookTicker` | **All-symbol Best Bid/Ask** — multi-symbol execution anchor |
-| ☐ | `!forceOrder@arr` | **All-symbol Liquidation Stream** — global liquidation cascade detection |
+| ✅ | `!forceOrder@arr` | **All-symbol Liquidation Stream** — `useGlobalForceOrder` option in multiplex; config `BINANCE_USE_GLOBAL_FORCE_ORDER` |
 | ☐ | `!contractInfo` | **Contract Info Stream** — live symbol listing/delisting events |
 
 ---
@@ -274,10 +274,10 @@ Items marked ✅ are already implemented.
 14. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
 
 ### P2 — Analytics & Research
-15. `GET /fapi/v1/openInterest` polling + OI delta signal
-16. `GET /futures/data/openInterestHist` for OI trend context
-17. `GET /fapi/v1/fundingRate` history for funding cost model
-18. `!forceOrder@arr` global liquidation stream
+15. ✅ `GET /fapi/v1/openInterest` — `getOpenInterest` + polling-ready interface
+16. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
+17. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
+18. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
 19. PostgreSQL persistence layer
 20. Backtest engine (kline replay)
 

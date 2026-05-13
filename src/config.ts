@@ -204,8 +204,10 @@ export const AppConfigSchema = z.object({
   BINANCE_USE_AGGTRADE: boolFromString(true),
   BINANCE_USE_BOOKTICKER: boolFromString(true),
   BINANCE_USE_MARK_PRICE: boolFromString(true),
-  /** Stream liquidation orders (`@forceOrder`) for SMC liquidity sweep detection. USD-M only. */
+  /** Stream per-symbol liquidation orders (`@forceOrder`) for SMC liquidity sweep detection. USD-M only. */
   BINANCE_USE_FORCE_ORDER: boolFromString(false),
+  /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). Useful for cascade detection. USD-M only. */
+  BINANCE_USE_GLOBAL_FORCE_ORDER: boolFromString(false),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
 
   /**

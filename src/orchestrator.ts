@@ -244,6 +244,7 @@ export class HybridOrchestrator {
           depthSpeed: cfg.BINANCE_DEPTH_SPEED as DepthSpeed,
           useMarkPrice: cfg.BINANCE_USE_MARK_PRICE,
           useForceOrder: cfg.BINANCE_USE_FORCE_ORDER,
+          useGlobalForceOrder: cfg.BINANCE_USE_GLOBAL_FORCE_ORDER,
           reconnectAfterHours: cfg.BINANCE_WS_RECONNECT_HOURS,
         },
         multiplexCb,

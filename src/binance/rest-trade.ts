@@ -621,6 +621,76 @@ export const getIncomeHistory = async (
   return client.signedGet<IncomeRow[]>('/fapi/v1/income', q);
 };
 
+// ─── Open Interest ─────────────────────────────────────────────────────────
+
+export interface OpenInterestResponse {
+  symbol: string;
+  openInterest: string;
+  time: number;
+}
+
+/** Current open interest for a symbol. Poll every 5–10 s for OI delta signals. */
+export const getOpenInterest = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<OpenInterestResponse> => {
+  return client.publicGet<OpenInterestResponse>('/fapi/v1/openInterest', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
+export interface OpenInterestHistRow {
+  symbol: string;
+  sumOpenInterest: string;
+  sumOpenInterestValue: string;
+  timestamp: number;
+}
+
+export type OiHistPeriod = '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '12h' | '1d';
+
+/**
+ * Historical OI statistics — 5m to 1d intervals.
+ * Public endpoint (no signature needed), max 500 rows.
+ */
+export const getOpenInterestHist = async (
+  client: BinanceRestClient,
+  params: { symbol: string; period: OiHistPeriod; limit?: number; startTime?: number; endTime?: number },
+): Promise<OpenInterestHistRow[]> => {
+  const q: Record<string, string | number> = {
+    symbol: params.symbol.toUpperCase(),
+    period: params.period,
+  };
+  if (params.limit !== undefined) q.limit = params.limit;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  return client.publicGet<OpenInterestHistRow[]>('/futures/data/openInterestHist', q);
+};
+
+// ─── Funding Rate ──────────────────────────────────────────────────────────
+
+export interface FundingRateRow {
+  symbol: string;
+  fundingRate: string;
+  fundingTime: number;
+  markPrice: string;
+}
+
+/**
+ * Funding rate history. Max 1000 rows per call.
+ * Use `startTime`/`endTime` for pagination.
+ */
+export const getFundingRateHistory = async (
+  client: BinanceRestClient,
+  params: { symbol?: string; startTime?: number; endTime?: number; limit?: number } = {},
+): Promise<FundingRateRow[]> => {
+  const q: Record<string, string | number> = {};
+  if (params.symbol) q.symbol = params.symbol.toUpperCase();
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.publicGet<FundingRateRow[]>('/fapi/v1/fundingRate', q);
+};
+
 // ─── Server Time ───────────────────────────────────────────────────────────
 
 export const getServerTime = async (client: BinanceRestClient): Promise<number> => {
