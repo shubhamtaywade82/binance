@@ -11,13 +11,18 @@ import { PaperWallet } from './paper/wallet';
 import { Ledger } from './paper/ledger';
 import { LiquidationEngine } from './paper/liquidation';
 import { FundingEngine } from './paper/funding';
+import { ExecutionRouter } from './execution-router';
 
 export interface ExecutionRuntime {
+  /** The active execution adapter — always an ExecutionRouter in production. */
   adapter: ExecutionAdapter;
   book: BookTickerFeed;
   /** REST client for Binance trading API (set when BINANCE_EXECUTION_ADAPTER=true). */
   binanceRestClient?: BinanceRestClient;
   stopFunding?: () => void;
+  /** Router wrapper for hot-swapping exchange/env at runtime. Present in all production paths;
+   *  absent only in unit tests that inject a minimal stub adapter directly. */
+  router?: ExecutionRouter;
 }
 
 const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
@@ -58,27 +63,29 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         apiSecret,
         baseUrl: binanceRestBase(cfg),
       });
-      const adapter = new BinanceLiveExecutionAdapter({
+      const liveAdapter = new BinanceLiveExecutionAdapter({
         client: binanceRestClient,
         symbol: cfg.BINANCE_SYMBOL.trim().toUpperCase(),
         takerFee: cfg.TAKER_FEE,
         fundingFeeEst: cfg.FUNDING_FEE_EST,
         marginType: 'ISOLATED',
       });
-      return { adapter, book, binanceRestClient };
+      const router = new ExecutionRouter(cfg, cdcx, liveAdapter);
+      return { adapter: router, book, binanceRestClient, router };
     }
 
     // ── CoinDCX live adapter (legacy) ─────────────────────────────────────
     if (!cfg.COINDCX_API_KEY.trim() || !cfg.COINDCX_API_SECRET.trim()) {
       throw new Error('EXECUTION_MODE=live requires COINDCX_API_KEY and COINDCX_API_SECRET (or set BINANCE_EXECUTION_ADAPTER=true).');
     }
-    const adapter = new CoinDcxExecutionAdapter({
+    const cdcxAdapter = new CoinDcxExecutionAdapter({
       client: cdcx,
       marginCurrency: cfg.MARGIN_CURRENCY,
       takerFee: cfg.TAKER_FEE,
       fundingFeeEst: cfg.FUNDING_FEE_EST,
     });
-    return { adapter, book };
+    const cdcxRouter = new ExecutionRouter(cfg, cdcx, cdcxAdapter);
+    return { adapter: cdcxRouter, book, router: cdcxRouter };
   }
 
   // ── Paper adapter ─────────────────────────────────────────────────────
@@ -93,7 +100,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   });
   funding.start();
 
-  const adapter = new PaperExecutionAdapter({
+  const paperAdapter = new PaperExecutionAdapter({
     wallet,
     book,
     liquidation,
@@ -106,10 +113,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     equitySnapshotMs: Math.max(1000, cfg.PAPER_EQUITY_SNAPSHOT_SEC * 1000),
     symbolFor: (pair) => symbolFromPair(cfg, pair),
   });
+  const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 
   return {
-    adapter,
+    adapter: paperRouter,
     book,
+    router: paperRouter,
     stopFunding: () => funding.stop(),
   };
 }

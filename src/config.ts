@@ -343,6 +343,20 @@ export const AppConfigSchema = z.object({
    * Example: `redis://localhost:6379`
    */
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().optional()),
+
+  /**
+   * HTTP port for the runtime control plane (`/runtime/config`, `/runtime/status`,
+   * `/runtime/kill`, `/runtime/unkill`). 0 = disabled. Default 4002.
+   * Binds to 127.0.0.1 only — not exposed externally unless you reverse-proxy it.
+   */
+  CONTROL_PORT: z
+    .string()
+    .default('4002')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
+      return n;
+    }),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

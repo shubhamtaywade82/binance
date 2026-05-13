@@ -44,6 +44,7 @@ import type { OrderTradeUpdate, AccountUpdate } from './binance/private-ws';
 import { getRedisClient } from './services/redis';
 import { publish, CHANNELS } from './services/pubsub';
 import { setPosition, clearPosition, isKillSwitchActive } from './services/state';
+import { ExecutionRouter } from './execution/execution-router';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -558,6 +559,12 @@ export class HybridOrchestrator {
 
   hasPosition(): boolean {
     return this.positionManager.hasPosition();
+  }
+
+  /** Returns the ExecutionRouter wrapping the current adapter, or null when the execution
+   *  runtime was injected without a router (e.g. in unit tests with a raw adapter). */
+  getRouter(): ExecutionRouter | null {
+    return this.execution.router ?? null;
   }
 
   setPrecision(p: InstrumentPrecision): void {
