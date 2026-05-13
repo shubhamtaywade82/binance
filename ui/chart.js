@@ -1415,6 +1415,20 @@ export class ChartManager {
     };
   }
 
+  _isAnomalousRange(arr, row) {
+    if (arr.length < 20) return false;
+    const tail = arr.slice(-20);
+    const ranges = tail.map((c) => Math.abs(c.high - c.low)).sort((a, b) => a - b);
+    const median = ranges[Math.floor(ranges.length / 2)];
+    if (median <= 0) return false;
+    const incoming = Math.abs(row.high - row.low);
+    if (incoming > median * 8) {
+      console.warn('[chart] rejected anomalous bar', { tf: this.currentTf, openTime: row.openTime, range: incoming, median });
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Canonical candle list: ascending openTime, one row per openTime (last wins).
    * Mirrors server `MultiTimeframeStore.seed` so Lightweight Charts always gets sorted data.
@@ -1549,6 +1563,7 @@ export class ChartManager {
 
     const row = this._coerceCandle(candle);
     if (!row) return;
+    if (this._isAnomalousRange(arr, row)) return;
 
     if (arr.length === 0) {
       arr.push(row);

@@ -22,7 +22,19 @@ import {
   fetchBinanceExchangeInfoForSymbols,
 } from './binance/rest-exchange-info';
 import { BinancePrivateWs } from './binance/private-ws';
-import { getPositionRisk, getOpenAlgoOrders } from './binance/rest-trade';
+import {
+  getPositionRisk,
+  getOpenAlgoOrders,
+  getOpenOrders,
+  getUserTrades,
+  getPositionSideDual,
+  getOrderRateLimit,
+  setCountdownCancelAll,
+  cancelAllOrders,
+  cancelAllAlgoOrders,
+  getAccountInfo,
+  type OrderRateLimitRow,
+} from './binance/rest-trade';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
 import {
   extractPrecisionFromInstrument,
@@ -59,6 +71,14 @@ const consoleLogger: OrchestratorLogger = {
     process.stderr.write(`${msg} ${meta ? JSON.stringify(meta) : ''}\n`);
   },
 };
+
+const summarizePrivatePayload = (msg: Record<string, unknown>): Record<string, unknown> => ({
+  e: msg.e,
+  E: msg.E,
+  T: msg.T,
+  o: msg.o,
+  ac: msg.ac,
+});
 
 export type UsdmMarkRestFetch = (
   cfg: AppConfig,
@@ -136,6 +156,12 @@ export class HybridOrchestrator {
   private readonly orderBookSnapshotRing: OrderBookSnapshotRing | null;
   /** Private user-data stream — non-null when BINANCE_EXECUTION_ADAPTER=true + live. */
   private privateWs: BinancePrivateWs | null = null;
+  private deadmanTimer: ReturnType<typeof setInterval> | null = null;
+  private orderRateTimer: ReturnType<typeof setInterval> | null = null;
+  private tradingHaltedDrawdown = false;
+  private orderRatePauseActive = false;
+  private drawdownHaltLogged = false;
+  private sessionPeakUsdt = 0;
   /** ioredis client — null when REDIS_URL is not configured (all publish calls are no-ops). */
   private readonly redis: ReturnType<typeof getRedisClient>;
 
@@ -237,6 +263,10 @@ export class HybridOrchestrator {
         callbacks: {
           onOrderUpdate: (e) => this.onPrivateOrderUpdate(e),
           onAccountUpdate: (e) => this.onPrivateAccountUpdate(e),
+          onAlgoOrderUpdate: (msg) =>
+            this.log.info('binance_algo_order_update', { payload: summarizePrivatePayload(msg) }),
+          onConditionalOrderTriggerReject: (msg) =>
+            this.log.warn('binance_conditional_order_trigger_reject', { payload: summarizePrivatePayload(msg) }),
           onListenKeyExpired: () => this.log.warn('binance_listen_key_expired', {}),
           onError: (err) => this.log.warn('binance_private_ws_error', { err: err.message }),
           onReconnect: (n) => this.log.warn('binance_private_ws_reconnect', { attempt: n }),
@@ -255,10 +285,17 @@ export class HybridOrchestrator {
 
     // Push exchange precision into the Binance adapter and reconcile any open position.
     if (this.cfg.BINANCE_EXECUTION_ADAPTER && this.execution.binanceRestClient) {
-      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
-      if (this.precision) binanceAdapter.setPrecision(this.precision);
-      await this.reconcileExchangePosition(binanceAdapter);
+      if (this.execution.router && this.precision) {
+        this.execution.router.setPrecisionForBinance(this.precision);
+      } else {
+        const a = this.binanceLiveAdapter();
+        if (a && this.precision) a.setPrecision(this.precision);
+      }
+      const live = this.binanceLiveAdapter();
+      if (live) await this.reconcileExchangePosition(live);
     }
+
+    this.scheduleDeadmanAndOrderRatePolling();
 
     if (this.multiplex) {
       this.multiplex.start();
@@ -295,6 +332,8 @@ export class HybridOrchestrator {
     this.clearHeartbeat();
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
+    this.clearDeadmanTimer();
+    this.clearOrderRateTimer();
     this.execution.stopFunding?.();
     this.book.stop();
     if (this.ws) this.ws.stop();
@@ -346,7 +385,7 @@ export class HybridOrchestrator {
   private onMultiplexKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): void {
     const symU = symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
-    this.store.applyKline(symbol, tf, candle, isFinal);
+    const accepted = this.store.applyKline(symbol, tf, candle, isFinal);
     if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
     if (tf === this.ltfTf) {
       const series = this.store.getSeries(symbol, this.ltfTf);
@@ -355,7 +394,7 @@ export class HybridOrchestrator {
       const series = this.store.getSeries(symbol, this.htfTf);
       this.c1h.splice(0, this.c1h.length, ...series);
     }
-    if (isFinal && tf === this.ltfTf) void this.evaluate(candle);
+    if (accepted && isFinal && tf === this.ltfTf) void this.evaluate(candle);
   }
 
   private onBookTicker(t: BookTickerEvent): void {
@@ -798,7 +837,8 @@ export class HybridOrchestrator {
       o.si > 0 &&
       this.cfg.BINANCE_EXECUTION_ADAPTER
     ) {
-      const binanceAdapter = this.execution.adapter as BinanceLiveExecutionAdapter;
+      const binanceAdapter = this.binanceLiveAdapter();
+      if (!binanceAdapter) return;
       const fillPrice = Number(o.ap) || Number(o.L) || this.lastMark || 0;
       if (fillPrice > 0) {
         const result = binanceAdapter.notifyFilled(o.si, fillPrice);
@@ -825,10 +865,39 @@ export class HybridOrchestrator {
     const client = this.execution.binanceRestClient;
     const sym = this.pairs.binanceSymbol;
     try {
-      const [positions, algoOrders] = await Promise.all([
+      const [positions, algoOrders, dual, openOrders, userTrades, rateRows, account] = await Promise.all([
         getPositionRisk(client, sym),
         getOpenAlgoOrders(client, sym),
+        getPositionSideDual(client),
+        getOpenOrders(client, sym),
+        getUserTrades(client, { symbol: sym, limit: 20 }).catch(() => []),
+        getOrderRateLimit(client),
+        getAccountInfo(client),
       ]);
+
+      this.execution.router?.applyBinanceHedgeMode(dual.dualSidePosition);
+      if (dual.dualSidePosition) {
+        this.log.warn('binance_hedge_mode_active', { sym, hint: 'Orders include positionSide LONG/SHORT.' });
+      } else {
+        this.log.info('binance_one_way_mode', { sym });
+      }
+
+      const tw = Number(account.totalWalletBalance);
+      if (Number.isFinite(tw) && tw > 0) {
+        this.sessionPeakUsdt = Math.max(this.sessionPeakUsdt, tw);
+      }
+
+      this.log.info('startup_reconcile_orders', {
+        sym,
+        openOrders: openOrders.length,
+        openAlgo: algoOrders.length,
+        recentUserTrades: userTrades.length,
+      });
+      if (openOrders.length > algoOrders.length + 2) {
+        this.log.warn('startup_extra_open_orders', { openOrders: openOrders.length, sym });
+      }
+      this.applyOrderRateRows(rateRows);
+
       const pos = positions.find(
         (p) => p.symbol.toUpperCase() === sym && Math.abs(Number(p.positionAmt)) > 0,
       );
@@ -862,6 +931,20 @@ export class HybridOrchestrator {
   }
 
   private onPrivateAccountUpdate(event: AccountUpdate): void {
+    const balances = event.a?.B ?? [];
+    const usdt = balances.find((b) => b.a === 'USDT');
+    if (usdt) {
+      const wb = Number(usdt.wb);
+      if (Number.isFinite(wb) && wb > 0) {
+        if (this.sessionPeakUsdt <= 0) this.sessionPeakUsdt = wb;
+        else this.sessionPeakUsdt = Math.max(this.sessionPeakUsdt, wb);
+        const pct = this.cfg.DAILY_DRAWDOWN_KILL_PCT;
+        if (pct > 0 && this.sessionPeakUsdt > 0 && wb <= this.sessionPeakUsdt * (1 - pct)) {
+          void this.handleDrawdownKill(wb);
+        }
+      }
+    }
+
     const positions = event.a?.P ?? [];
     for (const p of positions) {
       if (p.s.toUpperCase() !== this.pairs.binanceSymbol) continue;
@@ -877,6 +960,7 @@ export class HybridOrchestrator {
 
   private async evaluate(ltfBar: Candle): Promise<void> {
     if (this.positionManager.hasPosition()) return;
+    if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     const refPrice = this.lastMark ?? ltfBar.close;
     const sym = this.pairs.binanceSymbol;
@@ -999,6 +1083,103 @@ export class HybridOrchestrator {
     if (opened) {
       setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
       publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+    }
+  }
+
+  private binanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
+    const r = this.execution.router;
+    if (r) return r.getBinanceLiveAdapter();
+    const a = this.execution.adapter;
+    return a instanceof BinanceLiveExecutionAdapter ? a : null;
+  }
+
+  private scheduleDeadmanAndOrderRatePolling(): void {
+    if (!this.execution.binanceRestClient || this.cfg.EXECUTION_MODE !== 'live' || !this.cfg.BINANCE_EXECUTION_ADAPTER) {
+      return;
+    }
+    const client = this.execution.binanceRestClient;
+    const cd = this.cfg.BINANCE_DEADMAN_COUNTDOWN_MS;
+    if (cd > 0) {
+      this.clearDeadmanTimer();
+      const tick = Math.max(10_000, Math.floor(cd / 2));
+      this.deadmanTimer = setInterval(() => {
+        void setCountdownCancelAll(client, { countdownTime: cd }).catch((e) =>
+          this.log.warn('binance_deadman_renew_failed', { err: (e as Error).message }),
+        );
+      }, tick);
+      void setCountdownCancelAll(client, { countdownTime: cd }).catch((e) =>
+        this.log.warn('binance_deadman_init_failed', { err: (e as Error).message }),
+      );
+      if (typeof this.deadmanTimer.unref === 'function') this.deadmanTimer.unref();
+    }
+    if (this.cfg.ORDER_RATE_LIMIT_PAUSE_THRESHOLD > 0) {
+      this.clearOrderRateTimer();
+      this.orderRateTimer = setInterval(() => void this.refreshOrderRatePause(), 30_000);
+      void this.refreshOrderRatePause();
+      if (typeof this.orderRateTimer.unref === 'function') this.orderRateTimer.unref();
+    }
+  }
+
+  private clearDeadmanTimer(): void {
+    if (this.deadmanTimer) {
+      clearInterval(this.deadmanTimer);
+      this.deadmanTimer = null;
+    }
+  }
+
+  private clearOrderRateTimer(): void {
+    if (this.orderRateTimer) {
+      clearInterval(this.orderRateTimer);
+      this.orderRateTimer = null;
+    }
+  }
+
+  private async refreshOrderRatePause(): Promise<void> {
+    if (!this.execution.binanceRestClient) return;
+    try {
+      const rows = await getOrderRateLimit(this.execution.binanceRestClient);
+      this.applyOrderRateRows(rows);
+    } catch (e) {
+      this.log.warn('order_rate_limit_fetch_failed', { err: (e as Error).message });
+    }
+  }
+
+  private applyOrderRateRows(rows: OrderRateLimitRow[]): void {
+    const th = this.cfg.ORDER_RATE_LIMIT_PAUSE_THRESHOLD;
+    if (th <= 0) return;
+    const orderRow = rows.find((r) => String(r.rateLimitType).toUpperCase().includes('ORDER'));
+    if (!orderRow || orderRow.limit <= 0) return;
+    const ratio = orderRow.count / orderRow.limit;
+    const next = ratio >= th;
+    if (next !== this.orderRatePauseActive) {
+      this.orderRatePauseActive = next;
+      this.log.warn('binance_order_rate_pause', {
+        active: next,
+        count: orderRow.count,
+        limit: orderRow.limit,
+        ratio: Number(ratio.toFixed(4)),
+      });
+    }
+  }
+
+  private async handleDrawdownKill(walletUsdt: number): Promise<void> {
+    if (this.tradingHaltedDrawdown) return;
+    this.tradingHaltedDrawdown = true;
+    if (!this.drawdownHaltLogged) {
+      this.drawdownHaltLogged = true;
+      this.log.warn('drawdown_kill_switch', {
+        walletUsdt,
+        sessionPeakUsdt: this.sessionPeakUsdt,
+        pct: this.cfg.DAILY_DRAWDOWN_KILL_PCT,
+      });
+    }
+    const client = this.execution.binanceRestClient;
+    const sym = this.pairs.binanceSymbol;
+    if (!client) return;
+    try {
+      await Promise.allSettled([cancelAllAlgoOrders(client, sym), cancelAllOrders(client, sym)]);
+    } catch (e) {
+      this.log.warn('drawdown_cancel_failed', { err: (e as Error).message });
     }
   }
 }

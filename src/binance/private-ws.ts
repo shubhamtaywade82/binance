@@ -102,6 +102,10 @@ export interface PrivateWsCallbacks {
   onOrderUpdate?: (event: OrderTradeUpdate) => void;
   onAccountUpdate?: (event: AccountUpdate) => void;
   onMarginCall?: (event: MarginCallEvent) => void;
+  /** User stream `ALGO_UPDATE` / `ALGO_ORDER_UPDATE` payloads (shape varies by Binance version). */
+  onAlgoOrderUpdate?: (event: Record<string, unknown>) => void;
+  /** TP/SL conditional trigger rejected by the engine. */
+  onConditionalOrderTriggerReject?: (event: Record<string, unknown>) => void;
   onListenKeyExpired?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
@@ -239,9 +243,38 @@ export class BinancePrivateWs {
       this.cb.onMarginCall?.(msg as unknown as MarginCallEvent);
       return;
     }
+    if (evt === 'ALGO_UPDATE' || evt === 'ALGO_ORDER_UPDATE') {
+      this.cb.onAlgoOrderUpdate?.(msg);
+      return;
+    }
+    if (evt === 'CONDITIONAL_ORDER_TRIGGER_REJECT') {
+      this.cb.onConditionalOrderTriggerReject?.(msg);
+      return;
+    }
     if (evt === 'listenKeyExpired') {
       this.cb.onListenKeyExpired?.();
-      void this.renewListenKey();
+      void this.handleListenKeyExpired();
+    }
+  }
+
+  private async handleListenKeyExpired(): Promise<void> {
+    if (this.closed) return;
+    try {
+      const old = this.listenKey;
+      this.listenKey = null;
+      if (old) {
+        try {
+          await deleteListenKey(this.opts.client, old);
+        } catch {
+          // Expired keys often reject delete — proceed with a fresh key.
+        }
+      }
+      this.listenKey = await createListenKey(this.opts.client);
+      this.closeSocket(1012, 'listen_key_expired');
+      this.connect();
+    } catch (e) {
+      this.cb.onError?.(e instanceof Error ? e : new Error(`listenKey rotate failed: ${e}`));
+      this.scheduleReconnect();
     }
   }
 

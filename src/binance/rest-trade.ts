@@ -321,6 +321,90 @@ export const getOpenAlgoOrders = async (client: BinanceRestClient, symbol?: stri
   return res.orders ?? [];
 }
 
+// ─── Position mode (hedge vs one-way) ─────────────────────────────────────
+
+export interface PositionSideDualResponse {
+  dualSidePosition: boolean;
+}
+
+export const getPositionSideDual = async (client: BinanceRestClient): Promise<PositionSideDualResponse> => {
+  return client.signedGet<PositionSideDualResponse>('/fapi/v1/positionSide/dual');
+}
+
+// ─── User trades (fills / reconciliation) ───────────────────────────────────
+
+export interface UserTradeRow {
+  buyer: boolean;
+  commission: string;
+  commissionAsset: string;
+  id: number;
+  maker: boolean;
+  orderId: number;
+  price: string;
+  qty: string;
+  quoteQty: string;
+  realizedPnl: string;
+  side: string;
+  positionSide: string;
+  symbol: string;
+  time: number;
+}
+
+export const getUserTrades = async (
+  client: BinanceRestClient,
+  params: {
+    symbol: string;
+    orderId?: number;
+    startTime?: number;
+    endTime?: number;
+    fromId?: number;
+    limit?: number;
+  },
+): Promise<UserTradeRow[]> => {
+  const q: Record<string, string | number> = { symbol: params.symbol.toUpperCase() };
+  if (params.orderId !== undefined) q.orderId = params.orderId;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.fromId !== undefined) q.fromId = params.fromId;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<UserTradeRow[]>('/fapi/v1/userTrades', q);
+}
+
+// ─── Order rate limits (REST quota snapshot) ──────────────────────────────
+
+export interface OrderRateLimitRow {
+  rateLimitType: string;
+  interval: string;
+  intervalNum: number;
+  limit: number;
+  count: number;
+}
+
+export const getOrderRateLimit = async (client: BinanceRestClient): Promise<OrderRateLimitRow[]> => {
+  return client.signedGet<OrderRateLimitRow[]>('/fapi/v1/rateLimit/order');
+}
+
+// ─── Dead-man auto-cancel all (countdown) ─────────────────────────────────
+
+export interface CountdownCancelAllResponse {
+  symbol?: string;
+  countdownTime: string;
+}
+
+/**
+ * Reset the exchange-side dead-man timer. Each call extends the countdown.
+ * `countdownTime` in ms; use `0` to cancel the timer without closing orders.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Auto-Cancel-All-Open-Orders
+ */
+export const setCountdownCancelAll = async (
+  client: BinanceRestClient,
+  params: { symbol?: string; countdownTime: number },
+): Promise<CountdownCancelAllResponse> => {
+  const body: Record<string, string | number> = { countdownTime: params.countdownTime };
+  if (params.symbol) body.symbol = params.symbol.toUpperCase();
+  return client.signedPost<CountdownCancelAllResponse>('/fapi/v1/countdownCancelAll', body);
+}
+
 // ─── Server Time ───────────────────────────────────────────────────────────
 
 export const getServerTime = async (client: BinanceRestClient): Promise<number> => {

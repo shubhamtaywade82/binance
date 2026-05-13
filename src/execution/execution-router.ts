@@ -1,3 +1,4 @@
+import type { InstrumentPrecision } from '../mapping/precision';
 import type { AppConfig } from '../config';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
 import { BinanceRestClient } from '../binance/rest-client';
@@ -59,6 +60,19 @@ export class ExecutionRouter implements ExecutionAdapter {
 
   setLeverage(pair: string, lev: number): Promise<void> {
     return this.current.setLeverage?.(pair, lev) ?? Promise.resolve();
+  }
+
+  /** Live Binance adapter when the router is on Binance; otherwise null. */
+  getBinanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
+    return this.current instanceof BinanceLiveExecutionAdapter ? this.current : null;
+  }
+
+  setPrecisionForBinance(p: InstrumentPrecision): void {
+    this.getBinanceLiveAdapter()?.setPrecision(p);
+  }
+
+  applyBinanceHedgeMode(dualSidePosition: boolean): void {
+    this.getBinanceLiveAdapter()?.setHedgeMode(dualSidePosition);
   }
 
   // ─── Runtime switching ────────────────────────────────────────────────────

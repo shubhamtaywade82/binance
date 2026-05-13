@@ -33,7 +33,21 @@ const main = async (): Promise<void> => {
   });
 
   if (cfg.DASHBOARD_ENABLED) {
-    const store = new MultiTimeframeStore({ maxBars: cfg.DASHBOARD_STORE_MAX_BARS });
+    const store = new MultiTimeframeStore({
+      maxBars: cfg.DASHBOARD_STORE_MAX_BARS,
+      onAnomalousBar: (symbol, tf, candle, medianRange) => {
+        log.warn('anomalous_candle', {
+          symbol,
+          tf,
+          openTime: new Date(candle.openTime).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          range: Math.abs(candle.high - candle.low),
+          medianRange,
+          ratio: medianRange > 0 ? (Math.abs(candle.high - candle.low) / medianRange).toFixed(1) : '∞',
+        });
+      },
+    });
     const orderbook = new LocalOrderBook();
     const tradeTape = new AggTradeTape(1000);
     const precisionBySymbol = new Map<string, InstrumentPrecision>();
@@ -89,7 +103,7 @@ const main = async (): Promise<void> => {
         enableOfflineQueue: false,
         maxRetriesPerRequest: 3,
       });
-      redisSub.on('error', (err) => {
+      redisSub.on('error', (err: Error) => {
         process.stderr.write(`redis_sub_error ${(err as Error).message}\n`);
       });
       controlServer.watchRedisConfigChanges(redisSub);

@@ -31,6 +31,11 @@ export interface BinanceAdapterOptions {
   fundingFeeEst: number;
   /** Margin type: ISOLATED (default) or CROSSED. */
   marginType?: 'ISOLATED' | 'CROSSED';
+  /**
+   * When true (dual / hedge position mode), all orders include `positionSide` LONG/SHORT.
+   * Set from `GET /fapi/v1/positionSide/dual` during startup reconciliation.
+   */
+  hedgeMode?: boolean;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -87,9 +92,21 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
   /** Prevents concurrent close attempts for the same position. */
   private closingIds = new Set<string>();
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void;
+  private hedgeMode: boolean;
 
   constructor(private readonly opts: BinanceAdapterOptions) {
     this.log = opts.log ?? ((msg, meta) => process.stdout.write(`${msg} ${JSON.stringify(meta ?? {})}\n`));
+    this.hedgeMode = opts.hedgeMode ?? false;
+  }
+
+  /** Enable hedge-mode order tagging (LONG/SHORT on each order). */
+  setHedgeMode(dualSidePosition: boolean): void {
+    this.hedgeMode = dualSidePosition;
+  }
+
+  private positionSideFor(tradeSide: 'LONG' | 'SHORT'): 'LONG' | 'SHORT' | undefined {
+    if (!this.hedgeMode) return undefined;
+    return tradeSide;
   }
 
   /** Called by orchestrator after exchangeInfo precision is loaded. */
@@ -129,6 +146,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         type: 'MARKET',
         quantity: qty,
         newOrderRespType: 'RESULT',
+        positionSide: this.positionSideFor(req.side),
       });
     } catch (e) {
       return this.failResult(req.referencePrice, qty, startedAt, (e as Error).message);
@@ -216,6 +234,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         quantity: trade.remainingQty,
         reduceOnly: true,
         newOrderRespType: 'RESULT',
+        positionSide: this.positionSideFor(trade.side),
       });
       const avg = Number(closeOrder.avgPrice);
       if (Number.isFinite(avg) && avg > 0) exitPrice = avg;
@@ -396,6 +415,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
           workingType: 'MARK_PRICE',
           reduceOnly: true,
           timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
         });
         trade.tp1StrategyId = r.strategyId;
         this.algoIdToInternal.set(r.strategyId, trade.internalId);
@@ -414,6 +434,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         closePosition: true,
         workingType: 'MARK_PRICE',
         timeInForce: 'GTE_GTC',
+        positionSide: this.positionSideFor(trade.side),
       });
       trade.tp2StrategyId = r.strategyId;
       this.algoIdToInternal.set(r.strategyId, trade.internalId);
@@ -431,6 +452,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         closePosition: true,
         workingType: 'MARK_PRICE',
         timeInForce: 'GTE_GTC',
+        positionSide: this.positionSideFor(trade.side),
       });
       trade.slStrategyId = r.strategyId;
       this.algoIdToInternal.set(r.strategyId, trade.internalId);

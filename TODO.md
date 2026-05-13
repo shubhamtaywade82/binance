@@ -3,6 +3,8 @@
 Gaps between the current codebase and the full production-grade spec.
 Items marked ✅ are already implemented.
 
+> **Scope note (2026-05-13):** This file mixes **shipped features** with a **multi-month roadmap** (ML stack, Postgres, multi-symbol live execution, full REST surface, etc.). Only rows that exist in the TypeScript bot today should be marked ✅; everything else remains backlog unless explicitly built.
+
 ---
 
 ## 1. REST API — Order Management
@@ -20,11 +22,11 @@ Items marked ✅ are already implemented.
 | ☐ | `POST /fapi/v1/batchOrders` | **Place Multiple Orders** — atomic multi-leg entries |
 | ☐ | `PUT /fapi/v1/batchOrders` | **Modify Multiple Orders** |
 | ☐ | `DELETE /fapi/v1/batchOrders` | **Cancel Multiple Orders** |
-| ☐ | `POST /fapi/v1/countdownCancelAll` | **Auto-Cancel All** — dead-man countdown; cancel all if keepalive stops |
-| ☐ | `GET /fapi/v1/order` | **Query Order** by `orderId` or `clientOrderId` |
-| ☐ | `GET /fapi/v1/openOrders` | **All Open Orders** for a symbol |
+| ✅ | `POST /fapi/v1/countdownCancelAll` | **Auto-Cancel All** — `setCountdownCancelAll`; orchestrator renews when `BINANCE_DEADMAN_COUNTDOWN_MS>0` |
+| ✅ | `GET /fapi/v1/order` | **Query Order** — `getOrder` in `rest-trade.ts` |
+| ✅ | `GET /fapi/v1/openOrders` | **All Open Orders** — `getOpenOrders`; used at startup reconcile |
 | ☐ | `GET /fapi/v1/allOrders` | **Full Order History** |
-| ☐ | `GET /fapi/v1/userTrades` | **Trade List** — reconciliation and PnL attribution |
+| ✅ | `GET /fapi/v1/userTrades` | **Trade List** — `getUserTrades`; startup reconcile logs recent fills |
 | ☐ | `GET /fapi/v1/algoOrder` | **Query Algo Order** by `algoId` |
 | ☐ | `POST /fapi/v1/order/test` | **Test New Order** — validate filters without execution |
 
@@ -42,8 +44,8 @@ Items marked ✅ are already implemented.
 | ☐ | `GET /fapi/v1/symbolConfig` | **Symbol Configuration** — per-symbol leverage limits |
 | ☐ | `GET /fapi/v1/leverageBracket` | **Notional & Leverage Brackets** — accurate liquidation price and max notional per tier |
 | ☐ | `GET /fapi/v1/multiAssetsMargin` | **Multi-Assets Mode** — detect if portfolio margin is active |
-| ☐ | `GET /fapi/v1/positionSide/dual` | **Position Mode** — detect hedge mode vs one-way; required for dual-side orders |
-| ☐ | `GET /fapi/v1/rateLimit/order` | **Order Rate Limit** — track remaining order quota to prevent 429s |
+| ✅ | `GET /fapi/v1/positionSide/dual` | **Position Mode** — `getPositionSideDual`; hedge → `positionSide` on live orders |
+| ✅ | `GET /fapi/v1/rateLimit/order` | **Order Rate Limit** — polled; pauses new entries when `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` exceeded |
 | ☐ | `GET /fapi/v1/income` | **Income History** — realized PnL, fees, funding flows for reconciliation |
 
 ---
@@ -95,11 +97,11 @@ Items marked ✅ are already implemented.
 | ✅ | `MARGIN_CALL` | Margin warning |
 | ☐ | `TRADE_LITE` | **Trade Lite** — lower-bandwidth fill notification |
 | ☐ | `ACCOUNT_CONFIG_UPDATE` | **Account Config Update** — leverage or margin mode change by user |
-| ☐ | `ALGO_ORDER_UPDATE` | **Algo Order Update** — TP/SL trigger / status changes from Algo Service |
-| ☐ | `CONDITIONAL_ORDER_TRIGGER_REJECT` | **Conditional Reject** — alert when TP/SL fails to trigger |
+| ✅ | `ALGO_ORDER_UPDATE` | **Algo stream** — private WS dispatches `ALGO_UPDATE` / `ALGO_ORDER_UPDATE` to structured log |
+| ✅ | `CONDITIONAL_ORDER_TRIGGER_REJECT` | **Conditional Reject** — private WS logs `CONDITIONAL_ORDER_TRIGGER_REJECT` |
 | ☐ | `STRATEGY_UPDATE` | **Strategy Update** — grid/strategy order state |
 | ☐ | `GRID_UPDATE` | **Grid Update** — grid trading order events |
-| ☐ | Listen-key expiry handling | **Auto-renew + reconnect** when listenKey expires; currently keep-alive exists but expiry event is not handled |
+| ✅ | Listen-key expiry handling | **On `listenKeyExpired`** — mint new key, delete old (best-effort), reconnect WS |
 
 ---
 
@@ -126,15 +128,15 @@ Items marked ✅ are already implemented.
 | ✅ | Position sizing (USDT-native) | Capital × leverage / entry |
 | ✅ | TP/SL percentage targets | Configurable via env |
 | ✅ | Paper liquidation engine | Maintenance margin model |
-| ☐ | **Drawdown kill switch** | Pause/close-all when daily loss exceeds threshold (e.g. 3% equity) |
+| ✅ | **Drawdown kill switch** | `DAILY_DRAWDOWN_KILL_PCT` — vs session peak USDT `wb`; halts new entries + cancels open orders on breach |
 | ☐ | **Max open positions limit** | Hard cap on concurrent live positions across symbols |
 | ☐ | **Volatility-adjusted sizing** | ATR-based quantity scaling instead of fixed USDT amount |
 | ☐ | **Spread guard** | Reject entry when bid-ask spread exceeds max bps |
-| ☐ | **Rate-limit circuit breaker** | Halt order flow when order-count approaches Binance limit (from `/fapi/v1/rateLimit/order`) |
+| ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
 | ☐ | **Leverage bracket validation** | Cross-check position notional against `leverageBracket` tiers before entry |
 | ☐ | **Time-based session filter** | Skip low-liquidity windows (e.g. weekend late-night) |
 | ☐ | **Cross-symbol correlation guard** | Prevent adding same-direction exposure on highly correlated symbols simultaneously |
-| ☐ | **countdownCancelAll integration** | Wire POST `/fapi/v1/countdownCancelAll` as bot-level dead-man switch |
+| ✅ | **countdownCancelAll integration** | `BINANCE_DEADMAN_COUNTDOWN_MS` + periodic `setCountdownCancelAll` |
 
 ---
 
@@ -150,7 +152,7 @@ Items marked ✅ are already implemented.
 | ☐ | **Modify order in-place** | `PUT /fapi/v1/order` / `order.modify` instead of cancel+resubmit |
 | ☐ | **Post-only limit entry** | LIMIT with `timeInForce=GTX` for maker fills and lower fees |
 | ☐ | **Trailing stop** | `TRAILING_STOP_MARKET` order type |
-| ☐ | **Hedge mode support** | Dual position side (`LONG`/`SHORT`) when `positionSide/dual` is enabled |
+| ✅ | **Hedge mode support** | `GET /fapi/v1/positionSide/dual` → `BinanceLiveExecutionAdapter.setHedgeMode` → `positionSide` on entry/algo/close |
 | ☐ | **clientOrderId deduplication** | Idempotent retry: detect duplicate fills via `clientOrderId` before re-sending |
 | ☐ | **Exponential backoff retry** | Structured retry with jitter on 429/5xx; currently basic reconnect exists |
 | ☐ | **Post-execution slippage log** | Compare fill price vs microprice at time of order |
@@ -251,6 +253,9 @@ Items marked ✅ are already implemented.
 ## 15. Recommended Build Order (Priority)
 
 ### P0 — Correctness / Safety (do first)
+
+> **2026-05-13 snapshot:** The TypeScript bot now covers most of the REST/WS/risk items below (startup reconcile with `openOrders` + `userTrades` + dual mode + rate snapshot; hedge `positionSide`; dead-man countdown; drawdown + order-rate entry pauses; private WS algo + conditional reject + listen-key rotation). Remaining gaps are called out inline.
+
 1. `GET /fapi/v1/openOrders` + `GET /fapi/v1/userTrades` — complete state reconciliation on restart
 2. `GET /fapi/v1/positionSide/dual` — prevent wrong-side order rejections in hedge mode accounts
 3. `GET /fapi/v1/rateLimit/order` + rate-limit circuit breaker

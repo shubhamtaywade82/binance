@@ -333,6 +333,31 @@ export const AppConfigSchema = z.object({
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(60).max(3600)),
 
+  /**
+   * Binance `POST /fapi/v1/countdownCancelAll` period (ms). Each tick renews the timer.
+   * 0 = disabled. Example: `120000` = cancel all open orders if renewals stop for 2 minutes.
+   */
+  BINANCE_DEADMAN_COUNTDOWN_MS: z
+    .string()
+    .optional()
+    .default('0')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      return Math.min(7 * 24 * 60 * 60 * 1000, n);
+    }),
+
+  /**
+   * Halt new entries and cancel open orders when USDT wallet balance falls this fraction
+   * below the session peak (0 = disabled). Peak is updated from `ACCOUNT_UPDATE` and startup `GET /fapi/v2/account`.
+   */
+  DAILY_DRAWDOWN_KILL_PCT: numFromString(0),
+
+  /**
+   * When > 0, pause new entries if `GET /fapi/v1/rateLimit/order` shows ORDER row `count/limit` ≥ this threshold (e.g. 0.92).
+   */
+  ORDER_RATE_LIMIT_PAUSE_THRESHOLD: numFromString(0),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 
