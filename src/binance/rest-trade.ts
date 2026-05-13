@@ -393,6 +393,27 @@ export const getOpenAlgoOrders = async (client: BinanceRestClient, symbol?: stri
   return res.orders ?? [];
 }
 
+// ─── Commission Rate ──────────────────────────────────────────────────────
+
+export interface CommissionRate {
+  symbol: string;
+  makerCommissionRate: string;
+  takerCommissionRate: string;
+}
+
+/**
+ * Fetch actual maker/taker commission rate for a symbol.
+ * Replaces hardcoded fee constants with real user-specific rates.
+ */
+export const getCommissionRate = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<CommissionRate> => {
+  return client.signedGet<CommissionRate>('/fapi/v1/commissionRate', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
 // ─── Position mode (hedge vs one-way) ─────────────────────────────────────
 
 export interface PositionSideDualResponse {
@@ -402,6 +423,67 @@ export interface PositionSideDualResponse {
 export const getPositionSideDual = async (client: BinanceRestClient): Promise<PositionSideDualResponse> => {
   return client.signedGet<PositionSideDualResponse>('/fapi/v1/positionSide/dual');
 }
+
+// ─── Leverage Brackets (notional tiers) ──────────────────────────────────
+
+export interface LeverageBracketTier {
+  bracket: number;
+  initialLeverage: number;
+  notionalCap: number;
+  notionalFloor: number;
+  maintMarginRatio: number;
+  cum: number;
+}
+
+export interface SymbolLeverageBracket {
+  symbol: string;
+  notionalCoef?: number;
+  brackets: LeverageBracketTier[];
+}
+
+/** Fetch leverage bracket tiers for one symbol or all symbols. */
+export const getLeverageBracket = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<SymbolLeverageBracket[]> => {
+  const params: Record<string, string> = {};
+  if (symbol) params.symbol = symbol.toUpperCase();
+  const raw = await client.signedGet<SymbolLeverageBracket | SymbolLeverageBracket[]>(
+    '/fapi/v1/leverageBracket',
+    params,
+  );
+  return Array.isArray(raw) ? raw : [raw];
+};
+
+/**
+ * Find the bracket tier that applies for a given notional value.
+ * Returns the tier whose `notionalFloor <= notional < notionalCap`.
+ */
+export const bracketForNotional = (
+  brackets: LeverageBracketTier[],
+  notional: number,
+): LeverageBracketTier | null => {
+  const sorted = [...brackets].sort((a, b) => a.notionalFloor - b.notionalFloor);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (notional >= sorted[i].notionalFloor) return sorted[i];
+  }
+  return sorted[0] ?? null;
+};
+
+/**
+ * Check whether a proposed position notional exceeds the max allowed for
+ * the requested leverage. Returns `{ ok, maxNotional, maxLeverage, tier }`.
+ */
+export const validateNotionalAgainstBracket = (
+  brackets: LeverageBracketTier[],
+  notional: number,
+  requestedLeverage: number,
+): { ok: boolean; maxNotional: number; maxLeverage: number; tier: LeverageBracketTier | null } => {
+  const tier = bracketForNotional(brackets, notional);
+  if (!tier) return { ok: false, maxNotional: 0, maxLeverage: 0, tier: null };
+  const ok = requestedLeverage <= tier.initialLeverage && notional <= tier.notionalCap;
+  return { ok, maxNotional: tier.notionalCap, maxLeverage: tier.initialLeverage, tier };
+};
 
 // ─── User trades (fills / reconciliation) ───────────────────────────────────
 
@@ -476,6 +558,68 @@ export const setCountdownCancelAll = async (
   if (params.symbol) body.symbol = params.symbol.toUpperCase();
   return client.signedPost<CountdownCancelAllResponse>('/fapi/v1/countdownCancelAll', body);
 }
+
+// ─── Income History (realized PnL, fees, funding) ────────────────────────
+
+export type IncomeType =
+  | 'TRANSFER'
+  | 'WELCOME_BONUS'
+  | 'REALIZED_PNL'
+  | 'FUNDING_FEE'
+  | 'COMMISSION'
+  | 'INSURANCE_CLEAR'
+  | 'REFERRAL_KICKBACK'
+  | 'COMMISSION_REBATE'
+  | 'API_REBATE'
+  | 'CONTEST_REWARD'
+  | 'CROSS_COLLATERAL_TRANSFER'
+  | 'OPTIONS_PREMIUM_FEE'
+  | 'OPTIONS_SETTLE_PROFIT'
+  | 'INTERNAL_TRANSFER'
+  | 'AUTO_EXCHANGE'
+  | 'DELIVERED_SETTELMENT'
+  | 'COIN_SWAP_DEPOSIT'
+  | 'COIN_SWAP_WITHDRAW'
+  | 'POSITION_LIMIT_INCREASE_FEE';
+
+export interface IncomeRow {
+  symbol: string;
+  incomeType: IncomeType;
+  income: string;
+  asset: string;
+  info: string;
+  time: number;
+  tranId: number;
+  tradeId: string;
+}
+
+export interface GetIncomeParams {
+  symbol?: string;
+  incomeType?: IncomeType;
+  startTime?: number;
+  endTime?: number;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Fetch income history: realized PnL, funding fees, commissions, transfers, etc.
+ * Max 1000 rows per call. Use `startTime`/`endTime` for pagination.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Get-Income-History
+ */
+export const getIncomeHistory = async (
+  client: BinanceRestClient,
+  params: GetIncomeParams = {},
+): Promise<IncomeRow[]> => {
+  const q: Record<string, string | number> = {};
+  if (params.symbol) q.symbol = params.symbol.toUpperCase();
+  if (params.incomeType) q.incomeType = params.incomeType;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.page !== undefined) q.page = params.page;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<IncomeRow[]>('/fapi/v1/income', q);
+};
 
 // ─── Server Time ───────────────────────────────────────────────────────────
 

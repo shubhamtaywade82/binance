@@ -39,14 +39,14 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v2/account` | Account info |
 | ✅ | `GET /fapi/v2/balance` | Asset balances |
 | ✅ | `GET /fapi/v2/positionRisk` | Per-symbol position state |
-| ☐ | `GET /fapi/v1/commissionRate` | **User Commission Rate** — use real taker/maker rates instead of config constants |
+| ✅ | `GET /fapi/v1/commissionRate` | **User Commission Rate** — `getCommissionRate` in `rest-trade.ts`; returns real maker/taker rates |
 | ☐ | `GET /fapi/v1/accountConfig` | **Account Configuration** — position mode, asset mode |
 | ☐ | `GET /fapi/v1/symbolConfig` | **Symbol Configuration** — per-symbol leverage limits |
-| ☐ | `GET /fapi/v1/leverageBracket` | **Notional & Leverage Brackets** — accurate liquidation price and max notional per tier |
+| ✅ | `GET /fapi/v1/leverageBracket` | **Notional & Leverage Brackets** — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket` |
 | ☐ | `GET /fapi/v1/multiAssetsMargin` | **Multi-Assets Mode** — detect if portfolio margin is active |
 | ✅ | `GET /fapi/v1/positionSide/dual` | **Position Mode** — `getPositionSideDual`; hedge → `positionSide` on live orders |
 | ✅ | `GET /fapi/v1/rateLimit/order` | **Order Rate Limit** — polled; pauses new entries when `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` exceeded |
-| ☐ | `GET /fapi/v1/income` | **Income History** — realized PnL, fees, funding flows for reconciliation |
+| ✅ | `GET /fapi/v1/income` | **Income History** — `getIncomeHistory` in `rest-trade.ts`; realized PnL, fees, funding flows |
 
 ---
 
@@ -133,7 +133,7 @@ Items marked ✅ are already implemented.
 | ☐ | **Volatility-adjusted sizing** | ATR-based quantity scaling instead of fixed USDT amount |
 | ☐ | **Spread guard** | Reject entry when bid-ask spread exceeds max bps |
 | ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
-| ☐ | **Leverage bracket validation** | Cross-check position notional against `leverageBracket` tiers before entry |
+| ✅ | **Leverage bracket validation** | `validateNotionalAgainstBracket` checks notional + leverage vs tier caps |
 | ☐ | **Time-based session filter** | Skip low-liquidity windows (e.g. weekend late-night) |
 | ☐ | **Cross-symbol correlation guard** | Prevent adding same-direction exposure on highly correlated symbols simultaneously |
 | ✅ | **countdownCancelAll integration** | `BINANCE_DEADMAN_COUNTDOWN_MS` + periodic `setCountdownCancelAll` |
@@ -269,9 +269,9 @@ Items marked ✅ are already implemented.
 9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
 10. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
 11. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
-12. `GET /fapi/v1/leverageBracket` — accurate liquidation price per notional tier
-13. `GET /fapi/v1/income` — server-side PnL reconciliation
-14. `GET /fapi/v1/commissionRate` — replace hardcoded fee constants
+12. ✅ `GET /fapi/v1/leverageBracket` — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket`
+13. ✅ `GET /fapi/v1/income` — `getIncomeHistory` with type/time/symbol filters
+14. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
 
 ### P2 — Analytics & Research
 15. `GET /fapi/v1/openInterest` polling + OI delta signal
