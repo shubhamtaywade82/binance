@@ -44,6 +44,8 @@ export interface MarkPriceMultiplexEvent {
   symbol: string;
   markPrice: number;
   eventTime: number;
+  /** Current funding rate from markPrice stream (field `r`). May be 0 if not present. */
+  fundingRate: number;
 }
 
 /** Normalized `@ticker` / 24hrTicker fields (Binance `c` last, `p` change, `P` % string). */
@@ -74,17 +76,44 @@ export interface ForceOrderEvent {
   tradeTime: number;
 }
 
+/** Mini ticker event — lightweight subset of 24hrTicker. */
+export interface MiniTickerEvent {
+  symbol: string;
+  close: number;
+  open: number;
+  high: number;
+  low: number;
+  volume: number;
+  quoteVolume: number;
+  eventTime: number;
+}
+
+/** Contract info event — listing/delisting notifications. */
+export interface ContractInfoEvent {
+  symbol: string;
+  pair: string;
+  contractType: string;
+  deliveryDate: number;
+  onboardDate: number;
+  contractStatus: string;
+  eventTime: number;
+}
+
 export interface MultiplexCallbacks {
   onKline?: (symbol: string, interval: string, candle: Candle, isFinal: boolean) => void;
   onBookTicker?: (t: BookTickerEvent) => void;
   /** Spot / USD-M 24h ticker — last in `c` (LTP); optional `p`/`P`/`o` for stats. */
   on24hrTicker?: (u: Ticker24hrEvent) => void;
+  /** Mini ticker — lightweight 24h stats per symbol. */
+  onMiniTicker?: (u: MiniTickerEvent) => void;
   onDepthPartial?: (p: DepthPartialEvent) => void;
   onDepthDiff?: (d: DepthDiff & { s: string }) => void;
   onAggTrade?: (t: AggTradeEvent) => void;
   onMarkPrice?: (u: MarkPriceMultiplexEvent) => void;
   /** Liquidation order events (`@forceOrder` stream). USD-M only. */
   onForceOrder?: (e: ForceOrderEvent) => void;
+  /** Contract listing/delisting events (`!contractInfo`). */
+  onContractInfo?: (e: ContractInfoEvent) => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number, reason: string) => void;
   onServerShutdown?: () => void;
@@ -102,8 +131,20 @@ export interface MultiplexOptions {
   depthLevels: DepthLevels;
   depthSpeed: DepthSpeed;
   useMarkPrice: boolean;
-  /** Stream liquidation events (`@forceOrder`). USD-M only. Default false. */
+  /** Stream per-symbol liquidation events (`@forceOrder`). USD-M only. Default false. */
   useForceOrder?: boolean;
+  /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). USD-M only. Default false. */
+  useGlobalForceOrder?: boolean;
+  /** Per-symbol mini ticker (`@miniTicker`). Default false. */
+  useMiniTicker?: boolean;
+  /** All-symbol ticker array (`!ticker@arr`). Default false. */
+  useGlobalTicker?: boolean;
+  /** All-symbol mini ticker array (`!miniTicker@arr`). Default false. */
+  useGlobalMiniTicker?: boolean;
+  /** All-symbol best bid/ask (`!bookTicker`). Default false. */
+  useGlobalBookTicker?: boolean;
+  /** Contract info stream (`!contractInfo`). USD-M only. Default false. */
+  useContractInfo?: boolean;
   /** Hours before scheduled reconnect (Binance enforces 24h max). Default 23. */
   reconnectAfterHours?: number;
   /** Override constructor for tests. */
@@ -142,7 +183,13 @@ export const buildStreamList = (opts: MultiplexOptions): string[] => {
     if (opts.useAggTrade) out.push(`${lower}@aggTrade`);
     if (opts.useMarkPrice && opts.product === 'usdm') out.push(`${lower}@markPrice@1s`);
     if (opts.useForceOrder && opts.product === 'usdm') out.push(`${lower}@forceOrder`);
+    if (opts.useMiniTicker) out.push(`${lower}@miniTicker`);
   }
+  if (opts.useGlobalForceOrder && opts.product === 'usdm') out.push('!forceOrder@arr');
+  if (opts.useGlobalTicker) out.push('!ticker@arr');
+  if (opts.useGlobalMiniTicker) out.push('!miniTicker@arr');
+  if (opts.useGlobalBookTicker) out.push('!bookTicker');
+  if (opts.useContractInfo && opts.product === 'usdm') out.push('!contractInfo');
   return out;
 }
 
@@ -317,7 +364,12 @@ export class BinanceMultiplexWs {
 
   private handle(msg: Record<string, unknown>, conn: RouteConnection): void {
     if (typeof msg.id === 'number' && (msg.result === null || Array.isArray(msg.result))) {
-      // sub/unsub ack or LIST_SUBSCRIPTIONS response
+      return;
+    }
+
+    // Global array streams (!ticker@arr, !miniTicker@arr) wrap payload as an array.
+    if (msg.stream && Array.isArray(msg.data)) {
+      this.handleArrayStream(msg.stream as string, msg.data as Record<string, unknown>[]);
       return;
     }
 
@@ -353,6 +405,14 @@ export class BinanceMultiplexWs {
     }
     if (evt === 'forceOrder') {
       this.dispatchForceOrder(data);
+      return;
+    }
+    if (evt === '24hrMiniTicker') {
+      this.dispatchMiniTicker(data);
+      return;
+    }
+    if (evt === 'contractInfo') {
+      this.dispatchContractInfo(data);
       return;
     }
     if (evt === 'listenKeyExpired') {
@@ -422,7 +482,8 @@ export class BinanceMultiplexWs {
     const symbol = String(data.s ?? '').toUpperCase();
     const markPrice = Number(data.p);
     if (!symbol || !Number.isFinite(markPrice)) return;
-    this.cb.onMarkPrice?.({ symbol, markPrice, eventTime: Number(data.E ?? Date.now()) });
+    const fundingRate = Number(data.r) || 0;
+    this.cb.onMarkPrice?.({ symbol, markPrice, eventTime: Number(data.E ?? Date.now()), fundingRate });
   }
 
   private dispatch24hrTicker(data: Record<string, unknown>): void {
@@ -490,6 +551,47 @@ export class BinanceMultiplexWs {
       lastUpdateId: Number(data.u),
       bids: (data.b as [string, string][]) ?? [],
       asks: (data.a as [string, string][]) ?? [],
+    });
+  }
+
+  private handleArrayStream(stream: string, items: Record<string, unknown>[]): void {
+    if (stream === '!ticker@arr') {
+      for (const item of items) this.dispatch24hrTicker(item);
+      return;
+    }
+    if (stream === '!miniTicker@arr') {
+      for (const item of items) this.dispatchMiniTicker(item);
+      return;
+    }
+  }
+
+  private dispatchMiniTicker(data: Record<string, unknown>): void {
+    const symbol = String(data.s ?? '').toUpperCase();
+    const close = Number(data.c);
+    if (!symbol || !Number.isFinite(close)) return;
+    this.cb.onMiniTicker?.({
+      symbol,
+      close,
+      open: Number(data.o) || 0,
+      high: Number(data.h) || 0,
+      low: Number(data.l) || 0,
+      volume: Number(data.v) || 0,
+      quoteVolume: Number(data.q) || 0,
+      eventTime: Number(data.E ?? Date.now()),
+    });
+  }
+
+  private dispatchContractInfo(data: Record<string, unknown>): void {
+    const symbol = String(data.s ?? '').toUpperCase();
+    if (!symbol) return;
+    this.cb.onContractInfo?.({
+      symbol,
+      pair: String(data.ps ?? ''),
+      contractType: String(data.ct ?? ''),
+      deliveryDate: Number(data.dt ?? 0),
+      onboardDate: Number(data.ot ?? 0),
+      contractStatus: String(data.cs ?? ''),
+      eventTime: Number(data.E ?? Date.now()),
     });
   }
 

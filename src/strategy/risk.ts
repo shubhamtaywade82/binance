@@ -25,13 +25,18 @@ export interface PnlResult {
 export class RiskManager {
   constructor(private readonly cfg: AppConfig) {}
 
-  sizePosition(entryPrice: number, stepSize = 0.001): SizeResult {
+  sizePosition(entryPrice: number, stepSize = 0.001, realizedVol?: number): SizeResult {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
       return { quantity: 0, notionalUsdt: 0, marginInr: 0, marginUsdt: 0 };
     }
-    // USDT-native path (preferred for Binance USDT-M Futures).
     const usdtCap = this.cfg.CAPITAL_PER_TRADE_USDT;
-    const marginUsdt = usdtCap > 0 ? usdtCap : this.cfg.CAPITAL_PER_TRADE_INR / this.cfg.INR_PER_USDT;
+    let marginUsdt = usdtCap > 0 ? usdtCap : this.cfg.CAPITAL_PER_TRADE_INR / this.cfg.INR_PER_USDT;
+
+    if (this.cfg.VOL_ADJUSTED_SIZING && realizedVol !== undefined && this.cfg.VOL_BASELINE > 0) {
+      const ratio = Math.min(Math.max(this.cfg.VOL_BASELINE / realizedVol, 0.5), 1.0);
+      marginUsdt *= ratio;
+    }
+
     const marginInr = marginUsdt * this.cfg.INR_PER_USDT;
     const notionalUsdt = marginUsdt * this.cfg.LEVERAGE;
     const rawQty = notionalUsdt / entryPrice;

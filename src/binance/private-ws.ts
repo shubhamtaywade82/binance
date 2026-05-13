@@ -98,10 +98,43 @@ export interface MarginCallEvent {
   p: Array<{ s: string; ps: string; pa: string; mt: string; iw: string; mp: string; up: string; mm: string }>;
 }
 
+export interface AccountConfigUpdate {
+  e: 'ACCOUNT_CONFIG_UPDATE';
+  E: number;
+  T: number;
+  /** Leverage change. Present when user changes leverage. */
+  ac?: { s: string; l: number };
+  /** Multi-assets margin change. Present when user toggles multi-assets mode. */
+  ai?: { j: boolean };
+}
+
+export interface TradeLiteEvent {
+  e: 'TRADE_LITE';
+  E: number;
+  T: number;
+  s: string;
+  q: string;
+  p: string;
+  m: boolean;
+  L: string;
+}
+
 export interface PrivateWsCallbacks {
   onOrderUpdate?: (event: OrderTradeUpdate) => void;
   onAccountUpdate?: (event: AccountUpdate) => void;
   onMarginCall?: (event: MarginCallEvent) => void;
+  /** User stream `ALGO_UPDATE` / `ALGO_ORDER_UPDATE` payloads (shape varies by Binance version). */
+  onAlgoOrderUpdate?: (event: Record<string, unknown>) => void;
+  /** TP/SL conditional trigger rejected by the engine. */
+  onConditionalOrderTriggerReject?: (event: Record<string, unknown>) => void;
+  /** Leverage or margin mode changed externally (e.g. via Binance app). */
+  onAccountConfigUpdate?: (event: AccountConfigUpdate) => void;
+  /** Lightweight fill notification (lower bandwidth than ORDER_TRADE_UPDATE). */
+  onTradeLite?: (event: TradeLiteEvent) => void;
+  /** Grid/strategy order state updates. */
+  onStrategyUpdate?: (event: Record<string, unknown>) => void;
+  /** Grid trading order events. */
+  onGridUpdate?: (event: Record<string, unknown>) => void;
   onListenKeyExpired?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
@@ -239,9 +272,54 @@ export class BinancePrivateWs {
       this.cb.onMarginCall?.(msg as unknown as MarginCallEvent);
       return;
     }
+    if (evt === 'ALGO_UPDATE' || evt === 'ALGO_ORDER_UPDATE') {
+      this.cb.onAlgoOrderUpdate?.(msg);
+      return;
+    }
+    if (evt === 'CONDITIONAL_ORDER_TRIGGER_REJECT') {
+      this.cb.onConditionalOrderTriggerReject?.(msg);
+      return;
+    }
+    if (evt === 'ACCOUNT_CONFIG_UPDATE') {
+      this.cb.onAccountConfigUpdate?.(msg as unknown as AccountConfigUpdate);
+      return;
+    }
+    if (evt === 'TRADE_LITE') {
+      this.cb.onTradeLite?.(msg as unknown as TradeLiteEvent);
+      return;
+    }
+    if (evt === 'STRATEGY_UPDATE') {
+      this.cb.onStrategyUpdate?.(msg);
+      return;
+    }
+    if (evt === 'GRID_UPDATE') {
+      this.cb.onGridUpdate?.(msg);
+      return;
+    }
     if (evt === 'listenKeyExpired') {
       this.cb.onListenKeyExpired?.();
-      void this.renewListenKey();
+      void this.handleListenKeyExpired();
+    }
+  }
+
+  private async handleListenKeyExpired(): Promise<void> {
+    if (this.closed) return;
+    try {
+      const old = this.listenKey;
+      this.listenKey = null;
+      if (old) {
+        try {
+          await deleteListenKey(this.opts.client, old);
+        } catch {
+          // Expired keys often reject delete — proceed with a fresh key.
+        }
+      }
+      this.listenKey = await createListenKey(this.opts.client);
+      this.closeSocket(1012, 'listen_key_expired');
+      this.connect();
+    } catch (e) {
+      this.cb.onError?.(e instanceof Error ? e : new Error(`listenKey rotate failed: ${e}`));
+      this.scheduleReconnect();
     }
   }
 

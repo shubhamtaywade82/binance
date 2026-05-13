@@ -204,8 +204,10 @@ export const AppConfigSchema = z.object({
   BINANCE_USE_AGGTRADE: boolFromString(true),
   BINANCE_USE_BOOKTICKER: boolFromString(true),
   BINANCE_USE_MARK_PRICE: boolFromString(true),
-  /** Stream liquidation orders (`@forceOrder`) for SMC liquidity sweep detection. USD-M only. */
+  /** Stream per-symbol liquidation orders (`@forceOrder`) for SMC liquidity sweep detection. USD-M only. */
   BINANCE_USE_FORCE_ORDER: boolFromString(false),
+  /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). Useful for cascade detection. USD-M only. */
+  BINANCE_USE_GLOBAL_FORCE_ORDER: boolFromString(false),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
 
   /**
@@ -216,16 +218,34 @@ export const AppConfigSchema = z.object({
   BINANCE_FUTURES_TESTNET: boolFromString(false),
 
   /**
-   * Binance HMAC-SHA256 REST trading credentials.
-   * Required when `BINANCE_EXECUTION_ADAPTER=true` (live orders via Binance FAPI).
-   * Enable Futures trading on the API key and restrict by IP for safety.
+   * Binance HMAC-SHA256 REST trading credentials — **mainnet**.
+   * Required when `BINANCE_EXECUTION_ADAPTER=true` and `BINANCE_FUTURES_TESTNET=false`.
+   * Enable Futures trading on the API key and restrict by IP before going live.
    */
   BINANCE_API_KEY: z.string().default(''),
   BINANCE_API_SECRET: z.string().default(''),
 
   /**
+   * Binance HMAC-SHA256 REST trading credentials — **testnet**.
+   * Required when `BINANCE_EXECUTION_ADAPTER=true` and `BINANCE_FUTURES_TESTNET=true`.
+   * Generate at https://testnet.binancefuture.com — these keys are completely separate
+   * from mainnet keys and will produce -2015 errors if used against mainnet endpoints.
+   */
+  BINANCE_TESTNET_API_KEY: z.string().default(''),
+  BINANCE_TESTNET_API_SECRET: z.string().default(''),
+
+  /**
+   * Safety interlock for mainnet live trading.
+   * Must be set to `true` (or `"true"`) when `EXECUTION_MODE=live`,
+   * `BINANCE_EXECUTION_ADAPTER=true`, and `BINANCE_FUTURES_TESTNET=false`.
+   * Prevents accidental real-money orders during development.
+   */
+  CONFIRMED_LIVE_TRADING: boolFromString(false),
+
+  /**
    * When true, live execution uses Binance FAPI directly (HMAC REST + private WS) instead of CoinDCX.
-   * Requires `BINANCE_API_KEY` + `BINANCE_API_SECRET`, `EXECUTION_MODE=live`, `READ_ONLY=false`.
+   * Requires matching API keys, `EXECUTION_MODE=live`, `READ_ONLY=false`.
+   * For mainnet also requires `CONFIRMED_LIVE_TRADING=true`.
    */
   BINANCE_EXECUTION_ADAPTER: boolFromString(false),
 
@@ -319,8 +339,74 @@ export const AppConfigSchema = z.object({
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(60).max(3600)),
 
+  /**
+   * Binance `POST /fapi/v1/countdownCancelAll` period (ms). Each tick renews the timer.
+   * 0 = disabled. Example: `120000` = cancel all open orders if renewals stop for 2 minutes.
+   */
+  BINANCE_DEADMAN_COUNTDOWN_MS: z
+    .string()
+    .optional()
+    .default('0')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      return Math.min(7 * 24 * 60 * 60 * 1000, n);
+    }),
+
+  /**
+   * Halt new entries and cancel open orders when USDT wallet balance falls this fraction
+   * below the session peak (0 = disabled). Peak is updated from `ACCOUNT_UPDATE` and startup `GET /fapi/v2/account`.
+   */
+  DAILY_DRAWDOWN_KILL_PCT: numFromString(0),
+
+  /**
+   * When > 0, pause new entries if `GET /fapi/v1/rateLimit/order` shows ORDER row `count/limit` ≥ this threshold (e.g. 0.92).
+   */
+  ORDER_RATE_LIMIT_PAUSE_THRESHOLD: numFromString(0),
+
+  /** Max bid-ask spread in bps to allow entry (0 = disabled). Rejects entries in wide-spread conditions. */
+  MAX_ENTRY_SPREAD_BPS: numFromString(0),
+
+  /** Max concurrent open positions across all symbols (0 = unlimited). */
+  MAX_OPEN_POSITIONS: numFromString(0),
+
+  /** Scale position size inversely with realized volatility. */
+  VOL_ADJUSTED_SIZING: boolFromString(false),
+  /** Baseline realized volatility (annualized %). Position scales down when rv > baseline. */
+  VOL_BASELINE: numFromString(0),
+
+  /** UTC hours allowed for new entries (e.g. "02:00-21:00"). Empty = no restriction. */
+  TRADING_HOURS_UTC: z.string().default(''),
+
+  /** Entry order type: MARKET (default) or LIMIT_GTX (post-only maker fill at microprice). */
+  ENTRY_ORDER_TYPE: z.string().default('MARKET'),
+  /** Trailing stop callback rate (%). 0 = use fixed SL instead. */
+  TRAILING_STOP_CALLBACK_RATE: numFromString(0),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
+
+  /**
+   * ioredis connection URL. When set, the bot publishes ticks, signals, and position events
+   * to Redis pub/sub channels and writes position/balance state to Redis keys.
+   * When absent (default), all Redis calls are silently skipped — the bot runs unchanged.
+   * Example: `redis://localhost:6379`
+   */
+  REDIS_URL: z.preprocess(emptyToUndefined, z.string().optional()),
+
+  /**
+   * HTTP port for the runtime control plane (`/runtime/config`, `/runtime/status`,
+   * `/runtime/kill`, `/runtime/unkill`). 0 = disabled. Default 4002.
+   * Binds to 127.0.0.1 only — not exposed externally unless you reverse-proxy it.
+   */
+  CONTROL_PORT: z
+    .string()
+    .default('4002')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
+      return n;
+    }),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -356,6 +442,24 @@ export const applyTradingAssetPreset = (cfg: AppConfig): AppConfig => {
 export const loadConfig = (): AppConfig => {
   const parsed = AppConfigSchema.parse(process.env);
   return applyTradingAssetPreset(parsed);
+}
+
+/**
+ * Returns the correct HMAC API key and secret for the active environment.
+ * Testnet and mainnet use completely separate key pairs — mixing them
+ * produces a -2015 Invalid API-key error from Binance.
+ */
+export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecret: string } => {
+  if (cfg.BINANCE_FUTURES_TESTNET) {
+    return {
+      apiKey: cfg.BINANCE_TESTNET_API_KEY.trim(),
+      apiSecret: cfg.BINANCE_TESTNET_API_SECRET.trim(),
+    };
+  }
+  return {
+    apiKey: cfg.BINANCE_API_KEY.trim(),
+    apiSecret: cfg.BINANCE_API_SECRET.trim(),
+  };
 }
 
 export const binanceRestBase = (cfg: AppConfig): string => {

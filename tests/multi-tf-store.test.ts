@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MultiTimeframeStore } from '../src/binance/multi-tf-store';
 import type { Candle } from '../src/types';
 
-const c = (t: number, close = 1): Candle => ({
+const c = (t: number, close = 1, high?: number, low?: number): Candle => ({
   openTime: t,
   open: close,
-  high: close,
-  low: close,
+  high: high ?? close,
+  low: low ?? close,
   close,
   volume: 1,
 });
@@ -55,5 +55,58 @@ describe('MultiTimeframeStore', () => {
     const out = s.getSeries('X', '1m');
     expect(out.map((x) => x.openTime)).toEqual([500, 2000, 3000]);
     expect(out.find((x) => x.openTime === 2000)!.close).toBe(2);
+  });
+
+  it('validateAgainstRest detects mismatched and missing bars', () => {
+    const s = new MultiTimeframeStore();
+    s.seed('X', '1m', [c(1000, 10), c(2000, 20), c(3000, 30)]);
+    const restBars = [
+      c(1000, 10),
+      c(2000, 25),
+      c(4000, 40),
+    ];
+    const { mismatched, missing } = s.validateAgainstRest('X', '1m', restBars);
+    expect(mismatched).toEqual([2000]);
+    expect(missing).toEqual([4000]);
+  });
+
+  it('validateAgainstRest returns empty when store matches REST', () => {
+    const s = new MultiTimeframeStore();
+    s.seed('X', '1m', [c(1000, 10), c(2000, 20)]);
+    const { mismatched, missing } = s.validateAgainstRest('X', '1m', [c(1000, 10), c(2000, 20)]);
+    expect(mismatched).toEqual([]);
+    expect(missing).toEqual([]);
+  });
+
+  it('reseedTail replaces tail while keeping older history', () => {
+    const s = new MultiTimeframeStore();
+    s.seed('X', '1m', [c(1000, 1), c(2000, 2), c(3000, 3), c(4000, 4)]);
+    s.reseedTail('X', '1m', [c(3000, 33), c(4000, 44), c(5000, 55)]);
+    const out = s.getSeries('X', '1m');
+    expect(out.map((x) => x.openTime)).toEqual([1000, 2000, 3000, 4000, 5000]);
+    expect(out.find((x) => x.openTime === 3000)!.close).toBe(33);
+    expect(out.find((x) => x.openTime === 1000)!.close).toBe(1);
+  });
+
+  it('fires onAnomalousBar when incoming range exceeds 8x median', () => {
+    const spy = vi.fn();
+    const s = new MultiTimeframeStore({ onAnomalousBar: spy });
+    const bars: Candle[] = [];
+    for (let i = 0; i < 25; i++) bars.push(c(i * 60_000, 100, 100.1, 99.9));
+    s.seed('X', '1m', bars);
+    s.applyKline('X', '1m', c(25 * 60_000, 100, 102, 98), false);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('X');
+    expect(spy.mock.calls[0][1]).toBe('1m');
+  });
+
+  it('does not fire onAnomalousBar for normal range bars', () => {
+    const spy = vi.fn();
+    const s = new MultiTimeframeStore({ onAnomalousBar: spy });
+    const bars: Candle[] = [];
+    for (let i = 0; i < 25; i++) bars.push(c(i * 60_000, 100, 100.1, 99.9));
+    s.seed('X', '1m', bars);
+    s.applyKline('X', '1m', c(25 * 60_000, 100, 100.15, 99.85), false);
+    expect(spy).not.toHaveBeenCalled();
   });
 });

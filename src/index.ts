@@ -1,3 +1,4 @@
+import Redis from 'ioredis';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
@@ -9,9 +10,12 @@ import { Lifecycle } from './lifecycle';
 import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
 import { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
 import type { InstrumentPrecision } from './mapping/precision';
+import { ControlHttpServer } from './control/http-server';
+import { getRedisClient, closeRedisClient } from './services/redis';
 
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
+let controlServer: ControlHttpServer | null = null;
 
 const main = async (): Promise<void> => {
   const cfg = loadConfig();
@@ -29,7 +33,21 @@ const main = async (): Promise<void> => {
   });
 
   if (cfg.DASHBOARD_ENABLED) {
-    const store = new MultiTimeframeStore({ maxBars: cfg.DASHBOARD_STORE_MAX_BARS });
+    const store = new MultiTimeframeStore({
+      maxBars: cfg.DASHBOARD_STORE_MAX_BARS,
+      onAnomalousBar: (symbol, tf, candle, medianRange) => {
+        log.warn('anomalous_candle', {
+          symbol,
+          tf,
+          openTime: new Date(candle.openTime).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          range: Math.abs(candle.high - candle.low),
+          medianRange,
+          ratio: medianRange > 0 ? (Math.abs(candle.high - candle.low) / medianRange).toFixed(1) : '∞',
+        });
+      },
+    });
     const orderbook = new LocalOrderBook();
     const tradeTape = new AggTradeTape(1000);
     const precisionBySymbol = new Map<string, InstrumentPrecision>();
@@ -73,10 +91,36 @@ const main = async (): Promise<void> => {
     lifecycle.register('dashboard', () => dashboardBridge!.stop(), { timeoutMs: 3000 });
   }
 
+  // ── Runtime control plane ───────────────────────────────────────────────
+  const router = orch.getRouter();
+  if (router && cfg.CONTROL_PORT > 0) {
+    const redis = getRedisClient(cfg.REDIS_URL);
+    controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition());
+
+    // Subscribe to Redis pub/sub config changes (separate connection required for sub mode).
+    if (cfg.REDIS_URL) {
+      const redisSub = new Redis(cfg.REDIS_URL, {
+        enableOfflineQueue: false,
+        maxRetriesPerRequest: 3,
+      });
+      redisSub.on('error', (err: Error) => {
+        process.stderr.write(`redis_sub_error ${(err as Error).message}\n`);
+      });
+      controlServer.watchRedisConfigChanges(redisSub);
+    }
+
+    lifecycle.register('control_http', () => controlServer!.stop(), { timeoutMs: 3000 });
+    lifecycle.register('redis', () => closeRedisClient(), { timeoutMs: 2000 });
+  }
+
   try {
     await orch.start();
     if (dashboardBridge) {
       await dashboardBridge.listen();
+    }
+    if (controlServer) {
+      await controlServer.listen(cfg.CONTROL_PORT);
+      log.info('control_server_started', { port: cfg.CONTROL_PORT });
     }
   } catch (err) {
     log.warn('startup_failed', { err: (err as Error).message });
@@ -89,21 +133,18 @@ const main = async (): Promise<void> => {
 
 main().catch(async (err) => {
   process.stderr.write(String(err instanceof Error ? err.stack ?? err.message : err) + '\n');
+  if (controlServer) {
+    try { await controlServer.stop(); } catch { /* ignore */ }
+    controlServer = null;
+  }
   if (dashboardBridge) {
-    try {
-      await dashboardBridge.stop();
-    } catch {
-      /* ignore */
-    }
+    try { await dashboardBridge.stop(); } catch { /* ignore */ }
     dashboardBridge = null;
   }
   if (orch) {
-    try {
-      orch.stop();
-    } catch {
-      // ignore secondary failures during crash shutdown
-    }
+    try { orch.stop(); } catch { /* ignore */ }
     orch = null;
   }
+  await closeRedisClient();
   process.exit(1);
 });

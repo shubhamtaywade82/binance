@@ -4,7 +4,7 @@ import type { AppConfig } from '../config';
 import type { InstrumentPrecision } from '../mapping/precision';
 import type { CloseReason, Position, Side, TrendBias } from '../types';
 import type { RiskManager } from './risk';
-import type { ExecutionAdapter } from '../execution/types';
+import type { ExecutionAdapter, TradeAttribution } from '../execution/types';
 
 export interface PositionLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -20,6 +20,7 @@ export interface CloseEvent {
 
 export class PositionManager {
   private current: (Position & { orderId: string }) | null = null;
+  private currentAttribution: TradeAttribution | undefined;
   /** Prevents concurrent close attempts for the same position. */
   private closingInProgress = false;
   private placeOrderDisabledLogged = false;
@@ -39,7 +40,11 @@ export class PositionManager {
     return this.current !== null;
   }
 
-  async open(side: Side, price: number, precision: InstrumentPrecision, pair: string): Promise<Position | null> {
+  openCount(): number {
+    return this.current !== null ? 1 : 0;
+  }
+
+  async open(side: Side, price: number, precision: InstrumentPrecision, pair: string, attribution?: TradeAttribution): Promise<Position | null> {
     if (!this.cfg.PLACE_ORDER) {
       if (!this.placeOrderDisabledLogged) {
         this.placeOrderDisabledLogged = true;
@@ -87,9 +92,11 @@ export class PositionManager {
       orderId: result.orderId,
     };
     this.current = pos;
+    this.currentAttribution = attribution;
     this.log.info(this.adapter.name === 'live' ? 'live_open' : 'paper_open', {
       side, price: pos.entryPrice, qty: pos.quantity, tp: takeProfit, sl: stopLoss, pair,
       orderId: result.orderId,
+      ...(attribution ?? {}),
     });
     return pos;
   }
@@ -211,9 +218,10 @@ export class PositionManager {
       const dir = path.dirname(csvPath);
       if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const headers =
-        'time,side,entry,exit,qty,reason,grossUsdt,netUsdt,netInr,pctOnMargin\n';
+        'time,side,entry,exit,qty,reason,grossUsdt,netUsdt,netInr,pctOnMargin,entrySignal,smcZone,htfBias,confidence\n';
       if (!fs.existsSync(csvPath)) fs.writeFileSync(csvPath, headers);
       const { position: p, exitPrice, reason, pnl } = event;
+      const a = this.currentAttribution;
       const row = [
         new Date().toISOString(),
         p.side,
@@ -225,8 +233,13 @@ export class PositionManager {
         pnl.netUsdt.toFixed(6),
         pnl.netInr.toFixed(2),
         pnl.pctOnMargin.toFixed(6),
+        a?.entrySignal ?? '',
+        a?.smcZone ?? '',
+        a?.htfBias ?? '',
+        a?.confidence?.toFixed(2) ?? '',
       ].join(',') + '\n';
       fs.appendFileSync(csvPath, row);
+      this.currentAttribution = undefined;
     } catch (e) {
       this.log.warn('csv_write_failed', { err: (e as Error).message });
     }

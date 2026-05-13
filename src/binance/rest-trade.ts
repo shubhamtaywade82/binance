@@ -190,6 +190,35 @@ export const placeOrder = async (client: BinanceRestClient, params: PlaceOrderPa
   return client.signedPost<OrderResult>('/fapi/v1/order', body);
 }
 
+// ─── Modify Order ────────────────────────────────────────────────────────
+
+export interface ModifyOrderParams {
+  symbol: string;
+  orderId: number;
+  side: OrderSide;
+  quantity: number;
+  price: number;
+  /** Defaults to MARK_PRICE for futures. */
+  priceMatch?: 'OPPONENT' | 'OPPONENT_5' | 'OPPONENT_10' | 'OPPONENT_20' | 'QUEUE' | 'QUEUE_5' | 'QUEUE_10' | 'QUEUE_20' | 'NONE';
+}
+
+/**
+ * Amend an open LIMIT/STOP/TAKE_PROFIT order in-place without cancel+resubmit.
+ * Only `quantity` and `price` can be changed; side and type are immutable.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Modify-Order
+ */
+export const modifyOrder = async (client: BinanceRestClient, params: ModifyOrderParams): Promise<OrderResult> => {
+  const body: Record<string, string | number> = {
+    symbol: params.symbol.toUpperCase(),
+    orderId: params.orderId,
+    side: params.side,
+    quantity: params.quantity,
+    price: params.price,
+  };
+  if (params.priceMatch !== undefined) body.priceMatch = params.priceMatch;
+  return client.signedPut<OrderResult>('/fapi/v1/order', body);
+};
+
 export const cancelOrder = async (client: BinanceRestClient, symbol: string, orderId: number): Promise<OrderResult> => {
   return client.signedDelete<OrderResult>('/fapi/v1/order', {
     symbol: symbol.toUpperCase(),
@@ -216,27 +245,70 @@ export const getOrder = async (client: BinanceRestClient, symbol: string, orderI
 
 // ─── Batch Orders ──────────────────────────────────────────────────────────
 
+const serializeOrderParams = (p: PlaceOrderParams): Record<string, string | number | boolean> => {
+  const o: Record<string, string | number | boolean> = {
+    symbol: p.symbol.toUpperCase(),
+    side: p.side,
+    type: p.type,
+    newOrderRespType: p.newOrderRespType ?? 'RESULT',
+  };
+  if (p.quantity !== undefined) o.quantity = p.quantity;
+  if (p.price !== undefined) o.price = p.price;
+  if (p.stopPrice !== undefined) o.stopPrice = p.stopPrice;
+  if (p.callbackRate !== undefined) o.callbackRate = p.callbackRate;
+  if (p.timeInForce !== undefined) o.timeInForce = p.timeInForce;
+  if (p.workingType !== undefined) o.workingType = p.workingType;
+  if (p.positionSide !== undefined) o.positionSide = p.positionSide;
+  if (p.reduceOnly !== undefined) o.reduceOnly = p.reduceOnly;
+  if (p.closePosition !== undefined) o.closePosition = p.closePosition;
+  if (p.newClientOrderId !== undefined) o.newClientOrderId = p.newClientOrderId;
+  if (p.activationPrice !== undefined) o.activationPrice = p.activationPrice;
+  return o;
+};
+
+/** Place up to 5 orders atomically. All succeed or all fail. */
 export const placeBatchOrders = async (client: BinanceRestClient, orders: PlaceOrderParams[]): Promise<OrderResult[]> => {
-  const batchOrders = orders.map((p) => {
-    const o: Record<string, string | number | boolean> = {
-      symbol: p.symbol.toUpperCase(),
-      side: p.side,
-      type: p.type,
-      newOrderRespType: p.newOrderRespType ?? 'RESULT',
-    };
-    if (p.quantity !== undefined) o.quantity = p.quantity;
-    if (p.price !== undefined) o.price = p.price;
-    if (p.stopPrice !== undefined) o.stopPrice = p.stopPrice;
-    if (p.timeInForce !== undefined) o.timeInForce = p.timeInForce;
-    if (p.workingType !== undefined) o.workingType = p.workingType;
-    if (p.reduceOnly !== undefined) o.reduceOnly = p.reduceOnly;
-    if (p.closePosition !== undefined) o.closePosition = p.closePosition;
-    return o;
-  });
   return client.signedPost<OrderResult[]>('/fapi/v1/batchOrders', {
-    batchOrders: JSON.stringify(batchOrders),
+    batchOrders: JSON.stringify(orders.map(serializeOrderParams)),
   });
+};
+
+export interface ModifyBatchOrderParams {
+  symbol: string;
+  orderId: number;
+  side: OrderSide;
+  quantity: number;
+  price: number;
 }
+
+/** Modify up to 5 orders atomically. */
+export const modifyBatchOrders = async (
+  client: BinanceRestClient,
+  orders: ModifyBatchOrderParams[],
+): Promise<OrderResult[]> => {
+  const batch = orders.map((o) => ({
+    symbol: o.symbol.toUpperCase(),
+    orderId: o.orderId,
+    side: o.side,
+    quantity: o.quantity,
+    price: o.price,
+  }));
+  return client.signedPut<OrderResult[]>('/fapi/v1/batchOrders', {
+    batchOrders: JSON.stringify(batch),
+  });
+};
+
+/** Cancel up to 10 orders by orderId list. */
+export const cancelBatchOrders = async (
+  client: BinanceRestClient,
+  symbol: string,
+  orderIdList: number[],
+): Promise<OrderResult[]> => {
+  return client.signedDelete<OrderResult[]>('/fapi/v1/batchOrders', {
+    symbol: symbol.toUpperCase(),
+    orderIdList: JSON.stringify(orderIdList),
+  });
+};
 
 // ─── Algo Orders (Dec 2025 migration: STOP_MARKET / TAKE_PROFIT_MARKET / TRAILING) ──────────
 
@@ -320,6 +392,490 @@ export const getOpenAlgoOrders = async (client: BinanceRestClient, symbol?: stri
   const res = await client.signedGet<AlgoOrderListResponse>('/fapi/v1/openAlgoOrders', params);
   return res.orders ?? [];
 }
+
+// ─── Commission Rate ──────────────────────────────────────────────────────
+
+export interface CommissionRate {
+  symbol: string;
+  makerCommissionRate: string;
+  takerCommissionRate: string;
+}
+
+/**
+ * Fetch actual maker/taker commission rate for a symbol.
+ * Replaces hardcoded fee constants with real user-specific rates.
+ */
+export const getCommissionRate = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<CommissionRate> => {
+  return client.signedGet<CommissionRate>('/fapi/v1/commissionRate', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
+// ─── Position mode (hedge vs one-way) ─────────────────────────────────────
+
+export interface PositionSideDualResponse {
+  dualSidePosition: boolean;
+}
+
+export const getPositionSideDual = async (client: BinanceRestClient): Promise<PositionSideDualResponse> => {
+  return client.signedGet<PositionSideDualResponse>('/fapi/v1/positionSide/dual');
+}
+
+// ─── Leverage Brackets (notional tiers) ──────────────────────────────────
+
+export interface LeverageBracketTier {
+  bracket: number;
+  initialLeverage: number;
+  notionalCap: number;
+  notionalFloor: number;
+  maintMarginRatio: number;
+  cum: number;
+}
+
+export interface SymbolLeverageBracket {
+  symbol: string;
+  notionalCoef?: number;
+  brackets: LeverageBracketTier[];
+}
+
+/** Fetch leverage bracket tiers for one symbol or all symbols. */
+export const getLeverageBracket = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<SymbolLeverageBracket[]> => {
+  const params: Record<string, string> = {};
+  if (symbol) params.symbol = symbol.toUpperCase();
+  const raw = await client.signedGet<SymbolLeverageBracket | SymbolLeverageBracket[]>(
+    '/fapi/v1/leverageBracket',
+    params,
+  );
+  return Array.isArray(raw) ? raw : [raw];
+};
+
+/**
+ * Find the bracket tier that applies for a given notional value.
+ * Returns the tier whose `notionalFloor <= notional < notionalCap`.
+ */
+export const bracketForNotional = (
+  brackets: LeverageBracketTier[],
+  notional: number,
+): LeverageBracketTier | null => {
+  const sorted = [...brackets].sort((a, b) => a.notionalFloor - b.notionalFloor);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (notional >= sorted[i].notionalFloor) return sorted[i];
+  }
+  return sorted[0] ?? null;
+};
+
+/**
+ * Check whether a proposed position notional exceeds the max allowed for
+ * the requested leverage. Returns `{ ok, maxNotional, maxLeverage, tier }`.
+ */
+export const validateNotionalAgainstBracket = (
+  brackets: LeverageBracketTier[],
+  notional: number,
+  requestedLeverage: number,
+): { ok: boolean; maxNotional: number; maxLeverage: number; tier: LeverageBracketTier | null } => {
+  const tier = bracketForNotional(brackets, notional);
+  if (!tier) return { ok: false, maxNotional: 0, maxLeverage: 0, tier: null };
+  const ok = requestedLeverage <= tier.initialLeverage && notional <= tier.notionalCap;
+  return { ok, maxNotional: tier.notionalCap, maxLeverage: tier.initialLeverage, tier };
+};
+
+// ─── User trades (fills / reconciliation) ───────────────────────────────────
+
+export interface UserTradeRow {
+  buyer: boolean;
+  commission: string;
+  commissionAsset: string;
+  id: number;
+  maker: boolean;
+  orderId: number;
+  price: string;
+  qty: string;
+  quoteQty: string;
+  realizedPnl: string;
+  side: string;
+  positionSide: string;
+  symbol: string;
+  time: number;
+}
+
+export const getUserTrades = async (
+  client: BinanceRestClient,
+  params: {
+    symbol: string;
+    orderId?: number;
+    startTime?: number;
+    endTime?: number;
+    fromId?: number;
+    limit?: number;
+  },
+): Promise<UserTradeRow[]> => {
+  const q: Record<string, string | number> = { symbol: params.symbol.toUpperCase() };
+  if (params.orderId !== undefined) q.orderId = params.orderId;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.fromId !== undefined) q.fromId = params.fromId;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<UserTradeRow[]>('/fapi/v1/userTrades', q);
+}
+
+// ─── Order rate limits (REST quota snapshot) ──────────────────────────────
+
+export interface OrderRateLimitRow {
+  rateLimitType: string;
+  interval: string;
+  intervalNum: number;
+  limit: number;
+  count: number;
+}
+
+export const getOrderRateLimit = async (client: BinanceRestClient): Promise<OrderRateLimitRow[]> => {
+  return client.signedGet<OrderRateLimitRow[]>('/fapi/v1/rateLimit/order');
+}
+
+// ─── Dead-man auto-cancel all (countdown) ─────────────────────────────────
+
+export interface CountdownCancelAllResponse {
+  symbol?: string;
+  countdownTime: string;
+}
+
+/**
+ * Reset the exchange-side dead-man timer. Each call extends the countdown.
+ * `countdownTime` in ms; use `0` to cancel the timer without closing orders.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Auto-Cancel-All-Open-Orders
+ */
+export const setCountdownCancelAll = async (
+  client: BinanceRestClient,
+  params: { symbol?: string; countdownTime: number },
+): Promise<CountdownCancelAllResponse> => {
+  const body: Record<string, string | number> = { countdownTime: params.countdownTime };
+  if (params.symbol) body.symbol = params.symbol.toUpperCase();
+  return client.signedPost<CountdownCancelAllResponse>('/fapi/v1/countdownCancelAll', body);
+}
+
+// ─── Income History (realized PnL, fees, funding) ────────────────────────
+
+export type IncomeType =
+  | 'TRANSFER'
+  | 'WELCOME_BONUS'
+  | 'REALIZED_PNL'
+  | 'FUNDING_FEE'
+  | 'COMMISSION'
+  | 'INSURANCE_CLEAR'
+  | 'REFERRAL_KICKBACK'
+  | 'COMMISSION_REBATE'
+  | 'API_REBATE'
+  | 'CONTEST_REWARD'
+  | 'CROSS_COLLATERAL_TRANSFER'
+  | 'OPTIONS_PREMIUM_FEE'
+  | 'OPTIONS_SETTLE_PROFIT'
+  | 'INTERNAL_TRANSFER'
+  | 'AUTO_EXCHANGE'
+  | 'DELIVERED_SETTELMENT'
+  | 'COIN_SWAP_DEPOSIT'
+  | 'COIN_SWAP_WITHDRAW'
+  | 'POSITION_LIMIT_INCREASE_FEE';
+
+export interface IncomeRow {
+  symbol: string;
+  incomeType: IncomeType;
+  income: string;
+  asset: string;
+  info: string;
+  time: number;
+  tranId: number;
+  tradeId: string;
+}
+
+export interface GetIncomeParams {
+  symbol?: string;
+  incomeType?: IncomeType;
+  startTime?: number;
+  endTime?: number;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Fetch income history: realized PnL, funding fees, commissions, transfers, etc.
+ * Max 1000 rows per call. Use `startTime`/`endTime` for pagination.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Get-Income-History
+ */
+export const getIncomeHistory = async (
+  client: BinanceRestClient,
+  params: GetIncomeParams = {},
+): Promise<IncomeRow[]> => {
+  const q: Record<string, string | number> = {};
+  if (params.symbol) q.symbol = params.symbol.toUpperCase();
+  if (params.incomeType) q.incomeType = params.incomeType;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.page !== undefined) q.page = params.page;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<IncomeRow[]>('/fapi/v1/income', q);
+};
+
+// ─── Open Interest ─────────────────────────────────────────────────────────
+
+export interface OpenInterestResponse {
+  symbol: string;
+  openInterest: string;
+  time: number;
+}
+
+/** Current open interest for a symbol. Poll every 5–10 s for OI delta signals. */
+export const getOpenInterest = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<OpenInterestResponse> => {
+  return client.publicGet<OpenInterestResponse>('/fapi/v1/openInterest', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
+export interface OpenInterestHistRow {
+  symbol: string;
+  sumOpenInterest: string;
+  sumOpenInterestValue: string;
+  timestamp: number;
+}
+
+export type OiHistPeriod = '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '12h' | '1d';
+
+/**
+ * Historical OI statistics — 5m to 1d intervals.
+ * Public endpoint (no signature needed), max 500 rows.
+ */
+export const getOpenInterestHist = async (
+  client: BinanceRestClient,
+  params: { symbol: string; period: OiHistPeriod; limit?: number; startTime?: number; endTime?: number },
+): Promise<OpenInterestHistRow[]> => {
+  const q: Record<string, string | number> = {
+    symbol: params.symbol.toUpperCase(),
+    period: params.period,
+  };
+  if (params.limit !== undefined) q.limit = params.limit;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  return client.publicGet<OpenInterestHistRow[]>('/futures/data/openInterestHist', q);
+};
+
+// ─── Funding Rate ──────────────────────────────────────────────────────────
+
+export interface FundingRateRow {
+  symbol: string;
+  fundingRate: string;
+  fundingTime: number;
+  markPrice: string;
+}
+
+/**
+ * Funding rate history. Max 1000 rows per call.
+ * Use `startTime`/`endTime` for pagination.
+ */
+export const getFundingRateHistory = async (
+  client: BinanceRestClient,
+  params: { symbol?: string; startTime?: number; endTime?: number; limit?: number } = {},
+): Promise<FundingRateRow[]> => {
+  const q: Record<string, string | number> = {};
+  if (params.symbol) q.symbol = params.symbol.toUpperCase();
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.publicGet<FundingRateRow[]>('/fapi/v1/fundingRate', q);
+};
+
+// ─── Full Order History ────────────────────────────────────────────────────
+
+export interface GetAllOrdersParams {
+  symbol: string;
+  orderId?: number;
+  startTime?: number;
+  endTime?: number;
+  limit?: number;
+}
+
+export const getAllOrders = async (
+  client: BinanceRestClient,
+  params: GetAllOrdersParams,
+): Promise<OrderResult[]> => {
+  const q: Record<string, string | number> = { symbol: params.symbol.toUpperCase() };
+  if (params.orderId !== undefined) q.orderId = params.orderId;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<OrderResult[]>('/fapi/v1/allOrders', q);
+};
+
+// ─── Query Algo Order ──────────────────────────────────────────────────────
+
+export const getAlgoOrder = async (
+  client: BinanceRestClient,
+  symbol: string,
+  algoId: number,
+): Promise<AlgoOrderResult> => {
+  return client.signedGet<AlgoOrderResult>('/fapi/v1/algoOrder', {
+    symbol: symbol.toUpperCase(),
+    algoId,
+  });
+};
+
+// ─── Test New Order ────────────────────────────────────────────────────────
+
+export const testNewOrder = async (
+  client: BinanceRestClient,
+  params: PlaceOrderParams,
+): Promise<Record<string, unknown>> => {
+  const body: Record<string, string | number | boolean> = {
+    symbol: params.symbol.toUpperCase(),
+    side: params.side,
+    type: params.type,
+  };
+  if (params.quantity !== undefined) body.quantity = params.quantity;
+  if (params.price !== undefined) body.price = params.price;
+  if (params.stopPrice !== undefined) body.stopPrice = params.stopPrice;
+  if (params.timeInForce) body.timeInForce = params.timeInForce;
+  if (params.reduceOnly !== undefined) body.reduceOnly = params.reduceOnly;
+  if (params.positionSide) body.positionSide = params.positionSide;
+  if (params.newClientOrderId) body.newClientOrderId = params.newClientOrderId;
+  if (params.workingType) body.workingType = params.workingType;
+  if (params.newOrderRespType) body.newOrderRespType = params.newOrderRespType;
+  return client.signedPost<Record<string, unknown>>('/fapi/v1/order/test', body);
+};
+
+// ─── Account Configuration ─────────────────────────────────────────────────
+
+export interface AccountConfig {
+  feeTier: number;
+  canTrade: boolean;
+  canDeposit: boolean;
+  canWithdraw: boolean;
+  dualSidePosition: boolean;
+  multiAssetsMargin: boolean;
+}
+
+export const getAccountConfig = async (client: BinanceRestClient): Promise<AccountConfig> => {
+  return client.signedGet<AccountConfig>('/fapi/v1/accountConfig');
+};
+
+// ─── Symbol Configuration ──────────────────────────────────────────────────
+
+export interface SymbolConfig {
+  symbol: string;
+  marginType: string;
+  isAutoAddMargin: boolean;
+  leverage: number;
+  maxNotionalValue: string;
+}
+
+export const getSymbolConfig = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<SymbolConfig[]> => {
+  return client.signedGet<SymbolConfig[]>('/fapi/v1/symbolConfig', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
+// ─── REST Best Bid/Ask (bookTicker) ────────────────────────────────────────
+
+export interface BookTickerResponse {
+  symbol: string;
+  bidPrice: string;
+  bidQty: string;
+  askPrice: string;
+  askQty: string;
+  time: number;
+}
+
+export const getBookTicker = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<BookTickerResponse | BookTickerResponse[]> => {
+  const q: Record<string, string> = {};
+  if (symbol) q.symbol = symbol.toUpperCase();
+  return client.publicGet<BookTickerResponse | BookTickerResponse[]>('/fapi/v1/ticker/bookTicker', q);
+};
+
+// ─── 24hr Ticker Statistics ────────────────────────────────────────────────
+
+export interface Ticker24hrResponse {
+  symbol: string;
+  priceChange: string;
+  priceChangePercent: string;
+  weightedAvgPrice: string;
+  lastPrice: string;
+  lastQty: string;
+  openPrice: string;
+  highPrice: string;
+  lowPrice: string;
+  volume: string;
+  quoteVolume: string;
+  openTime: number;
+  closeTime: number;
+  count: number;
+}
+
+export const getTicker24hr = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<Ticker24hrResponse | Ticker24hrResponse[]> => {
+  const q: Record<string, string> = {};
+  if (symbol) q.symbol = symbol.toUpperCase();
+  return client.publicGet<Ticker24hrResponse | Ticker24hrResponse[]>('/fapi/v1/ticker/24hr', q);
+};
+
+// ─── Multi-Assets Margin Mode ──────────────────────────────────────────────
+
+export interface MultiAssetsMarginResponse {
+  multiAssetsMargin: boolean;
+}
+
+export const getMultiAssetsMargin = async (
+  client: BinanceRestClient,
+): Promise<MultiAssetsMarginResponse> => {
+  return client.signedGet<MultiAssetsMarginResponse>('/fapi/v1/multiAssetsMargin');
+};
+
+// ─── Recent Trades ─────────────────────────────────────────────────────────
+
+export interface RecentTrade {
+  id: number;
+  price: string;
+  qty: string;
+  quoteQty: string;
+  time: number;
+  isBuyerMaker: boolean;
+}
+
+export const getRecentTrades = async (
+  client: BinanceRestClient,
+  symbol: string,
+  limit?: number,
+): Promise<RecentTrade[]> => {
+  const q: Record<string, string | number> = { symbol: symbol.toUpperCase() };
+  if (limit !== undefined) q.limit = limit;
+  return client.publicGet<RecentTrade[]>('/fapi/v1/trades', q);
+};
+
+// ─── Historical Trades ─────────────────────────────────────────────────────
+
+export const getHistoricalTrades = async (
+  client: BinanceRestClient,
+  symbol: string,
+  params?: { limit?: number; fromId?: number },
+): Promise<RecentTrade[]> => {
+  const q: Record<string, string | number> = { symbol: symbol.toUpperCase() };
+  if (params?.limit !== undefined) q.limit = params.limit;
+  if (params?.fromId !== undefined) q.fromId = params.fromId;
+  return client.publicGet<RecentTrade[]>('/fapi/v1/historicalTrades', q);
+};
 
 // ─── Server Time ───────────────────────────────────────────────────────────
 

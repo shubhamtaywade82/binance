@@ -505,6 +505,13 @@ const initSidebarTabs = () => {
   });
 }
 
+// ─── Force Resync ─────────────────────────────────────────────────────────
+const requestForceResync = () => {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  console.info('[resync] requesting full candle resync from server…');
+  ws.send(JSON.stringify({ type: 'force_resync' }));
+};
+
 // ─── Init ─────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   obMgr.init();
@@ -529,5 +536,30 @@ window.addEventListener('DOMContentLoaded', () => {
       ws.send(JSON.stringify({ type: 'load_history', tf, oldestOpenTime }));
     }
   });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.shiftKey && e.key === 'R') {
+      e.preventDefault();
+      requestForceResync();
+    }
+  });
+
+  window.__chart = {
+    manager: chart,
+    candleMap: () => chart.candleMap,
+    currentTf: () => chart.currentTf,
+    dumpBar: (tf, openTimeMs) => {
+      const arr = chart.candleMap[tf];
+      if (!arr?.length) return null;
+      return arr.find((c) => c.openTime === openTimeMs) ?? null;
+    },
+    dumpTail: (tf, n = 5) => {
+      const arr = chart.candleMap[tf];
+      if (!arr?.length) return [];
+      return arr.slice(-n);
+    },
+    resync: requestForceResync,
+  };
+
   connect();
 });

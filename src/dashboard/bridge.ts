@@ -6,7 +6,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AppConfig } from '../config';
 import { multiplexBinanceSymbols, ollamaApiUrl } from '../config';
-import type { AggTradeEvent, BookTickerEvent, DepthPartialEvent, MultiplexCallbacks } from '../binance/ws-multiplex';
+import type { AggTradeEvent, BookTickerEvent, DepthPartialEvent, ForceOrderEvent, MultiplexCallbacks } from '../binance/ws-multiplex';
 import type { MultiTimeframeStore } from '../binance/multi-tf-store';
 import type { LocalOrderBook, DepthDiff } from '../binance/orderbook';
 import type { AggTradeTape } from '../binance/trade-tape';
@@ -27,6 +27,7 @@ import {
 } from '../ai/supertrend-tune';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
+import { snapshotMicrostructure } from '../binance/microstructure';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -158,6 +159,74 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let signalsTimer: ReturnType<typeof setInterval> | null = null;
+  let validationTimer: ReturnType<typeof setInterval> | null = null;
+
+  const VALIDATION_INTERVAL_MS = 5 * 60_000;
+  const VALIDATION_DEPTH = 60;
+
+  const validateAndResyncTf = async (sym: string, tf: string): Promise<boolean> => {
+    try {
+      const fresh = await fetchBinanceKlines(cfg, { symbol: sym, interval: tf, limit: VALIDATION_DEPTH });
+      if (!fresh.length) return false;
+      const { mismatched, missing } = store.validateAgainstRest(sym, tf, fresh);
+      if (mismatched.length === 0 && missing.length === 0) return false;
+      log.warn('candle_store_drift', {
+        symbol: sym,
+        tf,
+        mismatched: mismatched.length,
+        missing: missing.length,
+        mismatchedTimes: mismatched.slice(0, 3).map((t) => new Date(t).toISOString()),
+      });
+      store.reseedTail(sym, tf, fresh);
+      return true;
+    } catch (e) {
+      log.warn('candle_validation_failed', { symbol: sym, tf, err: (e as Error).message });
+      return false;
+    }
+  };
+
+  const runPeriodicValidation = async (): Promise<void> => {
+    let anyFixed = false;
+    for (const sym of watchlistSymbols) {
+      for (const tf of chartTfsOnStream) {
+        if (!store.has(sym, tf)) continue;
+        const fixed = await validateAndResyncTf(sym, tf);
+        if (fixed) anyFixed = true;
+      }
+    }
+    if (anyFixed) {
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+      }
+      log.info('candle_store_resynced', { reason: 'periodic_validation' });
+    }
+  };
+
+  const handleForceResync = async (ws: WebSocket): Promise<void> => {
+    const sym = getSym(ws);
+    log.info('force_resync_requested', { symbol: sym });
+    let anyFixed = false;
+    for (const tf of chartTfsOnStream) {
+      try {
+        const fresh = await fetchBinanceKlines(cfg, { symbol: sym, interval: tf, limit: 500 });
+        if (fresh.length) {
+          store.reseedTail(sym, tf, fresh);
+          anyFixed = true;
+        }
+      } catch (e) {
+        log.warn('force_resync_tf_failed', { symbol: sym, tf, err: (e as Error).message });
+      }
+    }
+    if (anyFixed) {
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        if (getSym(client) !== sym) continue;
+        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+      }
+      log.info('force_resync_complete', { symbol: sym });
+    }
+  };
 
   const broadcast = (msg: object): void => {
         const raw = JSON.stringify(msg);
@@ -570,6 +639,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           },
           depth: obFor(sym).topLevels(depthLevelsUi),
           trades: tapeFor(sym).recent(60),
+          microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
           indicators: computeIndicatorsFromRows(rows, sym),
           signals,
         };
@@ -658,6 +728,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         }
         return;
       }
+      if (msg.type === 'force_resync') {
+        void handleForceResync(ws);
+        return;
+      }
       if (msg.type !== 'load_history' || typeof msg.tf !== 'string') return;
       const oldest = Number(msg.oldestOpenTime);
       void handleClientLoadHistory(ws, msg.tf, oldest);
@@ -670,6 +744,44 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     });
     ws.on('error', (e) => log.warn('dashboard_client_error', { err: e.message }));
   });
+
+  const anomalyValidationInflight = new Set<string>();
+
+  const validateAnomalousBar = async (sym: string, tf: string, candle: Candle): Promise<void> => {
+    const key = `${sym}|${tf}|${candle.openTime}`;
+    if (anomalyValidationInflight.has(key)) return;
+    anomalyValidationInflight.add(key);
+    try {
+      const fresh = await fetchBinanceKlines(cfg, {
+        symbol: sym,
+        interval: tf,
+        startTime: candle.openTime,
+        limit: 1,
+      });
+      const restBar = fresh.find((c) => c.openTime === candle.openTime);
+      if (!restBar) {
+        log.warn('anomaly_rest_no_match', { symbol: sym, tf, openTime: candle.openTime });
+        return;
+      }
+      const restRange = Math.abs(restBar.high - restBar.low);
+      const wsRange = Math.abs(candle.high - candle.low);
+      if (wsRange > restRange * 3) {
+        log.warn('anomaly_rejected_confirmed', {
+          symbol: sym, tf, openTime: candle.openTime,
+          wsHigh: candle.high, wsLow: candle.low,
+          restHigh: restBar.high, restLow: restBar.low,
+        });
+        store.forceApplyKline(sym, tf, restBar);
+      } else {
+        store.forceApplyKline(sym, tf, candle);
+      }
+      broadcast({ type: 'kline', symbol: sym, tf, candle: store.latest(sym, tf)!, isFinal: true });
+    } catch (e) {
+      log.warn('anomaly_validation_failed', { symbol: sym, tf, err: (e as Error).message });
+    } finally {
+      anomalyValidationInflight.delete(key);
+    }
+  };
 
   const multiplexSidecar: MultiplexCallbacks = {
     onOpen: (_route, url) => {
@@ -695,6 +807,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     onKline: (sym, tf, candle, isFinal) => {
       const symU = sym.toUpperCase();
       if (!watchlistSet.has(symU)) return;
+
+      const latest = store.latest(symU, tf);
+      const accepted = latest != null && latest.openTime === candle.openTime;
+
+      if (!accepted) {
+        void validateAnomalousBar(symU, tf, candle);
+        return;
+      }
+
       broadcast({ type: 'kline', symbol: symU, tf, candle, isFinal });
       if (chartTfBroadcastSet.has(tf)) {
         scheduleIndicatorBroadcastForSymbol(symU, isFinal);
@@ -752,6 +873,11 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         ts: t.ts,
         makerSide: t.makerSide,
       });
+      broadcast({
+        type: 'microstructure',
+        symbol: symU,
+        ...snapshotMicrostructure(tapeFor(symU), obFor(symU)),
+      });
     },
     onDepthDiff: (d: DepthDiff & { s: string }) => {
       const symU = d.s.toUpperCase();
@@ -764,6 +890,17 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (!watchlistSet.has(symU)) return;
       const levels = obFor(symU).topLevels(depthLevelsUi);
       broadcast({ type: 'depth', symbol: symU, bids: levels.bids, asks: levels.asks });
+    },
+    onForceOrder: (e: ForceOrderEvent) => {
+      broadcast({
+        type: 'force_order',
+        symbol: e.symbol,
+        side: e.side,
+        qty: e.filledAccumulatedQty,
+        price: e.avgPrice,
+        status: e.orderStatus,
+        tradeTime: e.tradeTime,
+      });
     },
   };
 
@@ -803,6 +940,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           }
         }, 60_000);
 
+        validationTimer = setInterval(() => {
+          void runPeriodicValidation();
+        }, VALIDATION_INTERVAL_MS);
+
         const bootSignals = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
         void maybeRefreshAiBrief(bootSignals, symbolUpper);
       }
@@ -821,6 +962,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         if (signalsTimer) {
           clearInterval(signalsTimer);
           signalsTimer = null;
+        }
+        if (validationTimer) {
+          clearInterval(validationTimer);
+          validationTimer = null;
         }
         for (const c of wss.clients) {
           try {

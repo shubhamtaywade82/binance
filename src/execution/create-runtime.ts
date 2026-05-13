@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { binanceRestBase, binanceWsBase, type AppConfig } from '../config';
+import { binanceApiCredentials, binanceRestBase, binanceWsBase, type AppConfig } from '../config';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
 import { CoinDcxExecutionAdapter } from './coindcx-adapter';
 import { BinanceLiveExecutionAdapter } from './binance-adapter';
@@ -11,13 +11,18 @@ import { PaperWallet } from './paper/wallet';
 import { Ledger } from './paper/ledger';
 import { LiquidationEngine } from './paper/liquidation';
 import { FundingEngine } from './paper/funding';
+import { ExecutionRouter } from './execution-router';
 
 export interface ExecutionRuntime {
+  /** The active execution adapter — always an ExecutionRouter in production. */
   adapter: ExecutionAdapter;
   book: BookTickerFeed;
   /** REST client for Binance trading API (set when BINANCE_EXECUTION_ADAPTER=true). */
   binanceRestClient?: BinanceRestClient;
   stopFunding?: () => void;
+  /** Router wrapper for hot-swapping exchange/env at runtime. Present in all production paths;
+   *  absent only in unit tests that inject a minimal stub adapter directly. */
+  router?: ExecutionRouter;
 }
 
 const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
@@ -38,37 +43,49 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
 
     // ── Binance live adapter ──────────────────────────────────────────────
     if (cfg.BINANCE_EXECUTION_ADAPTER) {
-      if (!cfg.BINANCE_API_KEY.trim() || !cfg.BINANCE_API_SECRET.trim()) {
+      const { apiKey, apiSecret } = binanceApiCredentials(cfg);
+
+      if (!apiKey || !apiSecret) {
+        const keyVar = cfg.BINANCE_FUTURES_TESTNET ? 'BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET' : 'BINANCE_API_KEY / BINANCE_API_SECRET';
+        throw new Error(`BINANCE_EXECUTION_ADAPTER=true requires ${keyVar}.`);
+      }
+
+      // Require explicit opt-in before sending real orders to mainnet.
+      if (!cfg.BINANCE_FUTURES_TESTNET && !cfg.CONFIRMED_LIVE_TRADING) {
         throw new Error(
-          'BINANCE_EXECUTION_ADAPTER=true requires BINANCE_API_KEY and BINANCE_API_SECRET.',
+          'CONFIRMED_LIVE_TRADING must be set to true to enable live trading on mainnet. ' +
+          'This guard prevents accidental real-money orders.',
         );
       }
+
       const binanceRestClient = new BinanceRestClient({
-        apiKey: cfg.BINANCE_API_KEY.trim(),
-        apiSecret: cfg.BINANCE_API_SECRET.trim(),
+        apiKey,
+        apiSecret,
         baseUrl: binanceRestBase(cfg),
       });
-      const adapter = new BinanceLiveExecutionAdapter({
+      const liveAdapter = new BinanceLiveExecutionAdapter({
         client: binanceRestClient,
         symbol: cfg.BINANCE_SYMBOL.trim().toUpperCase(),
         takerFee: cfg.TAKER_FEE,
         fundingFeeEst: cfg.FUNDING_FEE_EST,
         marginType: 'ISOLATED',
       });
-      return { adapter, book, binanceRestClient };
+      const router = new ExecutionRouter(cfg, cdcx, liveAdapter);
+      return { adapter: router, book, binanceRestClient, router };
     }
 
     // ── CoinDCX live adapter (legacy) ─────────────────────────────────────
     if (!cfg.COINDCX_API_KEY.trim() || !cfg.COINDCX_API_SECRET.trim()) {
       throw new Error('EXECUTION_MODE=live requires COINDCX_API_KEY and COINDCX_API_SECRET (or set BINANCE_EXECUTION_ADAPTER=true).');
     }
-    const adapter = new CoinDcxExecutionAdapter({
+    const cdcxAdapter = new CoinDcxExecutionAdapter({
       client: cdcx,
       marginCurrency: cfg.MARGIN_CURRENCY,
       takerFee: cfg.TAKER_FEE,
       fundingFeeEst: cfg.FUNDING_FEE_EST,
     });
-    return { adapter, book };
+    const cdcxRouter = new ExecutionRouter(cfg, cdcx, cdcxAdapter);
+    return { adapter: cdcxRouter, book, router: cdcxRouter };
   }
 
   // ── Paper adapter ─────────────────────────────────────────────────────
@@ -83,7 +100,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   });
   funding.start();
 
-  const adapter = new PaperExecutionAdapter({
+  const paperAdapter = new PaperExecutionAdapter({
     wallet,
     book,
     liquidation,
@@ -96,10 +113,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     equitySnapshotMs: Math.max(1000, cfg.PAPER_EQUITY_SNAPSHOT_SEC * 1000),
     symbolFor: (pair) => symbolFromPair(cfg, pair),
   });
+  const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 
   return {
-    adapter,
+    adapter: paperRouter,
     book,
+    router: paperRouter,
     stopFunding: () => funding.stop(),
   };
 }

@@ -3,14 +3,21 @@ import type { Candle } from '../types';
 export interface MultiTimeframeStoreOptions {
   /** Cap per (symbol, tf) series. Default 1000. */
   maxBars?: number;
+  /** Called when a kline's OHLC looks anomalous vs recent bars. */
+  onAnomalousBar?: (symbol: string, tf: string, candle: Candle, medianRange: number) => void;
 }
+
+const ANOMALY_LOOKBACK = 20;
+const ANOMALY_MULTIPLIER = 8;
 
 export class MultiTimeframeStore {
   private readonly maxBars: number;
+  private readonly onAnomalousBar?: MultiTimeframeStoreOptions['onAnomalousBar'];
   private series = new Map<string, Map<string, Candle[]>>();
 
   constructor(opts: MultiTimeframeStoreOptions = {}) {
     this.maxBars = Math.max(10, opts.maxBars ?? 1000);
+    this.onAnomalousBar = opts.onAnomalousBar;
   }
 
   seed(symbol: string, tf: string, candles: Candle[]): void {
@@ -31,8 +38,20 @@ export class MultiTimeframeStore {
     this.cap(arr);
   }
 
-  applyKline(symbol: string, tf: string, candle: Candle, _isFinal: boolean): void {
+  applyKline(symbol: string, tf: string, candle: Candle, _isFinal: boolean): boolean {
     const arr = this.bucket(symbol, tf);
+    if (this.checkAnomaly(symbol, tf, candle, arr)) return false;
+    this.insertCandle(arr, candle);
+    return true;
+  }
+
+  /** Apply candle unconditionally (skip anomaly check). Used after REST confirms bar is valid. */
+  forceApplyKline(symbol: string, tf: string, candle: Candle): void {
+    const arr = this.bucket(symbol, tf);
+    this.insertCandle(arr, candle);
+  }
+
+  private insertCandle(arr: Candle[], candle: Candle): void {
     if (arr.length === 0) {
       arr.push(candle);
       return;
@@ -54,6 +73,24 @@ export class MultiTimeframeStore {
       arr.sort((a, b) => a.openTime - b.openTime);
       this.cap(arr);
     }
+  }
+
+  /**
+   * Compare incoming bar range vs median of recent bars.
+   * Returns `true` (reject) when the range is anomalous — caller must validate via REST before accepting.
+   */
+  private checkAnomaly(symbol: string, tf: string, candle: Candle, arr: Candle[]): boolean {
+    if (!this.onAnomalousBar || arr.length < ANOMALY_LOOKBACK) return false;
+    const tail = arr.slice(-ANOMALY_LOOKBACK);
+    const ranges = tail.map((c) => Math.abs(c.high - c.low)).sort((a, b) => a - b);
+    const median = ranges[Math.floor(ranges.length / 2)];
+    if (median <= 0) return false;
+    const incoming = Math.abs(candle.high - candle.low);
+    if (incoming > median * ANOMALY_MULTIPLIER) {
+      this.onAnomalousBar(symbol, tf, candle, median);
+      return true;
+    }
+    return false;
   }
 
   has(symbol: string, tf: string): boolean {
@@ -91,6 +128,50 @@ export class MultiTimeframeStore {
       m.set(tf, arr);
     }
     return arr;
+  }
+
+  /**
+   * Compare the last `depth` bars in the store against a fresh REST fetch.
+   * Returns mismatched openTimes (OHLC differs) so the caller can decide to reseed.
+   */
+  validateAgainstRest(symbol: string, tf: string, restBars: Candle[]): { mismatched: number[]; missing: number[] } {
+    const arr = this.bucket(symbol, tf);
+    const storeByTime = new Map<number, Candle>();
+    for (const c of arr) storeByTime.set(c.openTime, c);
+
+    const mismatched: number[] = [];
+    const missing: number[] = [];
+    for (const r of restBars) {
+      const s = storeByTime.get(r.openTime);
+      if (!s) {
+        missing.push(r.openTime);
+        continue;
+      }
+      if (s.open !== r.open || s.high !== r.high || s.low !== r.low || s.close !== r.close) {
+        mismatched.push(r.openTime);
+      }
+    }
+    return { mismatched, missing };
+  }
+
+  /** Replace the tail of a series with fresh REST data (keeps older history intact). */
+  reseedTail(symbol: string, tf: string, freshBars: Candle[]): void {
+    if (!freshBars.length) return;
+    const arr = this.bucket(symbol, tf);
+    const cutoff = freshBars[0].openTime;
+    const kept = arr.filter((c) => c.openTime < cutoff);
+    const merged = [...kept, ...freshBars].sort((a, b) => a.openTime - b.openTime);
+    const dedup: Candle[] = [];
+    for (const c of merged) {
+      if (dedup.length && dedup[dedup.length - 1]!.openTime === c.openTime) {
+        dedup[dedup.length - 1] = c;
+      } else {
+        dedup.push(c);
+      }
+    }
+    arr.length = 0;
+    arr.push(...dedup);
+    this.cap(arr);
   }
 
   private cap(arr: Candle[]): void {

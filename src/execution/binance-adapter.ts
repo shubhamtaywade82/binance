@@ -1,19 +1,29 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { BinanceRestClient } from '../binance/rest-client';
 import {
   setLeverage,
   setMarginType,
   placeOrder,
+  placeBatchOrders,
   placeAlgoOrder,
+  modifyOrder,
   cancelAllOrders,
   cancelAllAlgoOrders,
+  cancelAlgoOrder,
   getPositionRisk,
   getOpenAlgoOrders,
   type AlgoOrderResult,
   type FuturesPositionRisk,
+  type PlaceOrderParams,
+  type OrderResult as BinanceOrderResult,
 } from '../binance/rest-trade';
 import { floorToStep, roundToTick } from '../mapping/precision';
 import type { InstrumentPrecision } from '../mapping/precision';
+
+const generateClientOrderId = (symbol: string, side: string, ts = Date.now()): string => {
+  const raw = `${symbol}:${side}:${ts}`;
+  return 'bot_' + createHash('sha256').update(raw).digest('hex').slice(0, 28);
+};
 import type {
   CloseReason,
   ClosedPosition,
@@ -28,9 +38,19 @@ export interface BinanceAdapterOptions {
   /** Symbol traded (e.g. SOLUSDT). */
   symbol: string;
   takerFee: number;
+  makerFee?: number;
   fundingFeeEst: number;
   /** Margin type: ISOLATED (default) or CROSSED. */
   marginType?: 'ISOLATED' | 'CROSSED';
+  /**
+   * When true (dual / hedge position mode), all orders include `positionSide` LONG/SHORT.
+   * Set from `GET /fapi/v1/positionSide/dual` during startup reconciliation.
+   */
+  hedgeMode?: boolean;
+  /** MARKET (default) or LIMIT_GTX for post-only maker fill. */
+  entryOrderType?: 'MARKET' | 'LIMIT_GTX';
+  /** Trailing stop callback rate (%). 0 = use fixed SL. */
+  trailingStopCallbackRate?: number;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -87,9 +107,21 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
   /** Prevents concurrent close attempts for the same position. */
   private closingIds = new Set<string>();
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void;
+  private hedgeMode: boolean;
 
   constructor(private readonly opts: BinanceAdapterOptions) {
     this.log = opts.log ?? ((msg, meta) => process.stdout.write(`${msg} ${JSON.stringify(meta ?? {})}\n`));
+    this.hedgeMode = opts.hedgeMode ?? false;
+  }
+
+  /** Enable hedge-mode order tagging (LONG/SHORT on each order). */
+  setHedgeMode(dualSidePosition: boolean): void {
+    this.hedgeMode = dualSidePosition;
+  }
+
+  private positionSideFor(tradeSide: 'LONG' | 'SHORT'): 'LONG' | 'SHORT' | undefined {
+    if (!this.hedgeMode) return undefined;
+    return tradeSide;
   }
 
   /** Called by orchestrator after exchangeInfo precision is loaded. */
@@ -115,28 +147,44 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     await this.setupSymbol(sym, req.leverage);
 
     const entrySide = req.side === 'LONG' ? 'BUY' : 'SELL';
-    // Quantity is already stepped by RiskManager, but re-floor defensively.
     const qty = floorToStep(req.quantity, stepSize);
     if (qty <= 0) {
       return this.failResult(req.referencePrice, req.quantity, startedAt, 'quantity below stepSize');
     }
 
+    const clientOrderId = generateClientOrderId(sym, entrySide);
+    const useGtx = this.opts.entryOrderType === 'LIMIT_GTX';
+
+    const orderParams: PlaceOrderParams = {
+      symbol: sym,
+      side: entrySide,
+      type: useGtx ? 'LIMIT' : 'MARKET',
+      quantity: qty,
+      newOrderRespType: 'RESULT',
+      positionSide: this.positionSideFor(req.side),
+      newClientOrderId: clientOrderId,
+    };
+
+    if (useGtx) {
+      orderParams.price = roundToTick(req.referencePrice, tickSize);
+      orderParams.timeInForce = 'GTX';
+    }
+
     let entryOrder;
     try {
-      entryOrder = await placeOrder(this.opts.client, {
-        symbol: sym,
-        side: entrySide,
-        type: 'MARKET',
-        quantity: qty,
-        newOrderRespType: 'RESULT',
-      });
+      entryOrder = await placeOrder(this.opts.client, orderParams);
     } catch (e) {
       return this.failResult(req.referencePrice, qty, startedAt, (e as Error).message);
     }
 
     const fillPrice = Number(entryOrder.avgPrice) || req.referencePrice;
     const latencyMs = Date.now() - startedAt;
-    const entryFee = fillPrice * qty * this.opts.takerFee;
+    const fee = useGtx ? (this.opts.makerFee ?? this.opts.takerFee) : this.opts.takerFee;
+    const entryFee = fillPrice * qty * fee;
+    const slippageBps = req.referencePrice > 0
+      ? ((fillPrice - req.referencePrice) / req.referencePrice) * 10_000
+      : 0;
+    this.log('slippage_log', { sym, side: entrySide, refPrice: req.referencePrice, fillPrice, slippageBps: +slippageBps.toFixed(2), latencyMs });
 
     const internalId = randomUUID();
     const trade: OpenLiveTrade = {
@@ -182,6 +230,121 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId: internalId, fill, positionId: internalId };
   }
 
+  // ─── Atomic batch entry + bracket ─────────────────────────────────────────
+
+  /**
+   * Submit MARKET entry + STOP SL + TAKE_PROFIT TP as a single batch request.
+   * Uses regular order types (not algo) so all 3 fit in one `POST /fapi/v1/batchOrders`.
+   * Falls back to sequential placement if the batch call fails.
+   *
+   * Note: regular STOP/TAKE_PROFIT orders require a `price` (limit) and `stopPrice` (trigger).
+   * For market-on-trigger behavior, use the existing `placeOrder` flow with algo orders instead.
+   */
+  async placeEntryWithBracket(req: OrderRequest): Promise<OrderResult> {
+    const sym = this.opts.symbol.toUpperCase();
+    const startedAt = Date.now();
+    const { stepSize, tickSize } = this.precision;
+
+    await this.setupSymbol(sym, req.leverage);
+
+    const entrySide: 'BUY' | 'SELL' = req.side === 'LONG' ? 'BUY' : 'SELL';
+    const closeSide: 'BUY' | 'SELL' = req.side === 'LONG' ? 'SELL' : 'BUY';
+    const qty = floorToStep(req.quantity, stepSize);
+    if (qty <= 0) {
+      return this.failResult(req.referencePrice, req.quantity, startedAt, 'quantity below stepSize');
+    }
+
+    const tpPrice = req.takeProfit ?? (req.side === 'LONG' ? req.referencePrice * 1.015 : req.referencePrice * 0.985);
+    const slPrice = req.stopLoss ?? (req.side === 'LONG' ? req.referencePrice * 0.99 : req.referencePrice * 1.01);
+
+    const entryParams: PlaceOrderParams = {
+      symbol: sym,
+      side: entrySide,
+      type: 'MARKET',
+      quantity: qty,
+      newOrderRespType: 'RESULT',
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    const tpParams: PlaceOrderParams = {
+      symbol: sym,
+      side: closeSide,
+      type: 'TAKE_PROFIT',
+      quantity: qty,
+      price: roundToTick(tpPrice, tickSize),
+      stopPrice: roundToTick(tpPrice, tickSize),
+      timeInForce: 'GTC',
+      workingType: 'MARK_PRICE',
+      reduceOnly: true,
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    const slParams: PlaceOrderParams = {
+      symbol: sym,
+      side: closeSide,
+      type: 'STOP',
+      quantity: qty,
+      price: roundToTick(slPrice, tickSize),
+      stopPrice: roundToTick(slPrice, tickSize),
+      timeInForce: 'GTC',
+      workingType: 'MARK_PRICE',
+      reduceOnly: true,
+      positionSide: this.positionSideFor(req.side),
+    };
+
+    try {
+      const results = await placeBatchOrders(this.opts.client, [entryParams, tpParams, slParams]);
+      const entryResult = results[0];
+      if (!entryResult || entryResult.status === 'REJECTED') {
+        return this.failResult(req.referencePrice, qty, startedAt, 'batch entry rejected');
+      }
+
+      const fillPrice = Number(entryResult.avgPrice) || req.referencePrice;
+      const entryFee = fillPrice * qty * this.opts.takerFee;
+      const internalId = randomUUID();
+
+      const trade: OpenLiveTrade = {
+        internalId,
+        binanceOrderId: entryResult.orderId,
+        tp1StrategyId: null,
+        tp2StrategyId: null,
+        slStrategyId: null,
+        side: req.side,
+        symbol: sym,
+        entryPrice: fillPrice,
+        quantity: qty,
+        remainingQty: qty,
+        openedAt: Date.now(),
+        entryFeeUsdt: entryFee,
+        stepSize,
+        tickSize,
+      };
+
+      this.trades.set(internalId, trade);
+      this.log('binance_batch_order_placed', {
+        id: internalId,
+        entryOrderId: entryResult.orderId,
+        tpOrderId: results[1]?.orderId,
+        slOrderId: results[2]?.orderId,
+        fillPrice,
+        qty,
+      });
+
+      const fill: Fill = {
+        price: fillPrice,
+        quantity: qty,
+        feeUsdt: entryFee,
+        slippageUsdt: Math.abs(fillPrice - req.referencePrice) * qty,
+        latencyMs: Date.now() - startedAt,
+        timestamp: Date.now(),
+      };
+      return { ok: true, orderId: internalId, fill, positionId: internalId };
+    } catch (e) {
+      this.log('binance_batch_fallback', { err: (e as Error).message });
+      return this.placeOrder(req);
+    }
+  }
+
   // ─── Bot-initiated close (REVERSAL / MANUAL / SL via onMark) ─────────────
 
   async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
@@ -216,6 +379,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         quantity: trade.remainingQty,
         reduceOnly: true,
         newOrderRespType: 'RESULT',
+        positionSide: this.positionSideFor(trade.side),
       });
       const avg = Number(closeOrder.avgPrice);
       if (Number.isFinite(avg) && avg > 0) exitPrice = avg;
@@ -348,6 +512,89 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     return this.trades.has(internalId);
   }
 
+  /**
+   * Amend a regular (non-algo) order's price and/or quantity in-place.
+   * Avoids the cancel+resubmit round-trip. Only works for LIMIT/STOP/TAKE_PROFIT types.
+   */
+  async modifyRegularOrder(
+    orderId: number,
+    side: 'BUY' | 'SELL',
+    newPrice: number,
+    newQuantity: number,
+  ): Promise<BinanceOrderResult> {
+    const sym = this.opts.symbol.toUpperCase();
+    const { tickSize, stepSize } = this.precision;
+    return modifyOrder(this.opts.client, {
+      symbol: sym,
+      orderId,
+      side,
+      price: roundToTick(newPrice, tickSize),
+      quantity: floorToStep(newQuantity, stepSize),
+    });
+  }
+
+  /**
+   * Amend an algo TP or SL stop price for an open position.
+   * Algo orders cannot be modified in-place — this does cancel+replace atomically.
+   * Returns the new strategyId on success, or null if the cancel or replace failed.
+   */
+  async amendAlgoStopPrice(
+    internalId: string,
+    target: 'TP1' | 'TP2' | 'SL',
+    newStopPrice: number,
+  ): Promise<number | null> {
+    const trade = this.trades.get(internalId);
+    if (!trade) return null;
+
+    const sym = trade.symbol;
+    const { tickSize, stepSize } = trade;
+    const closeSide: 'BUY' | 'SELL' = trade.side === 'LONG' ? 'SELL' : 'BUY';
+
+    const oldStrategyId =
+      target === 'TP1' ? trade.tp1StrategyId
+      : target === 'TP2' ? trade.tp2StrategyId
+      : trade.slStrategyId;
+
+    if (oldStrategyId !== null) {
+      try {
+        await cancelAlgoOrder(this.opts.client, sym, oldStrategyId);
+      } catch (e) {
+        this.log('binance_amend_cancel_warn', { target, oldStrategyId, err: (e as Error).message });
+      }
+      this.algoIdToInternal.delete(oldStrategyId);
+    }
+
+    const algoType = target === 'SL' ? 'STOP_MARKET' as const : 'TAKE_PROFIT_MARKET' as const;
+    const useClosePosition = target !== 'TP1';
+    const qty = target === 'TP1' ? floorToStep(trade.quantity * 0.6, stepSize) : undefined;
+
+    try {
+      const r = await placeAlgoOrder(this.opts.client, {
+        symbol: sym,
+        side: closeSide,
+        type: algoType,
+        stopPrice: roundToTick(newStopPrice, tickSize),
+        quantity: qty,
+        closePosition: useClosePosition || undefined,
+        reduceOnly: target === 'TP1' || undefined,
+        workingType: 'MARK_PRICE',
+        timeInForce: 'GTE_GTC',
+        positionSide: this.positionSideFor(trade.side),
+      });
+
+      if (target === 'TP1') trade.tp1StrategyId = r.strategyId;
+      else if (target === 'TP2') trade.tp2StrategyId = r.strategyId;
+      else trade.slStrategyId = r.strategyId;
+
+      this.algoIdToInternal.set(r.strategyId, internalId);
+      this.log('binance_algo_amended', { internalId, target, newStopPrice, newStrategyId: r.strategyId });
+      return r.strategyId;
+    } catch (e) {
+      this.log('binance_amend_replace_failed', { internalId, target, err: (e as Error).message });
+      return null;
+    }
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   private async setupSymbol(sym: string, leverage: number): Promise<void> {
@@ -396,6 +643,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
           workingType: 'MARK_PRICE',
           reduceOnly: true,
           timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
         });
         trade.tp1StrategyId = r.strategyId;
         this.algoIdToInternal.set(r.strategyId, trade.internalId);
@@ -414,6 +662,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         closePosition: true,
         workingType: 'MARK_PRICE',
         timeInForce: 'GTE_GTC',
+        positionSide: this.positionSideFor(trade.side),
       });
       trade.tp2StrategyId = r.strategyId;
       this.algoIdToInternal.set(r.strategyId, trade.internalId);
@@ -421,19 +670,37 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
       this.log('binance_tp2_warn', { sym, err: (e as Error).message });
     }
 
-    // SL: close full remaining position.
+    // SL: trailing stop if configured, otherwise fixed stop-market.
+    const trailRate = this.opts.trailingStopCallbackRate ?? 0;
     try {
-      const r = await placeAlgoOrder(this.opts.client, {
-        symbol: sym,
-        side: closeSide,
-        type: 'STOP_MARKET',
-        stopPrice: roundToTick(sl, tickSize),
-        closePosition: true,
-        workingType: 'MARK_PRICE',
-        timeInForce: 'GTE_GTC',
-      });
-      trade.slStrategyId = r.strategyId;
-      this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      if (trailRate > 0) {
+        const r = await placeAlgoOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'TRAILING_STOP_MARKET',
+          callbackRate: trailRate,
+          activationPrice: roundToTick(entryPrice, tickSize),
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
+        });
+        trade.slStrategyId = r.strategyId;
+        this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      } else {
+        const r = await placeAlgoOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: roundToTick(sl, tickSize),
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
+        });
+        trade.slStrategyId = r.strategyId;
+        this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      }
     } catch (e) {
       this.log('binance_sl_warn', { sym, err: (e as Error).message });
     }

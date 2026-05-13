@@ -7,6 +7,34 @@ export const CANDLE_THEME_STORAGE_KEY = 'qt_chart_candle_theme';
 
 /** @typedef {{ id: string, label: string, candle: Record<string, unknown>, volumeUp: string, volumeDown: string }} CandleTheme */
 
+const rgbaAlpha = (color) => {
+  const m = String(color).toLowerCase().match(/rgba\s*\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/);
+  return m ? Number(m[1]) : null;
+};
+
+/**
+ * Histogram bars only support a solid fill (no stroke). When the candle theme is
+ * border + translucent body (e.g. Outline, Hollow bull), reuse body colors so volume
+ * matches the candles; otherwise keep dedicated volume tints so solid candles do not
+ * produce overpowering volume blocks.
+ * @param {CandleTheme} t
+ * @returns {{ up: string, down: string }}
+ */
+export const getHistogramBarColors = (t) => {
+  const c = t.candle;
+  if (!c.borderVisible) {
+    return { up: t.volumeUp, down: t.volumeDown };
+  }
+  const aUp = rgbaAlpha(c.upColor);
+  const aDown = rgbaAlpha(c.downColor);
+  const translucentUp = aUp != null && aUp < 1;
+  const translucentDown = aDown != null && aDown < 1;
+  if (translucentUp || translucentDown) {
+    return { up: String(c.upColor), down: String(c.downColor) };
+  }
+  return { up: t.volumeUp, down: t.volumeDown };
+};
+
 /** @type {CandleTheme[]} */
 export const CANDLE_THEMES = [
   {
