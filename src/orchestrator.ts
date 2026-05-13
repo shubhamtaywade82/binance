@@ -8,8 +8,11 @@ import {
   type BookTickerEvent,
   type DepthLevels,
   type DepthSpeed,
+  type ForceOrderEvent,
   type MultiplexCallbacks,
 } from './binance/ws-multiplex';
+import { LiquidationCascadeTracker, type LiquidationSnapshot } from './signals/liquidation-tracker';
+import { FundingTracker, type FundingSnapshot } from './signals/funding-tracker';
 import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
@@ -73,6 +76,25 @@ const consoleLogger: OrchestratorLogger = {
   },
 };
 
+/**
+ * Returns true when current UTC time falls within TRADING_HOURS_UTC (e.g. "02:00-21:00").
+ * Empty string = always allowed.
+ */
+const isWithinTradingHours = (spec: string): boolean => {
+  if (!spec || !spec.includes('-')) return true;
+  const [startStr, endStr] = spec.split('-');
+  const parse = (s: string): number => {
+    const [h, m] = s.split(':').map(Number);
+    return (h ?? 0) * 60 + (m ?? 0);
+  };
+  const now = new Date();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const start = parse(startStr);
+  const end = parse(endStr);
+  if (start <= end) return nowMin >= start && nowMin < end;
+  return nowMin >= start || nowMin < end;
+};
+
 const summarizePrivatePayload = (msg: Record<string, unknown>): Record<string, unknown> => ({
   e: msg.e,
   E: msg.E,
@@ -129,6 +151,8 @@ export class HybridOrchestrator {
   private readonly store: MultiTimeframeStore;
   private readonly orderbook: LocalOrderBook;
   private readonly tradeTape: AggTradeTape;
+  private readonly liquidationTracker = new LiquidationCascadeTracker();
+  private readonly fundingTracker = new FundingTracker();
   private readonly marketFeeds: PerSymbolMarketFeeds | null;
   private readonly multiplexSymbolList: string[];
   private readonly fetchHistorical: typeof fetchHistoricalKlines;
@@ -359,10 +383,14 @@ export class HybridOrchestrator {
       onKline: (sym, tf, c, fin) => this.onMultiplexKline(sym, tf, c, fin),
       onBookTicker: (t) => this.onBookTicker(t),
       onAggTrade: (t) => this.onAggTradeEvent(t),
-      onMarkPrice: (u) => this.onMark({ symbol: u.symbol, markPrice: u.markPrice, eventTime: u.eventTime }),
+      onMarkPrice: (u) => {
+        this.onMark({ symbol: u.symbol, markPrice: u.markPrice, eventTime: u.eventTime });
+        if (u.fundingRate !== 0) this.fundingTracker.update(u.fundingRate);
+      },
       on24hrTicker: (u) => this.onTickerLtp({ symbol: u.symbol, lastPrice: u.lastPrice, eventTime: u.eventTime }),
       onDepthDiff: (d) => this.onDepthDiffEvent(d),
       onDepthPartial: (p) => this.onDepthPartialEvent(p),
+      onForceOrder: (e) => this.onForceOrderEvent(e),
       onServerShutdown: () => this.log.warn('binance_ws_server_shutdown', {}),
       onOpen: (route, url) => this.onWsOpen(route, url),
       onError: (e) => this.log.warn('binance_ws_error', { err: e.message }),
@@ -483,6 +511,18 @@ export class HybridOrchestrator {
   /** Latest microstructure features (TFI, weighted OBI, microprice) for the primary symbol. */
   getMicrostructure(): MicrostructureSnapshot {
     return snapshotMicrostructure(this.tradeTape, this.orderbook);
+  }
+
+  getLiquidationSnapshot(): LiquidationSnapshot {
+    return this.liquidationTracker.snapshot();
+  }
+
+  getFundingSnapshot(): FundingSnapshot {
+    return this.fundingTracker.snapshot();
+  }
+
+  private onForceOrderEvent(e: ForceOrderEvent): void {
+    this.liquidationTracker.push(e);
   }
 
   private scheduleHeartbeat(): void {
@@ -972,6 +1012,8 @@ export class HybridOrchestrator {
   private async evaluate(ltfBar: Candle): Promise<void> {
     if (this.positionManager.hasPosition()) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
+
+    if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
 
     const maxPos = this.cfg.MAX_OPEN_POSITIONS;
     if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;

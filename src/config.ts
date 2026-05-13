@@ -366,6 +366,19 @@ export const AppConfigSchema = z.object({
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
 
+  /** Scale position size inversely with realized volatility. */
+  VOL_ADJUSTED_SIZING: boolFromString(false),
+  /** Baseline realized volatility (annualized %). Position scales down when rv > baseline. */
+  VOL_BASELINE: numFromString(0),
+
+  /** UTC hours allowed for new entries (e.g. "02:00-21:00"). Empty = no restriction. */
+  TRADING_HOURS_UTC: z.string().default(''),
+
+  /** Entry order type: MARKET (default) or LIMIT_GTX (post-only maker fill at microprice). */
+  ENTRY_ORDER_TYPE: z.string().default('MARKET'),
+  /** Trailing stop callback rate (%). 0 = use fixed SL instead. */
+  TRAILING_STOP_CALLBACK_RATE: numFromString(0),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { BinanceRestClient } from '../binance/rest-client';
 import {
   setLeverage,
@@ -19,6 +19,11 @@ import {
 } from '../binance/rest-trade';
 import { floorToStep, roundToTick } from '../mapping/precision';
 import type { InstrumentPrecision } from '../mapping/precision';
+
+const generateClientOrderId = (symbol: string, side: string, ts = Date.now()): string => {
+  const raw = `${symbol}:${side}:${ts}`;
+  return 'bot_' + createHash('sha256').update(raw).digest('hex').slice(0, 28);
+};
 import type {
   CloseReason,
   ClosedPosition,
@@ -33,6 +38,7 @@ export interface BinanceAdapterOptions {
   /** Symbol traded (e.g. SOLUSDT). */
   symbol: string;
   takerFee: number;
+  makerFee?: number;
   fundingFeeEst: number;
   /** Margin type: ISOLATED (default) or CROSSED. */
   marginType?: 'ISOLATED' | 'CROSSED';
@@ -41,6 +47,10 @@ export interface BinanceAdapterOptions {
    * Set from `GET /fapi/v1/positionSide/dual` during startup reconciliation.
    */
   hedgeMode?: boolean;
+  /** MARKET (default) or LIMIT_GTX for post-only maker fill. */
+  entryOrderType?: 'MARKET' | 'LIMIT_GTX';
+  /** Trailing stop callback rate (%). 0 = use fixed SL. */
+  trailingStopCallbackRate?: number;
   log?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -137,29 +147,44 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     await this.setupSymbol(sym, req.leverage);
 
     const entrySide = req.side === 'LONG' ? 'BUY' : 'SELL';
-    // Quantity is already stepped by RiskManager, but re-floor defensively.
     const qty = floorToStep(req.quantity, stepSize);
     if (qty <= 0) {
       return this.failResult(req.referencePrice, req.quantity, startedAt, 'quantity below stepSize');
     }
 
+    const clientOrderId = generateClientOrderId(sym, entrySide);
+    const useGtx = this.opts.entryOrderType === 'LIMIT_GTX';
+
+    const orderParams: PlaceOrderParams = {
+      symbol: sym,
+      side: entrySide,
+      type: useGtx ? 'LIMIT' : 'MARKET',
+      quantity: qty,
+      newOrderRespType: 'RESULT',
+      positionSide: this.positionSideFor(req.side),
+      newClientOrderId: clientOrderId,
+    };
+
+    if (useGtx) {
+      orderParams.price = roundToTick(req.referencePrice, tickSize);
+      orderParams.timeInForce = 'GTX';
+    }
+
     let entryOrder;
     try {
-      entryOrder = await placeOrder(this.opts.client, {
-        symbol: sym,
-        side: entrySide,
-        type: 'MARKET',
-        quantity: qty,
-        newOrderRespType: 'RESULT',
-        positionSide: this.positionSideFor(req.side),
-      });
+      entryOrder = await placeOrder(this.opts.client, orderParams);
     } catch (e) {
       return this.failResult(req.referencePrice, qty, startedAt, (e as Error).message);
     }
 
     const fillPrice = Number(entryOrder.avgPrice) || req.referencePrice;
     const latencyMs = Date.now() - startedAt;
-    const entryFee = fillPrice * qty * this.opts.takerFee;
+    const fee = useGtx ? (this.opts.makerFee ?? this.opts.takerFee) : this.opts.takerFee;
+    const entryFee = fillPrice * qty * fee;
+    const slippageBps = req.referencePrice > 0
+      ? ((fillPrice - req.referencePrice) / req.referencePrice) * 10_000
+      : 0;
+    this.log('slippage_log', { sym, side: entrySide, refPrice: req.referencePrice, fillPrice, slippageBps: +slippageBps.toFixed(2), latencyMs });
 
     const internalId = randomUUID();
     const trade: OpenLiveTrade = {
@@ -645,20 +670,37 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
       this.log('binance_tp2_warn', { sym, err: (e as Error).message });
     }
 
-    // SL: close full remaining position.
+    // SL: trailing stop if configured, otherwise fixed stop-market.
+    const trailRate = this.opts.trailingStopCallbackRate ?? 0;
     try {
-      const r = await placeAlgoOrder(this.opts.client, {
-        symbol: sym,
-        side: closeSide,
-        type: 'STOP_MARKET',
-        stopPrice: roundToTick(sl, tickSize),
-        closePosition: true,
-        workingType: 'MARK_PRICE',
-        timeInForce: 'GTE_GTC',
-        positionSide: this.positionSideFor(trade.side),
-      });
-      trade.slStrategyId = r.strategyId;
-      this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      if (trailRate > 0) {
+        const r = await placeAlgoOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'TRAILING_STOP_MARKET',
+          callbackRate: trailRate,
+          activationPrice: roundToTick(entryPrice, tickSize),
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
+        });
+        trade.slStrategyId = r.strategyId;
+        this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      } else {
+        const r = await placeAlgoOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'STOP_MARKET',
+          stopPrice: roundToTick(sl, tickSize),
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          timeInForce: 'GTE_GTC',
+          positionSide: this.positionSideFor(trade.side),
+        });
+        trade.slStrategyId = r.strategyId;
+        this.algoIdToInternal.set(r.strategyId, trade.internalId);
+      }
     } catch (e) {
       this.log('binance_sl_warn', { sym, err: (e as Error).message });
     }

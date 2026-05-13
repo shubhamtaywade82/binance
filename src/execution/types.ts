@@ -30,6 +30,14 @@ export interface OrderResult {
 
 export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL';
 
+export interface TradeAttribution {
+  entrySignal?: string;
+  smcZone?: string;
+  htfBias?: string;
+  ltfBias?: string;
+  confidence?: number;
+}
+
 export interface ClosedPosition {
   orderId: string;
   side: 'LONG' | 'SHORT';
@@ -43,6 +51,7 @@ export interface ClosedPosition {
   netUsdt: number;
   openedAt: number;
   closedAt: number;
+  attribution?: TradeAttribution;
 }
 
 export interface ExecutionAdapter {

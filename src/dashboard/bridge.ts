@@ -6,7 +6,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AppConfig } from '../config';
 import { multiplexBinanceSymbols, ollamaApiUrl } from '../config';
-import type { AggTradeEvent, BookTickerEvent, DepthPartialEvent, MultiplexCallbacks } from '../binance/ws-multiplex';
+import type { AggTradeEvent, BookTickerEvent, DepthPartialEvent, ForceOrderEvent, MultiplexCallbacks } from '../binance/ws-multiplex';
 import type { MultiTimeframeStore } from '../binance/multi-tf-store';
 import type { LocalOrderBook, DepthDiff } from '../binance/orderbook';
 import type { AggTradeTape } from '../binance/trade-tape';
@@ -863,6 +863,17 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (!watchlistSet.has(symU)) return;
       const levels = obFor(symU).topLevels(depthLevelsUi);
       broadcast({ type: 'depth', symbol: symU, bids: levels.bids, asks: levels.asks });
+    },
+    onForceOrder: (e: ForceOrderEvent) => {
+      broadcast({
+        type: 'force_order',
+        symbol: e.symbol,
+        side: e.side,
+        qty: e.filledAccumulatedQty,
+        price: e.avgPrice,
+        status: e.orderStatus,
+        tradeTime: e.tradeTime,
+      });
     },
   };
 

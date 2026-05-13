@@ -98,6 +98,27 @@ export interface MarginCallEvent {
   p: Array<{ s: string; ps: string; pa: string; mt: string; iw: string; mp: string; up: string; mm: string }>;
 }
 
+export interface AccountConfigUpdate {
+  e: 'ACCOUNT_CONFIG_UPDATE';
+  E: number;
+  T: number;
+  /** Leverage change. Present when user changes leverage. */
+  ac?: { s: string; l: number };
+  /** Multi-assets margin change. Present when user toggles multi-assets mode. */
+  ai?: { j: boolean };
+}
+
+export interface TradeLiteEvent {
+  e: 'TRADE_LITE';
+  E: number;
+  T: number;
+  s: string;
+  q: string;
+  p: string;
+  m: boolean;
+  L: string;
+}
+
 export interface PrivateWsCallbacks {
   onOrderUpdate?: (event: OrderTradeUpdate) => void;
   onAccountUpdate?: (event: AccountUpdate) => void;
@@ -106,6 +127,10 @@ export interface PrivateWsCallbacks {
   onAlgoOrderUpdate?: (event: Record<string, unknown>) => void;
   /** TP/SL conditional trigger rejected by the engine. */
   onConditionalOrderTriggerReject?: (event: Record<string, unknown>) => void;
+  /** Leverage or margin mode changed externally (e.g. via Binance app). */
+  onAccountConfigUpdate?: (event: AccountConfigUpdate) => void;
+  /** Lightweight fill notification (lower bandwidth than ORDER_TRADE_UPDATE). */
+  onTradeLite?: (event: TradeLiteEvent) => void;
   onListenKeyExpired?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
@@ -249,6 +274,14 @@ export class BinancePrivateWs {
     }
     if (evt === 'CONDITIONAL_ORDER_TRIGGER_REJECT') {
       this.cb.onConditionalOrderTriggerReject?.(msg);
+      return;
+    }
+    if (evt === 'ACCOUNT_CONFIG_UPDATE') {
+      this.cb.onAccountConfigUpdate?.(msg as unknown as AccountConfigUpdate);
+      return;
+    }
+    if (evt === 'TRADE_LITE') {
+      this.cb.onTradeLite?.(msg as unknown as TradeLiteEvent);
       return;
     }
     if (evt === 'listenKeyExpired') {

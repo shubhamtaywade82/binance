@@ -213,6 +213,36 @@ export class BinanceFuturesWsApiClient {
     return this.request('order.modify', orderParams);
   }
 
+  /** Query a single order by symbol + orderId or origClientOrderId via WS API. */
+  async orderStatus(
+    orderParams: Record<string, string | number>,
+  ): Promise<WsApiJsonResponse<Record<string, unknown>>> {
+    if (!this.sessionAuthenticated) {
+      const signed = this.signParams({
+        ...orderParams,
+        apiKey: this.opts.apiKey,
+        timestamp: Date.now(),
+      });
+      return this.request('order.status', signed);
+    }
+    return this.request('order.status', orderParams);
+  }
+
+  /** Cancel a single order via WS API. */
+  async orderCancel(
+    orderParams: Record<string, string | number>,
+  ): Promise<WsApiJsonResponse<Record<string, unknown>>> {
+    if (!this.sessionAuthenticated) {
+      const signed = this.signParams({
+        ...orderParams,
+        apiKey: this.opts.apiKey,
+        timestamp: Date.now(),
+      });
+      return this.request('order.cancel', signed);
+    }
+    return this.request('order.cancel', orderParams);
+  }
+
   async request<T = unknown>(
     method: string,
     params: Record<string, string | number | boolean> = {},

@@ -25,10 +25,10 @@ Items marked ✅ are already implemented.
 | ✅ | `POST /fapi/v1/countdownCancelAll` | **Auto-Cancel All** — `setCountdownCancelAll`; orchestrator renews when `BINANCE_DEADMAN_COUNTDOWN_MS>0` |
 | ✅ | `GET /fapi/v1/order` | **Query Order** — `getOrder` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/openOrders` | **All Open Orders** — `getOpenOrders`; used at startup reconcile |
-| ☐ | `GET /fapi/v1/allOrders` | **Full Order History** |
+| ✅ | `GET /fapi/v1/allOrders` | **Full Order History** — `getAllOrders` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/userTrades` | **Trade List** — `getUserTrades`; startup reconcile logs recent fills |
-| ☐ | `GET /fapi/v1/algoOrder` | **Query Algo Order** by `algoId` |
-| ☐ | `POST /fapi/v1/order/test` | **Test New Order** — validate filters without execution |
+| ✅ | `GET /fapi/v1/algoOrder` | **Query Algo Order** — `getAlgoOrder` by symbol + algoId in `rest-trade.ts` |
+| ✅ | `POST /fapi/v1/order/test` | **Test New Order** — `testNewOrder` in `rest-trade.ts`; validate filters without execution |
 
 ---
 
@@ -40,8 +40,8 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v2/balance` | Asset balances |
 | ✅ | `GET /fapi/v2/positionRisk` | Per-symbol position state |
 | ✅ | `GET /fapi/v1/commissionRate` | **User Commission Rate** — `getCommissionRate` in `rest-trade.ts`; returns real maker/taker rates |
-| ☐ | `GET /fapi/v1/accountConfig` | **Account Configuration** — position mode, asset mode |
-| ☐ | `GET /fapi/v1/symbolConfig` | **Symbol Configuration** — per-symbol leverage limits |
+| ✅ | `GET /fapi/v1/accountConfig` | **Account Configuration** — `getAccountConfig` in `rest-trade.ts` |
+| ✅ | `GET /fapi/v1/symbolConfig` | **Symbol Configuration** — `getSymbolConfig` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/leverageBracket` | **Notional & Leverage Brackets** — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket` |
 | ☐ | `GET /fapi/v1/multiAssetsMargin` | **Multi-Assets Mode** — detect if portfolio margin is active |
 | ✅ | `GET /fapi/v1/positionSide/dual` | **Position Mode** — `getPositionSideDual`; hedge → `positionSide` on live orders |
@@ -58,8 +58,8 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v1/depth` | Orderbook snapshot |
 | ✅ | `GET /fapi/v1/klines` | Historical candles |
 | ✅ | `GET /fapi/v1/premiumIndex` | Mark price + funding rate |
-| ☐ | `GET /fapi/v1/ticker/bookTicker` | **REST Best Bid/Ask** — snapshot fallback when WS is unavailable |
-| ☐ | `GET /fapi/v1/ticker/24hr` | **24h Ticker Stats** — REST fallback |
+| ✅ | `GET /fapi/v1/ticker/bookTicker` | **REST Best Bid/Ask** — `getBookTicker` in `rest-trade.ts` |
+| ✅ | `GET /fapi/v1/ticker/24hr` | **24h Ticker Stats** — `getTicker24hr` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/fundingRate` | **Funding Rate History** — `getFundingRateHistory` in `rest-trade.ts` |
 | ☐ | `GET /fapi/v1/trades` | **Recent Trades** |
 | ☐ | `GET /fapi/v1/historicalTrades` | **Historical Trades** |
@@ -95,8 +95,8 @@ Items marked ✅ are already implemented.
 | ✅ | `ORDER_TRADE_UPDATE` | Fill + order lifecycle |
 | ✅ | `ACCOUNT_UPDATE` | Balance + position changes |
 | ✅ | `MARGIN_CALL` | Margin warning |
-| ☐ | `TRADE_LITE` | **Trade Lite** — lower-bandwidth fill notification |
-| ☐ | `ACCOUNT_CONFIG_UPDATE` | **Account Config Update** — leverage or margin mode change by user |
+| ✅ | `TRADE_LITE` | **Trade Lite** — `onTradeLite` handler in `private-ws.ts` |
+| ✅ | `ACCOUNT_CONFIG_UPDATE` | **Account Config Update** — `onAccountConfigUpdate` handler in `private-ws.ts` |
 | ✅ | `ALGO_ORDER_UPDATE` | **Algo stream** — private WS dispatches `ALGO_UPDATE` / `ALGO_ORDER_UPDATE` to structured log |
 | ✅ | `CONDITIONAL_ORDER_TRIGGER_REJECT` | **Conditional Reject** — private WS logs `CONDITIONAL_ORDER_TRIGGER_REJECT` |
 | ☐ | `STRATEGY_UPDATE` | **Strategy Update** — grid/strategy order state |
@@ -114,10 +114,10 @@ Items marked ✅ are already implemented.
 | ✅ | `order.cancel` | WS order cancel |
 | ✅ | `algoOrder.place` | WS algo order |
 | ✅ | `algoOrder.cancel` | WS algo cancel |
-| ☐ | `session.status` | **Session Status** — heartbeat/auth check |
-| ☐ | `session.logout` | **Session Logout** — clean teardown |
+| ✅ | `session.status` | **Session Status** — `sessionStatus()` on `BinanceFuturesWsApiClient` |
+| ✅ | `session.logout` | **Session Logout** — `logout()` on `BinanceFuturesWsApiClient` |
 | ✅ | `order.modify` | **Modify Order** — `orderModify` on `BinanceFuturesWsApiClient` |
-| ☐ | `order.status` | **Query Order** via WS |
+| ✅ | `order.status` | **Query Order** — `orderStatus()` on `BinanceFuturesWsApiClient` |
 
 ---
 
@@ -130,11 +130,11 @@ Items marked ✅ are already implemented.
 | ✅ | Paper liquidation engine | Maintenance margin model |
 | ✅ | **Drawdown kill switch** | `DAILY_DRAWDOWN_KILL_PCT` — vs session peak USDT `wb`; halts new entries + cancels open orders on breach |
 | ✅ | **Max open positions limit** | `MAX_OPEN_POSITIONS` config; checked in `evaluate()` before entry |
-| ☐ | **Volatility-adjusted sizing** | ATR-based quantity scaling instead of fixed USDT amount |
+| ✅ | **Volatility-adjusted sizing** | `VOL_ADJUSTED_SIZING` + `VOL_BASELINE` config; RiskManager scales margin down when rv > baseline (capped [0.5, 1.0]) |
 | ✅ | **Spread guard** | `MAX_ENTRY_SPREAD_BPS` config + `spreadBps()` check in `evaluate()` |
 | ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
 | ✅ | **Leverage bracket validation** | `validateNotionalAgainstBracket` checks notional + leverage vs tier caps |
-| ☐ | **Time-based session filter** | Skip low-liquidity windows (e.g. weekend late-night) |
+| ✅ | **Time-based session filter** | `TRADING_HOURS_UTC` config (e.g. `02:00-21:00`); `isWithinTradingHours()` guard in `evaluate()` |
 | ☐ | **Cross-symbol correlation guard** | Prevent adding same-direction exposure on highly correlated symbols simultaneously |
 | ✅ | **countdownCancelAll integration** | `BINANCE_DEADMAN_COUNTDOWN_MS` + periodic `setCountdownCancelAll` |
 
@@ -150,12 +150,12 @@ Items marked ✅ are already implemented.
 | ✅ | Reduce-only close orders | Via closePosition flag |
 | ✅ | **Batch order submission** | `placeBatchOrders` + `placeEntryWithBracket` (MARKET + STOP SL + TP in one request; fallback to sequential) |
 | ✅ | **Modify order in-place** | `modifyOrder` REST + `orderModify` WS + `modifyRegularOrder` / `amendAlgoStopPrice` on adapter |
-| ☐ | **Post-only limit entry** | LIMIT with `timeInForce=GTX` for maker fills and lower fees |
-| ☐ | **Trailing stop** | `TRAILING_STOP_MARKET` order type |
+| ✅ | **Post-only limit entry** | `ENTRY_ORDER_TYPE=LIMIT_GTX` config; adapter sends `LIMIT` + `GTX` at microprice for maker fills |
+| ✅ | **Trailing stop** | `TRAILING_STOP_CALLBACK_RATE` config; adapter places `TRAILING_STOP_MARKET` algo SL when > 0 |
 | ✅ | **Hedge mode support** | `GET /fapi/v1/positionSide/dual` → `BinanceLiveExecutionAdapter.setHedgeMode` → `positionSide` on entry/algo/close |
-| ☐ | **clientOrderId deduplication** | Idempotent retry: detect duplicate fills via `clientOrderId` before re-sending |
+| ✅ | **clientOrderId deduplication** | `generateClientOrderId(symbol, side, ts)` — deterministic SHA256 prefix for idempotent retry |
 | ☐ | **Exponential backoff retry** | Structured retry with jitter on 429/5xx; currently basic reconnect exists |
-| ☐ | **Post-execution slippage log** | Compare fill price vs microprice at time of order |
+| ✅ | **Post-execution slippage log** | `slippage_log` emitted on every fill: `refPrice`, `fillPrice`, `slippageBps`, `latencyMs` |
 
 ---
 
@@ -171,9 +171,9 @@ Items marked ✅ are already implemented.
 | ✅ | **Order Flow Imbalance (OFI)** | `createOfiTracker` + `updateOfi` in `microstructure.ts`; Δbid_size − Δask_size per depth diff |
 | ✅ | **Depth pressure** | `depthPressure(book, levels)` in `microstructure.ts`; Σ(vol / dist) per side |
 | ✅ | **Rolling realized volatility** | `rollingRealizedVol(tape, windowSec)` in `microstructure.ts`; 1 s / 5 s / 1 m windows in snapshot |
-| ☐ | **Liquidation cascade signal** | `!forceOrder@arr` aggregate: large forced volume → momentum signal |
-| ☐ | **Open Interest delta** | OI change rate: rising OI + rising price = trend confirmation |
-| ☐ | **Funding rate pressure** | Elevated funding → crowded side; use as contrarian or momentum filter |
+| ✅ | **Liquidation cascade signal** | `LiquidationCascadeTracker` in `src/signals/liquidation-tracker.ts`; rolling volume/count/side-bias; wired via `onForceOrder` |
+| ✅ | **Open Interest delta** | `OiPoller` in `src/signals/oi-poller.ts`; polls `getOpenInterest`, tracks OI delta + z-score + `priceOiRegime` |
+| ✅ | **Funding rate pressure** | `FundingTracker` in `src/signals/funding-tracker.ts`; rolling mean/std/z-score from `@markPrice` funding rate |
 
 ---
 
@@ -197,11 +197,11 @@ Items marked ✅ are already implemented.
 | ✅ | Paper wallet JSON (atomic write) | Balance + margin snapshot |
 | ✅ | Paper ledger JSONL | ClosedPosition append log |
 | ✅ | NDJSON app logger | Structured log stream |
-| ☐ | **PostgreSQL / ClickHouse** | Durable storage for orders, trades, positions, features |
-| ☐ | **Redis hot state** | Sub-ms read for active position, OBI, last price across processes |
-| ☐ | **Order replay on restart** | Re-fetch open orders via `GET /fapi/v1/openOrders` + algo orders; rebuild in-memory state fully |
-| ☐ | **Income reconciliation** | Periodic sync via `GET /fapi/v1/income` to verify realized PnL matches ledger |
-| ☐ | **Trade attribution** | Tag closed trades with entry signal, SMC zone, and HTF bias for analysis |
+| DEFERRED | **PostgreSQL / ClickHouse** | Durable storage for orders, trades, positions, features |
+| DEFERRED | **Redis hot state** | Sub-ms read for active position, OBI, last price across processes |
+| DEFERRED | **Order replay on restart** | Re-fetch open orders via `GET /fapi/v1/openOrders` + algo orders; rebuild in-memory state fully |
+| ✅ | **Income reconciliation** | `IncomeReconciler` in `src/signals/income-reconciler.ts`; periodic `getIncomeHistory` + local PnL comparison + discrepancy callback |
+| ✅ | **Trade attribution** | `TradeAttribution` interface on `ClosedPosition`; CSV log extended with `entrySignal,smcZone,htfBias,confidence` columns |
 
 ---
 
@@ -211,13 +211,13 @@ Items marked ✅ are already implemented.
 |--------|---------|-------|
 | ✅ | NDJSON + stdout logger | Heartbeat every 60 s |
 | ✅ | Real-time dashboard (WS bridge) | Browser UI for market data + signals |
-| ☐ | **Prometheus metrics export** | Orders placed/filled, latency histograms, PnL gauge, WS reconnects |
-| ☐ | **Grafana dashboard** | Visualize metrics from Prometheus |
-| ☐ | **Alert webhooks** | Slack/email/Telegram on: margin call, kill-switch trigger, WS down > N s |
+| DEFERRED | **Prometheus metrics export** | Orders placed/filled, latency histograms, PnL gauge, WS reconnects |
+| DEFERRED | **Grafana dashboard** | Visualize metrics from Prometheus |
+| DEFERRED | **Alert webhooks** | Slack/email/Telegram on: margin call, kill-switch trigger, WS down > N s |
 | ☐ | **Order latency tracking** | Measure send-time → `ORDER_TRADE_UPDATE` roundtrip; P95/P99 per session |
 | ☐ | **Fill quality report** | Fill price vs microprice at order time; slippage variance log |
-| ☐ | **Equity curve snapshot** | Periodic equity + drawdown time-series to DB |
-| ☐ | **External watchdog** | Separate process that pings bot heartbeat; force-closes all positions if silent > N s |
+| DEFERRED | **Equity curve snapshot** | Periodic equity + drawdown time-series to DB |
+| DEFERRED | **External watchdog** | Separate process that pings bot heartbeat; force-closes all positions if silent > N s |
 
 ---
 
@@ -225,12 +225,12 @@ Items marked ✅ are already implemented.
 
 | Status | Feature | Notes |
 |--------|---------|-------|
-| ☐ | **Backtest engine** | Replay historical klines + orderbook snapshots through strategy + execution pipeline |
-| ☐ | **WS stream recorder** | Record raw WS frames to disk for replay |
-| ☐ | **Walk-forward validation** | Out-of-sample parameter validation (prevent curve-fitting) |
-| ☐ | **Parameter sweep** | Grid or Bayesian search over `MIN_CONFIDENCE`, `MIN_SMC_SCORE`, `TP_PRICE_PCT`, etc. |
-| ☐ | **PnL attribution reports** | Win rate, avg hold time, profit factor by signal / TF / session |
-| ☐ | **Execution quality simulator** | Model fill price, slippage, and queue position in backtest |
+| DEFERRED | **Backtest engine** | Replay historical klines + orderbook snapshots through strategy + execution pipeline |
+| DEFERRED | **WS stream recorder** | Record raw WS frames to disk for replay |
+| DEFERRED | **Walk-forward validation** | Out-of-sample parameter validation (prevent curve-fitting) |
+| DEFERRED | **Parameter sweep** | Grid or Bayesian search over `MIN_CONFIDENCE`, `MIN_SMC_SCORE`, `TP_PRICE_PCT`, etc. |
+| DEFERRED | **PnL attribution reports** | Win rate, avg hold time, profit factor by signal / TF / session |
+| DEFERRED | **Execution quality simulator** | Model fill price, slippage, and queue position in backtest |
 
 ---
 
@@ -240,13 +240,13 @@ Items marked ✅ are already implemented.
 |--------|---------|-------|
 | ✅ | Single-symbol live trading | SOL/ETH/BTC |
 | ✅ | Watchlist multi-symbol market data | Feed ingestion only |
-| ☐ | **Multi-symbol live execution** | Concurrent position management across watchlist symbols |
-| ☐ | **Config hot-reload** | Reload env/config without full process restart |
-| ☐ | **Multi-account support** | Run separate strategy instances per API key |
-| ☐ | **NATS / ZeroMQ message bus** | Decouple ingestion, strategy, and execution into separate processes |
-| ☐ | **WS payload compression** | Enable `permessage-deflate` on WS connections |
-| ☐ | **VPS co-location** | Deploy to AWS `ap-southeast-1` (Singapore) for minimal Binance round-trip latency |
-| ☐ | **CPU affinity pinning** | Pin execution loop to isolated core (Linux `taskset`) |
+| DEFERRED | **Multi-symbol live execution** | Concurrent position management across watchlist symbols |
+| DEFERRED | **Config hot-reload** | Reload env/config without full process restart |
+| DEFERRED | **Multi-account support** | Run separate strategy instances per API key |
+| DEFERRED | **NATS / ZeroMQ message bus** | Decouple ingestion, strategy, and execution into separate processes |
+| DEFERRED | **WS payload compression** | Enable `permessage-deflate` on WS connections |
+| DEFERRED | **VPS co-location** | Deploy to AWS `ap-southeast-1` (Singapore) for minimal Binance round-trip latency |
+| DEFERRED | **CPU affinity pinning** | Pin execution loop to isolated core (Linux `taskset`) |
 
 ---
 
@@ -278,16 +278,16 @@ Items marked ✅ are already implemented.
 16. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
 17. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
 18. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
-19. PostgreSQL persistence layer
-20. Backtest engine (kline replay)
+19. DEFERRED — PostgreSQL persistence layer
+20. DEFERRED — Backtest engine (kline replay)
 
-### P3 — Production Hardening
-21. Prometheus metrics + Grafana
-22. Alert webhooks (Slack/Telegram)
-23. External watchdog process
-24. Redis hot state cache
-25. Multi-symbol live execution
-26. Walk-forward parameter validation
+### P3 — Production Hardening (all DEFERRED — requires external infra)
+21. DEFERRED — Prometheus metrics + Grafana
+22. DEFERRED — Alert webhooks (Slack/Telegram)
+23. DEFERRED — External watchdog process
+24. DEFERRED — Redis hot state cache
+25. DEFERRED — Multi-symbol live execution
+26. DEFERRED — Walk-forward parameter validation
 
 ---
 

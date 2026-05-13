@@ -691,6 +691,146 @@ export const getFundingRateHistory = async (
   return client.publicGet<FundingRateRow[]>('/fapi/v1/fundingRate', q);
 };
 
+// ─── Full Order History ────────────────────────────────────────────────────
+
+export interface GetAllOrdersParams {
+  symbol: string;
+  orderId?: number;
+  startTime?: number;
+  endTime?: number;
+  limit?: number;
+}
+
+export const getAllOrders = async (
+  client: BinanceRestClient,
+  params: GetAllOrdersParams,
+): Promise<OrderResult[]> => {
+  const q: Record<string, string | number> = { symbol: params.symbol.toUpperCase() };
+  if (params.orderId !== undefined) q.orderId = params.orderId;
+  if (params.startTime !== undefined) q.startTime = params.startTime;
+  if (params.endTime !== undefined) q.endTime = params.endTime;
+  if (params.limit !== undefined) q.limit = params.limit;
+  return client.signedGet<OrderResult[]>('/fapi/v1/allOrders', q);
+};
+
+// ─── Query Algo Order ──────────────────────────────────────────────────────
+
+export const getAlgoOrder = async (
+  client: BinanceRestClient,
+  symbol: string,
+  algoId: number,
+): Promise<AlgoOrderResult> => {
+  return client.signedGet<AlgoOrderResult>('/fapi/v1/algoOrder', {
+    symbol: symbol.toUpperCase(),
+    algoId,
+  });
+};
+
+// ─── Test New Order ────────────────────────────────────────────────────────
+
+export const testNewOrder = async (
+  client: BinanceRestClient,
+  params: PlaceOrderParams,
+): Promise<Record<string, unknown>> => {
+  const body: Record<string, string | number | boolean> = {
+    symbol: params.symbol.toUpperCase(),
+    side: params.side,
+    type: params.type,
+  };
+  if (params.quantity !== undefined) body.quantity = params.quantity;
+  if (params.price !== undefined) body.price = params.price;
+  if (params.stopPrice !== undefined) body.stopPrice = params.stopPrice;
+  if (params.timeInForce) body.timeInForce = params.timeInForce;
+  if (params.reduceOnly !== undefined) body.reduceOnly = params.reduceOnly;
+  if (params.positionSide) body.positionSide = params.positionSide;
+  if (params.newClientOrderId) body.newClientOrderId = params.newClientOrderId;
+  if (params.workingType) body.workingType = params.workingType;
+  if (params.newOrderRespType) body.newOrderRespType = params.newOrderRespType;
+  return client.signedPost<Record<string, unknown>>('/fapi/v1/order/test', body);
+};
+
+// ─── Account Configuration ─────────────────────────────────────────────────
+
+export interface AccountConfig {
+  feeTier: number;
+  canTrade: boolean;
+  canDeposit: boolean;
+  canWithdraw: boolean;
+  dualSidePosition: boolean;
+  multiAssetsMargin: boolean;
+}
+
+export const getAccountConfig = async (client: BinanceRestClient): Promise<AccountConfig> => {
+  return client.signedGet<AccountConfig>('/fapi/v1/accountConfig');
+};
+
+// ─── Symbol Configuration ──────────────────────────────────────────────────
+
+export interface SymbolConfig {
+  symbol: string;
+  marginType: string;
+  isAutoAddMargin: boolean;
+  leverage: number;
+  maxNotionalValue: string;
+}
+
+export const getSymbolConfig = async (
+  client: BinanceRestClient,
+  symbol: string,
+): Promise<SymbolConfig[]> => {
+  return client.signedGet<SymbolConfig[]>('/fapi/v1/symbolConfig', {
+    symbol: symbol.toUpperCase(),
+  });
+};
+
+// ─── REST Best Bid/Ask (bookTicker) ────────────────────────────────────────
+
+export interface BookTickerResponse {
+  symbol: string;
+  bidPrice: string;
+  bidQty: string;
+  askPrice: string;
+  askQty: string;
+  time: number;
+}
+
+export const getBookTicker = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<BookTickerResponse | BookTickerResponse[]> => {
+  const q: Record<string, string> = {};
+  if (symbol) q.symbol = symbol.toUpperCase();
+  return client.publicGet<BookTickerResponse | BookTickerResponse[]>('/fapi/v1/ticker/bookTicker', q);
+};
+
+// ─── 24hr Ticker Statistics ────────────────────────────────────────────────
+
+export interface Ticker24hrResponse {
+  symbol: string;
+  priceChange: string;
+  priceChangePercent: string;
+  weightedAvgPrice: string;
+  lastPrice: string;
+  lastQty: string;
+  openPrice: string;
+  highPrice: string;
+  lowPrice: string;
+  volume: string;
+  quoteVolume: string;
+  openTime: number;
+  closeTime: number;
+  count: number;
+}
+
+export const getTicker24hr = async (
+  client: BinanceRestClient,
+  symbol?: string,
+): Promise<Ticker24hrResponse | Ticker24hrResponse[]> => {
+  const q: Record<string, string> = {};
+  if (symbol) q.symbol = symbol.toUpperCase();
+  return client.publicGet<Ticker24hrResponse | Ticker24hrResponse[]>('/fapi/v1/ticker/24hr', q);
+};
+
 // ─── Server Time ───────────────────────────────────────────────────────────
 
 export const getServerTime = async (client: BinanceRestClient): Promise<number> => {

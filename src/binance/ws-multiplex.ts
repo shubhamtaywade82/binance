@@ -44,6 +44,8 @@ export interface MarkPriceMultiplexEvent {
   symbol: string;
   markPrice: number;
   eventTime: number;
+  /** Current funding rate from markPrice stream (field `r`). May be 0 if not present. */
+  fundingRate: number;
 }
 
 /** Normalized `@ticker` / 24hrTicker fields (Binance `c` last, `p` change, `P` % string). */
@@ -425,7 +427,8 @@ export class BinanceMultiplexWs {
     const symbol = String(data.s ?? '').toUpperCase();
     const markPrice = Number(data.p);
     if (!symbol || !Number.isFinite(markPrice)) return;
-    this.cb.onMarkPrice?.({ symbol, markPrice, eventTime: Number(data.E ?? Date.now()) });
+    const fundingRate = Number(data.r) || 0;
+    this.cb.onMarkPrice?.({ symbol, markPrice, eventTime: Number(data.E ?? Date.now()), fundingRate });
   }
 
   private dispatch24hrTicker(data: Record<string, unknown>): void {
