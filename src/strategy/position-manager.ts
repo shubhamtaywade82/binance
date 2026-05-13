@@ -39,6 +39,10 @@ export class PositionManager {
     return this.current !== null;
   }
 
+  openCount(): number {
+    return this.current !== null ? 1 : 0;
+  }
+
   async open(side: Side, price: number, precision: InstrumentPrecision, pair: string): Promise<Position | null> {
     if (!this.cfg.PLACE_ORDER) {
       if (!this.placeOrderDisabledLogged) {

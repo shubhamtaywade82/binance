@@ -129,9 +129,9 @@ Items marked ✅ are already implemented.
 | ✅ | TP/SL percentage targets | Configurable via env |
 | ✅ | Paper liquidation engine | Maintenance margin model |
 | ✅ | **Drawdown kill switch** | `DAILY_DRAWDOWN_KILL_PCT` — vs session peak USDT `wb`; halts new entries + cancels open orders on breach |
-| ☐ | **Max open positions limit** | Hard cap on concurrent live positions across symbols |
+| ✅ | **Max open positions limit** | `MAX_OPEN_POSITIONS` config; checked in `evaluate()` before entry |
 | ☐ | **Volatility-adjusted sizing** | ATR-based quantity scaling instead of fixed USDT amount |
-| ☐ | **Spread guard** | Reject entry when bid-ask spread exceeds max bps |
+| ✅ | **Spread guard** | `MAX_ENTRY_SPREAD_BPS` config + `spreadBps()` check in `evaluate()` |
 | ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
 | ✅ | **Leverage bracket validation** | `validateNotionalAgainstBracket` checks notional + leverage vs tier caps |
 | ☐ | **Time-based session filter** | Skip low-liquidity windows (e.g. weekend late-night) |
@@ -168,9 +168,9 @@ Items marked ✅ are already implemented.
 | ✅ | **Trade Flow Imbalance (TFI)** | `tradeFlowImbalance(tape, windowSec)` in `microstructure.ts`; 1 s / 5 s / 30 s windows; wired into orchestrator heartbeat + dashboard |
 | ✅ | **Weighted OBI** | `weightedObi(book, levels)` in `microstructure.ts`; level-distance weighting; top-5 / top-10 snapshots in dashboard |
 | ✅ | **Microprice** | `microprice(book)` in `microstructure.ts`; `(ask × bidVol + bid × askVol) / (bidVol + askVol)`; included in heartbeat + UI |
-| ☐ | **Order Flow Imbalance (OFI)** | Δbid_size − Δask_size per depth diff event |
-| ☐ | **Depth pressure** | Σ(bid_vol / price_dist) − Σ(ask_vol / price_dist) |
-| ☐ | **Rolling realized volatility** | √Σ(log-return²) over 1 s / 5 s / 1 m windows |
+| ✅ | **Order Flow Imbalance (OFI)** | `createOfiTracker` + `updateOfi` in `microstructure.ts`; Δbid_size − Δask_size per depth diff |
+| ✅ | **Depth pressure** | `depthPressure(book, levels)` in `microstructure.ts`; Σ(vol / dist) per side |
+| ✅ | **Rolling realized volatility** | `rollingRealizedVol(tape, windowSec)` in `microstructure.ts`; 1 s / 5 s / 1 m windows in snapshot |
 | ☐ | **Liquidation cascade signal** | `!forceOrder@arr` aggregate: large forced volume → momentum signal |
 | ☐ | **Open Interest delta** | OI change rate: rising OI + rising price = trend confirmation |
 | ☐ | **Funding rate pressure** | Elevated funding → crowded side; use as contrarian or momentum filter |

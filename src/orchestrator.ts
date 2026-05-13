@@ -14,7 +14,7 @@ import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
-import { snapshotMicrostructure, type MicrostructureSnapshot } from './binance/microstructure';
+import { snapshotMicrostructure, spreadBps, type MicrostructureSnapshot } from './binance/microstructure';
 import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
 import type { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
 import { fetchHistoricalKlines } from './binance/historical';
@@ -972,6 +972,18 @@ export class HybridOrchestrator {
   private async evaluate(ltfBar: Candle): Promise<void> {
     if (this.positionManager.hasPosition()) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
+
+    const maxPos = this.cfg.MAX_OPEN_POSITIONS;
+    if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;
+
+    const maxSpread = this.cfg.MAX_ENTRY_SPREAD_BPS;
+    if (maxSpread > 0) {
+      const currentSpread = spreadBps(this.orderbook);
+      if (currentSpread !== null && currentSpread > maxSpread) {
+        this.log.info('spread_guard_reject', { spreadBps: +currentSpread.toFixed(2), maxBps: maxSpread });
+        return;
+      }
+    }
 
     const refPrice = this.lastMark ?? ltfBar.close;
     const sym = this.pairs.binanceSymbol;

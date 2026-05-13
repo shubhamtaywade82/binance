@@ -360,6 +360,12 @@ export const AppConfigSchema = z.object({
    */
   ORDER_RATE_LIMIT_PAUSE_THRESHOLD: numFromString(0),
 
+  /** Max bid-ask spread in bps to allow entry (0 = disabled). Rejects entries in wide-spread conditions. */
+  MAX_ENTRY_SPREAD_BPS: numFromString(0),
+
+  /** Max concurrent open positions across all symbols (0 = unlimited). */
+  MAX_OPEN_POSITIONS: numFromString(0),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 

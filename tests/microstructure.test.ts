@@ -5,6 +5,11 @@ import {
   tradeFlowImbalance,
   weightedObi,
   microprice,
+  depthPressure,
+  createOfiTracker,
+  updateOfi,
+  rollingRealizedVol,
+  spreadBps,
   snapshotMicrostructure,
 } from '../src/binance/microstructure';
 
@@ -107,6 +112,122 @@ describe('microprice', () => {
   });
 });
 
+describe('depthPressure', () => {
+  it('returns positive pressure when bid side has more volume per distance', () => {
+    const ob = new LocalOrderBook();
+    ob.bootstrap({
+      lastUpdateId: 1,
+      bids: [['99', '100']],
+      asks: [['101', '10']],
+    });
+    const r = depthPressure(ob, 1);
+    expect(r.bidPressure).toBeGreaterThan(r.askPressure);
+    expect(r.depthPressure).toBeGreaterThan(0);
+  });
+
+  it('returns zeros on empty book', () => {
+    const r = depthPressure(new LocalOrderBook(), 5);
+    expect(r.depthPressure).toBe(0);
+  });
+});
+
+describe('OFI tracker', () => {
+  it('detects positive OFI when bid size increases', () => {
+    const ob = new LocalOrderBook();
+    ob.bootstrap({
+      lastUpdateId: 1,
+      bids: [['100', '10']],
+      asks: [['101', '10']],
+    });
+    const tracker = createOfiTracker();
+    const initial = updateOfi(tracker, ob);
+    const cumulativeAfterInit = tracker.cumulativeOfi;
+
+    ob.applyDiff({ U: 2, u: 2, bids: [['100', '20']], asks: [] });
+    const delta = updateOfi(tracker, ob);
+    expect(delta).toBe(10);
+    expect(tracker.cumulativeOfi).toBe(cumulativeAfterInit + 10);
+  });
+
+  it('detects negative OFI when ask size increases', () => {
+    const ob = new LocalOrderBook();
+    ob.bootstrap({
+      lastUpdateId: 1,
+      bids: [['100', '10']],
+      asks: [['101', '10']],
+    });
+    const tracker = createOfiTracker();
+    updateOfi(tracker, ob);
+
+    ob.applyDiff({ U: 2, u: 2, bids: [], asks: [['101', '20']] });
+    const delta = updateOfi(tracker, ob);
+    expect(delta).toBe(-10);
+  });
+
+  it('handles bid price change (new level)', () => {
+    const ob = new LocalOrderBook();
+    ob.bootstrap({
+      lastUpdateId: 1,
+      bids: [['100', '10']],
+      asks: [['101', '10']],
+    });
+    const tracker = createOfiTracker();
+    updateOfi(tracker, ob);
+
+    ob.applyDiff({ U: 2, u: 2, bids: [['100.5', '15']], asks: [] });
+    const delta = updateOfi(tracker, ob);
+    expect(delta).toBe(15);
+  });
+});
+
+describe('rollingRealizedVol', () => {
+  it('computes non-zero volatility from varying prices', () => {
+    const tape = new AggTradeTape(100);
+    const now = Date.now();
+    for (let i = 0; i < 20; i++) {
+      tape.push({ price: 100 + Math.sin(i) * 0.5, qty: 1, ts: now - (20 - i) * 50, makerSide: true });
+    }
+    const rv = rollingRealizedVol(tape, 5);
+    expect(rv.rv).toBeGreaterThan(0);
+    expect(rv.sampleCount).toBe(19);
+  });
+
+  it('returns zero for constant price', () => {
+    const tape = new AggTradeTape(100);
+    const now = Date.now();
+    for (let i = 0; i < 10; i++) {
+      tape.push({ price: 100, qty: 1, ts: now - (10 - i) * 50, makerSide: true });
+    }
+    const rv = rollingRealizedVol(tape, 5);
+    expect(rv.rv).toBe(0);
+  });
+
+  it('returns zero for insufficient data', () => {
+    const tape = new AggTradeTape(100);
+    tape.push({ price: 100, qty: 1, ts: Date.now(), makerSide: true });
+    const rv = rollingRealizedVol(tape, 5);
+    expect(rv.rv).toBe(0);
+    expect(rv.sampleCount).toBe(0);
+  });
+});
+
+describe('spreadBps', () => {
+  it('computes spread in basis points', () => {
+    const ob = new LocalOrderBook();
+    ob.bootstrap({
+      lastUpdateId: 1,
+      bids: [['100', '10']],
+      asks: [['101', '10']],
+    });
+    const bps = spreadBps(ob);
+    expect(bps).toBeCloseTo(99.50, 0);
+  });
+
+  it('returns null on empty book', () => {
+    expect(spreadBps(new LocalOrderBook())).toBeNull();
+  });
+});
+
 describe('snapshotMicrostructure', () => {
   it('assembles all features in one call', () => {
     const s = snapshotMicrostructure(buildTape(), buildBook());
@@ -117,6 +238,11 @@ describe('snapshotMicrostructure', () => {
     expect(s.weightedObi10).toBeDefined();
     expect(s.microprice).not.toBeNull();
     expect(s.spread).not.toBeNull();
+    expect(s.spreadBps).not.toBeNull();
     expect(s.mid).not.toBeNull();
+    expect(s.depthPressure10).toBeDefined();
+    expect(s.rv1s).toBeDefined();
+    expect(s.rv5s).toBeDefined();
+    expect(s.rv1m).toBeDefined();
   });
 });
