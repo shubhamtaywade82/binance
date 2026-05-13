@@ -5,12 +5,15 @@ import {
   setMarginType,
   placeOrder,
   placeAlgoOrder,
+  modifyOrder,
   cancelAllOrders,
   cancelAllAlgoOrders,
+  cancelAlgoOrder,
   getPositionRisk,
   getOpenAlgoOrders,
   type AlgoOrderResult,
   type FuturesPositionRisk,
+  type OrderResult as BinanceOrderResult,
 } from '../binance/rest-trade';
 import { floorToStep, roundToTick } from '../mapping/precision';
 import type { InstrumentPrecision } from '../mapping/precision';
@@ -365,6 +368,89 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
   hasOpenTrade(internalId: string): boolean {
     return this.trades.has(internalId);
+  }
+
+  /**
+   * Amend a regular (non-algo) order's price and/or quantity in-place.
+   * Avoids the cancel+resubmit round-trip. Only works for LIMIT/STOP/TAKE_PROFIT types.
+   */
+  async modifyRegularOrder(
+    orderId: number,
+    side: 'BUY' | 'SELL',
+    newPrice: number,
+    newQuantity: number,
+  ): Promise<BinanceOrderResult> {
+    const sym = this.opts.symbol.toUpperCase();
+    const { tickSize, stepSize } = this.precision;
+    return modifyOrder(this.opts.client, {
+      symbol: sym,
+      orderId,
+      side,
+      price: roundToTick(newPrice, tickSize),
+      quantity: floorToStep(newQuantity, stepSize),
+    });
+  }
+
+  /**
+   * Amend an algo TP or SL stop price for an open position.
+   * Algo orders cannot be modified in-place — this does cancel+replace atomically.
+   * Returns the new strategyId on success, or null if the cancel or replace failed.
+   */
+  async amendAlgoStopPrice(
+    internalId: string,
+    target: 'TP1' | 'TP2' | 'SL',
+    newStopPrice: number,
+  ): Promise<number | null> {
+    const trade = this.trades.get(internalId);
+    if (!trade) return null;
+
+    const sym = trade.symbol;
+    const { tickSize, stepSize } = trade;
+    const closeSide: 'BUY' | 'SELL' = trade.side === 'LONG' ? 'SELL' : 'BUY';
+
+    const oldStrategyId =
+      target === 'TP1' ? trade.tp1StrategyId
+      : target === 'TP2' ? trade.tp2StrategyId
+      : trade.slStrategyId;
+
+    if (oldStrategyId !== null) {
+      try {
+        await cancelAlgoOrder(this.opts.client, sym, oldStrategyId);
+      } catch (e) {
+        this.log('binance_amend_cancel_warn', { target, oldStrategyId, err: (e as Error).message });
+      }
+      this.algoIdToInternal.delete(oldStrategyId);
+    }
+
+    const algoType = target === 'SL' ? 'STOP_MARKET' as const : 'TAKE_PROFIT_MARKET' as const;
+    const useClosePosition = target !== 'TP1';
+    const qty = target === 'TP1' ? floorToStep(trade.quantity * 0.6, stepSize) : undefined;
+
+    try {
+      const r = await placeAlgoOrder(this.opts.client, {
+        symbol: sym,
+        side: closeSide,
+        type: algoType,
+        stopPrice: roundToTick(newStopPrice, tickSize),
+        quantity: qty,
+        closePosition: useClosePosition || undefined,
+        reduceOnly: target === 'TP1' || undefined,
+        workingType: 'MARK_PRICE',
+        timeInForce: 'GTE_GTC',
+        positionSide: this.positionSideFor(trade.side),
+      });
+
+      if (target === 'TP1') trade.tp1StrategyId = r.strategyId;
+      else if (target === 'TP2') trade.tp2StrategyId = r.strategyId;
+      else trade.slStrategyId = r.strategyId;
+
+      this.algoIdToInternal.set(r.strategyId, internalId);
+      this.log('binance_algo_amended', { internalId, target, newStopPrice, newStrategyId: r.strategyId });
+      return r.strategyId;
+    } catch (e) {
+      this.log('binance_amend_replace_failed', { internalId, target, err: (e as Error).message });
+      return null;
+    }
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────

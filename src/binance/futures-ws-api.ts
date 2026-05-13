@@ -195,6 +195,24 @@ export class BinanceFuturesWsApiClient {
     return this.request('order.place', orderParams);
   }
 
+  /**
+   * Modify an existing order via WS API — avoids REST round-trip.
+   * Only `quantity` and `price` can be changed.
+   */
+  async orderModify(
+    orderParams: Record<string, string | number>,
+  ): Promise<WsApiJsonResponse<Record<string, unknown>>> {
+    if (!this.sessionAuthenticated) {
+      const signed = this.signParams({
+        ...orderParams,
+        apiKey: this.opts.apiKey,
+        timestamp: Date.now(),
+      });
+      return this.request('order.modify', signed);
+    }
+    return this.request('order.modify', orderParams);
+  }
+
   async request<T = unknown>(
     method: string,
     params: Record<string, string | number | boolean> = {},

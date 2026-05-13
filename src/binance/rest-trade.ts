@@ -190,6 +190,35 @@ export const placeOrder = async (client: BinanceRestClient, params: PlaceOrderPa
   return client.signedPost<OrderResult>('/fapi/v1/order', body);
 }
 
+// ─── Modify Order ────────────────────────────────────────────────────────
+
+export interface ModifyOrderParams {
+  symbol: string;
+  orderId: number;
+  side: OrderSide;
+  quantity: number;
+  price: number;
+  /** Defaults to MARK_PRICE for futures. */
+  priceMatch?: 'OPPONENT' | 'OPPONENT_5' | 'OPPONENT_10' | 'OPPONENT_20' | 'QUEUE' | 'QUEUE_5' | 'QUEUE_10' | 'QUEUE_20' | 'NONE';
+}
+
+/**
+ * Amend an open LIMIT/STOP/TAKE_PROFIT order in-place without cancel+resubmit.
+ * Only `quantity` and `price` can be changed; side and type are immutable.
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Modify-Order
+ */
+export const modifyOrder = async (client: BinanceRestClient, params: ModifyOrderParams): Promise<OrderResult> => {
+  const body: Record<string, string | number> = {
+    symbol: params.symbol.toUpperCase(),
+    orderId: params.orderId,
+    side: params.side,
+    quantity: params.quantity,
+    price: params.price,
+  };
+  if (params.priceMatch !== undefined) body.priceMatch = params.priceMatch;
+  return client.signedPut<OrderResult>('/fapi/v1/order', body);
+};
+
 export const cancelOrder = async (client: BinanceRestClient, symbol: string, orderId: number): Promise<OrderResult> => {
   return client.signedDelete<OrderResult>('/fapi/v1/order', {
     symbol: symbol.toUpperCase(),

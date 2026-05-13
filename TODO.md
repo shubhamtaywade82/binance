@@ -18,7 +18,7 @@ Items marked ✅ are already implemented.
 | ✅ | `DELETE /fapi/v1/algoOrder` | Cancel single algo order |
 | ✅ | `DELETE /fapi/v1/algoOrderList` | Cancel all algo orders for symbol |
 | ✅ | `GET /fapi/v1/openAlgoOrders` | Fetch open TP/SL IDs |
-| ☐ | `PUT /fapi/v1/order` | **Modify Order** — amend price/qty in-place instead of cancel+resubmit |
+| ✅ | `PUT /fapi/v1/order` | **Modify Order** — `modifyOrder` in `rest-trade.ts`; amend price/qty in-place |
 | ☐ | `POST /fapi/v1/batchOrders` | **Place Multiple Orders** — atomic multi-leg entries |
 | ☐ | `PUT /fapi/v1/batchOrders` | **Modify Multiple Orders** |
 | ☐ | `DELETE /fapi/v1/batchOrders` | **Cancel Multiple Orders** |
@@ -116,7 +116,7 @@ Items marked ✅ are already implemented.
 | ✅ | `algoOrder.cancel` | WS algo cancel |
 | ☐ | `session.status` | **Session Status** — heartbeat/auth check |
 | ☐ | `session.logout` | **Session Logout** — clean teardown |
-| ☐ | `order.modify` | **Modify Order** — amend via WS instead of REST round-trip |
+| ✅ | `order.modify` | **Modify Order** — `orderModify` on `BinanceFuturesWsApiClient` |
 | ☐ | `order.status` | **Query Order** via WS |
 
 ---
@@ -149,7 +149,7 @@ Items marked ✅ are already implemented.
 | ✅ | Precision rounding | tick/step size |
 | ✅ | Reduce-only close orders | Via closePosition flag |
 | ☐ | **Batch order submission** | Use `POST /fapi/v1/batchOrders` for atomic entry + bracket in one request |
-| ☐ | **Modify order in-place** | `PUT /fapi/v1/order` / `order.modify` instead of cancel+resubmit |
+| ✅ | **Modify order in-place** | `modifyOrder` REST + `orderModify` WS + `modifyRegularOrder` / `amendAlgoStopPrice` on adapter |
 | ☐ | **Post-only limit entry** | LIMIT with `timeInForce=GTX` for maker fills and lower fees |
 | ☐ | **Trailing stop** | `TRAILING_STOP_MARKET` order type |
 | ✅ | **Hedge mode support** | `GET /fapi/v1/positionSide/dual` → `BinanceLiveExecutionAdapter.setHedgeMode` → `positionSide` on entry/algo/close |
@@ -267,7 +267,7 @@ Items marked ✅ are already implemented.
 ### P1 — Edge & Execution Quality
 8. ✅ Trade Flow Imbalance (TFI) — `microstructure.ts` + tests + orchestrator + dashboard
 9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
-10. `PUT /fapi/v1/order` / `order.modify` — amend SL/TP in-place
+10. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
 11. `POST /fapi/v1/batchOrders` — atomic entry + bracket
 12. `GET /fapi/v1/leverageBracket` — accurate liquidation price per notional tier
 13. `GET /fapi/v1/income` — server-side PnL reconciliation
