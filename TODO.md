@@ -165,9 +165,9 @@ Items marked ✅ are already implemented.
 |--------|---------|-------|
 | ✅ | Order Book Imbalance (OBI) | Top-N bid/ask volume ratio |
 | ✅ | AggTrade tape | Ring buffer of recent trades |
-| ☐ | **Trade Flow Imbalance (TFI)** | Buy vol − Sell vol over rolling window; `trade.m` (maker side) already available in tape |
-| ☐ | **Weighted OBI** | Level-distance weighting: closer levels count more |
-| ☐ | **Microprice** | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` — better than mid |
+| ✅ | **Trade Flow Imbalance (TFI)** | `tradeFlowImbalance(tape, windowSec)` in `microstructure.ts`; 1 s / 5 s / 30 s windows; wired into orchestrator heartbeat + dashboard |
+| ✅ | **Weighted OBI** | `weightedObi(book, levels)` in `microstructure.ts`; level-distance weighting; top-5 / top-10 snapshots in dashboard |
+| ✅ | **Microprice** | `microprice(book)` in `microstructure.ts`; `(ask × bidVol + bid × askVol) / (bidVol + askVol)`; included in heartbeat + UI |
 | ☐ | **Order Flow Imbalance (OFI)** | Δbid_size − Δask_size per depth diff event |
 | ☐ | **Depth pressure** | Σ(bid_vol / price_dist) − Σ(ask_vol / price_dist) |
 | ☐ | **Rolling realized volatility** | √Σ(log-return²) over 1 s / 5 s / 1 m windows |
@@ -265,8 +265,8 @@ Items marked ✅ are already implemented.
 7. `ALGO_ORDER_UPDATE` + `CONDITIONAL_ORDER_TRIGGER_REJECT` private stream events
 
 ### P1 — Edge & Execution Quality
-8. Trade Flow Imbalance (TFI) from existing AggTradeTape
-9. Weighted OBI + Microprice
+8. ✅ Trade Flow Imbalance (TFI) — `microstructure.ts` + tests + orchestrator + dashboard
+9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
 10. `PUT /fapi/v1/order` / `order.modify` — amend SL/TP in-place
 11. `POST /fapi/v1/batchOrders` — atomic entry + bracket
 12. `GET /fapi/v1/leverageBracket` — accurate liquidation price per notional tier

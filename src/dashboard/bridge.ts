@@ -27,6 +27,7 @@ import {
 } from '../ai/supertrend-tune';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
+import { snapshotMicrostructure } from '../binance/microstructure';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -611,6 +612,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           },
           depth: obFor(sym).topLevels(depthLevelsUi),
           trades: tapeFor(sym).recent(60),
+          microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
           indicators: computeIndicatorsFromRows(rows, sym),
           signals,
         };
@@ -843,6 +845,11 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         qty: t.qty,
         ts: t.ts,
         makerSide: t.makerSide,
+      });
+      broadcast({
+        type: 'microstructure',
+        symbol: symU,
+        ...snapshotMicrostructure(tapeFor(symU), obFor(symU)),
       });
     },
     onDepthDiff: (d: DepthDiff & { s: string }) => {

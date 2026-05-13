@@ -14,6 +14,7 @@ import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { MultiTimeframeStore } from './binance/multi-tf-store';
 import { LocalOrderBook } from './binance/orderbook';
 import { AggTradeTape } from './binance/trade-tape';
+import { snapshotMicrostructure, type MicrostructureSnapshot } from './binance/microstructure';
 import { PerSymbolMarketFeeds } from './binance/per-symbol-market-feeds';
 import type { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
 import { fetchHistoricalKlines } from './binance/historical';
@@ -478,6 +479,11 @@ export class HybridOrchestrator {
     return this.tradeTape;
   }
 
+  /** Latest microstructure features (TFI, weighted OBI, microprice) for the primary symbol. */
+  getMicrostructure(): MicrostructureSnapshot {
+    return snapshotMicrostructure(this.tradeTape, this.orderbook);
+  }
+
   private scheduleHeartbeat(): void {
     this.clearHeartbeat();
     const sec = this.cfg.LOG_HEARTBEAT_SEC;
@@ -495,6 +501,7 @@ export class HybridOrchestrator {
   private logHeartbeat(): void {
     const htfBias = this.reversalTrendBias();
     const ltfBias = biasFromCandles(this.c15);
+    const micro = this.getMicrostructure();
     this.log.info('heartbeat', {
       binanceMark: this.lastMark,
       ltpConfirmed: this.ltpConfirmed,
@@ -504,6 +511,9 @@ export class HybridOrchestrator {
       barsExec: this.c15.length,
       barsHTF: this.c1h.length,
       inPosition: this.positionManager.hasPosition(),
+      tfi1s: +micro.tfi1s.tfi.toFixed(4),
+      weightedObi5: +micro.weightedObi5.weightedObi.toFixed(4),
+      microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
     });
   }
 
