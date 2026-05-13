@@ -1679,3 +1679,59 @@ scrape_configs:
 | `bot_errors_total rate > 5/min` | Telegram: error storm |
 | `bot_pnl_usdt < −N` | Telegram: absolute loss threshold hit |
 | Bot process silent > 60 s | External watchdog → force-close all + alert |
+
+---
+
+## 20. Testnet / Mainnet Environment Hardening
+
+Core switching is already implemented (`BINANCE_FUTURES_TESTNET`, `binanceRestBase`, `binanceWsBase`,
+WS API testnet URL). The gaps below are safety and workflow items.
+
+### 20.1 What's Already Done
+
+| Feature | Location |
+|---------|----------|
+| `BINANCE_FUTURES_TESTNET` flag | `config.ts:216` |
+| REST URL routing | `config.ts:360` — `https://testnet.binancefuture.com` |
+| Public WS URL routing | `config.ts:367` — `wss://fstream.binancefuture.com` |
+| WS API URL routing | `futures-ws-api.ts:21` — `wss://testnet.binancefuture.com/ws-fapi/v1` |
+| `.env.example` key-swap documentation | `.env.example:119–129` |
+| Safe paper default | `EXECUTION_MODE=paper`, `READ_ONLY=true` |
+
+### 20.2 Missing Safety & Workflow Items
+
+| Status | Item | Notes |
+|--------|------|-------|
+| ☐ | **Environment validation on startup** | If `BINANCE_FUTURES_TESTNET=false` and `EXECUTION_MODE=live`, log a loud warning and require explicit `CONFIRMED_LIVE=true` env var to proceed — prevents accidental mainnet live orders during development |
+| ☐ | **Shadow mode flag** (`SHADOW_MODE=true`) | Connect to mainnet data streams but suppress ALL order placement at the adapter level regardless of `EXECUTION_MODE`; log what *would* have been sent. Different from `READ_ONLY` (which is adapter-level, not enforced centrally). Needed for Phase 3 of the deployment workflow. |
+| ☐ | **Shadow prediction log** | When `SHADOW_MODE=true`, record every signal with timestamp, direction, and the actual price outcome N seconds later for offline accuracy measurement |
+| ☐ | **Max notional cap for Phase 4** | `MAX_NOTIONAL_USDT` env var that hard-caps order size regardless of risk engine output; set to e.g. 50 USDT during first live week |
+| ☐ | **`demo-fapi.binance.com` support** | Config comment mentions it but URL is not wired in; add as a third option (`BINANCE_PRODUCT=usdm_demo`) for the Binance portfolio margin demo environment |
+| ☐ | **Testnet liquidity warning** | Log a startup notice when `BINANCE_FUTURES_TESTNET=true` reminding that fills and slippage are not realistic and paper results will not transfer directly to mainnet |
+
+### 20.3 Four-Phase Deployment Checklist
+
+```
+Phase 1 — Backtesting (offline)
+  ✘ Backtest engine not built (see §17)
+  Action: build kline-replay engine, train LightGBM on historical data
+
+Phase 2 — Testnet paper trading
+  ✔ BINANCE_FUTURES_TESTNET=true
+  ✔ EXECUTION_MODE=paper (simulated fills, no real orders)
+  ✔ Use testnet API keys from testnet.binancefuture.com
+  ✘ Shadow prediction log not built (see §20.2)
+  Action: run full pipeline, verify execution latency, fill logic, risk controls
+
+Phase 3 — Shadow mode on mainnet
+  ✘ SHADOW_MODE flag not built (see §20.2)
+  ✔ BINANCE_FUTURES_TESTNET=false  (real market data)
+  Action: SHADOW_MODE=true, compare model signals vs actual market moves for N days
+
+Phase 4 — Live trading (small capital)
+  ✔ BINANCE_FUTURES_TESTNET=false
+  ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
+  ✘ MAX_NOTIONAL_USDT cap not built (see §20.2)
+  ✘ CONFIRMED_LIVE guard not built (see §20.2)
+  Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
+```
