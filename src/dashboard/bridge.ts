@@ -132,6 +132,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let aiBriefInflight = false;
   let aiBriefWarnedNoModel = false;
   let aiBriefWarnedCloudKey = false;
+  /** Throttle partial `ai_brief` WebSocket frames when streaming. */
+  let lastAiBriefStreamBroadcastAt = 0;
+  const AI_BRIEF_STREAM_MIN_MS = 75;
 
   const supertrendParamsBySym = new Map<string, { period: number; mult: number }>();
   const lastSupertrendTuneAtBySym = new Map<string, number>();
@@ -235,16 +238,40 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             model: cfg.OLLAMA_MODEL,
             apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+            thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
+            streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+            onStreamChunk:
+              cfg.AI_BRIEF_STREAM_ENABLED === true
+                ? ({ content, thinking }) => {
+                    const t = Date.now();
+                    if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
+                    lastAiBriefStreamBroadcastAt = t;
+                    broadcast({
+                      type: 'ai_brief',
+                      text: content,
+                      thinking,
+                      partial: true,
+                      ts: t,
+                    });
+                  }
+                : undefined,
           },
           snapshot,
         ).then((r) => {
           aiBriefInflight = false;
           lastAiBriefAt = Date.now();
-          if (r.text) {
-            broadcast({ type: 'ai_brief', text: r.text, ts: Date.now() });
-          } else if (r.error) {
-            broadcast({ type: 'ai_brief', error: r.error, ts: Date.now() });
+          const ts = Date.now();
+          if (r.error) {
+            broadcast({ type: 'ai_brief', error: r.error, partial: false, ts });
+            return;
           }
+          broadcast({
+            type: 'ai_brief',
+            text: r.text ?? '',
+            thinking: r.thinking ?? '',
+            partial: false,
+            ts,
+          });
         });
       }
 

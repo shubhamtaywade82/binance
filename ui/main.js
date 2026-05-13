@@ -404,23 +404,45 @@ const dispatch = (msg) => {
     case 'ai_brief': {
       const body = document.getElementById('ai-brief-body');
       const st = document.getElementById('ai-brief-status');
+      const isPartial = msg.partial === true;
       if (st) {
-        st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
-        st.className = `mono-sm ${msg.error ? 'bear' : 'dim'}`;
-      }
-      if (body) {
         if (msg.error) {
-          body.classList.add('ai-brief-prose');
-          body.innerHTML = `<p class="ai-brief-error"><strong>Error</strong> — ${escapeHtml(String(msg.error))}</p>`;
+          st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
+          st.className = 'mono-sm bear';
+        } else if (isPartial) {
+          st.textContent = 'Streaming…';
+          st.className = 'mono-sm dim';
         } else {
-          body.classList.add('ai-brief-prose');
-          body.innerHTML = renderAiBriefMarkdown(msg.text ?? '');
-          body.querySelectorAll('a[href^="http"]').forEach((a) => {
-            a.setAttribute('target', '_blank');
-            a.setAttribute('rel', 'noopener noreferrer');
-          });
+          st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
+          st.className = 'mono-sm dim';
         }
       }
+      if (!body) break;
+      body.classList.add('ai-brief-prose');
+      if (msg.error) {
+        body.innerHTML = `<p class="ai-brief-error"><strong>Error</strong> — ${escapeHtml(String(msg.error))}</p>`;
+        break;
+      }
+      const text = typeof msg.text === 'string' ? msg.text : '';
+      const thinking = typeof msg.thinking === 'string' ? msg.thinking : '';
+      const thinkOpen = isPartial ? ' open' : '';
+      const thinkBlock =
+        thinking.trim().length > 0
+          ? `<details class="ai-brief-thinking-details"${thinkOpen}><summary class="ai-brief-thinking-summary">Reasoning</summary><pre class="ai-brief-thinking-pre">${escapeHtml(thinking)}</pre></details>`
+          : '';
+      let mdBlock;
+      if (text.trim().length > 0) {
+        mdBlock = renderAiBriefMarkdown(text);
+      } else if (thinking.trim().length > 0) {
+        mdBlock = '<p class="ai-brief-muted mono-sm">Generating brief…</p>';
+      } else {
+        mdBlock = renderAiBriefMarkdown('');
+      }
+      body.innerHTML = `${thinkBlock}<div class="ai-brief-md">${mdBlock}</div>`;
+      body.querySelectorAll('a[href^="http"]').forEach((a) => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
       break;
     }
 

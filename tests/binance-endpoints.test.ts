@@ -66,6 +66,12 @@ describe('AI SuperTrend tuning env', () => {
     expect(cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC).toBe(300);
   });
 
+  it('defaults AI brief think/stream off', () => {
+    const cfg = AppConfigSchema.parse({});
+    expect(cfg.AI_BRIEF_THINK_ENABLED).toBe(false);
+    expect(cfg.AI_BRIEF_STREAM_ENABLED).toBe(false);
+  });
+
   it('parses tuning enabled and interval bounds', () => {
     const cfg = AppConfigSchema.parse({
       AI_SUPERTREND_TUNING_ENABLED: 'true',

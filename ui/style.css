@@ -1089,7 +1089,8 @@ body::before {
 }
 .sentiment-axis {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto;
   align-items: baseline;
   padding: 0 0 4px;
   font-family: var(--font-mono);
@@ -1100,18 +1101,25 @@ body::before {
   user-select: none;
 }
 .sentiment-axis-ask {
+  grid-column: 1;
+  grid-row: 1;
   justify-self: start;
   color: rgba(255, 23, 68, 0.82);
 }
 .sentiment-axis-mid {
+  grid-column: 1 / -1;
+  grid-row: 1;
   justify-self: center;
   font-size: 8px;
   font-weight: 700;
   color: var(--text-dim);
-  letter-spacing: 0.2px;
+  letter-spacing: normal;
   text-transform: none;
+  pointer-events: none;
 }
 .sentiment-axis-bid {
+  grid-column: 2;
+  grid-row: 1;
   justify-self: end;
   color: rgba(0, 230, 118, 0.82);
 }
@@ -1119,8 +1127,10 @@ body::before {
 .gauge-pct {
   position: static;
   margin-top: 2px;
-  text-align: center;
-  align-self: center;
+  display: flex;
+  justify-content: center;
+  align-self: stretch;
+  width: 100%;
   font-family: var(--font-mono); font-size: 18px; font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
@@ -1346,6 +1356,36 @@ body::before {
 .ai-brief-muted {
   color: var(--text-dim);
   font-size: 11px;
+}
+.ai-brief-thinking-details {
+  margin: 0 0 0.65em;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.ai-brief-thinking-summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  user-select: none;
+}
+.ai-brief-thinking-summary:hover {
+  color: var(--text-primary);
+}
+.ai-brief-thinking-pre {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0 8px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+}
+.ai-brief-md {
+  min-height: 0;
 }
 .ai-brief-empty {
   color: var(--text-dim);
