@@ -40,7 +40,10 @@ const makeFunding = (): FundingSnapshot => ({
 const makeOi = (): OiSnapshot => ({
   oi: 50000,
   oiDelta1m: 100,
+  oiDelta5m: 400,
   oiZscore: 1.2,
+  oiDivergence: 0,
+  oiSpike: 0,
   regime: 'price_up_oi_up',
 });
 
@@ -56,6 +59,14 @@ const makeSource = (overrides?: Partial<FeatureSourceData>): FeatureSourceData =
   oi: makeOi(),
   liquidation: makeLiquidation(),
   ofiCumulative: 42,
+  bookSlope: { bidSlope: 0.05, askSlope: 0.04 },
+  liquidityGap: 0.02,
+  tradeFlowExt: { signedVolume: 5.0, burstiness: 1.2, directionStreak: 3, largeTradeFlag: 0 },
+  candleFeatures1m: { volumeZscore: 0.8, rangeExpansion: 1.1, trendSlope: 0.001, momentum: 0.01 },
+  candleFeatures5m: { volumeZscore: 0.5, rangeExpansion: 0.9, trendSlope: 0.002, momentum: 0.03 },
+  depthChange: { cancelIntensity: 0.5, bookThinning: -0.02, bidWallPersistence: 3.0, askWallPersistence: 2.5 },
+  markPrice: 100.1,
+  lastTradePrice: 100.05,
   symbol: 'SOLUSDT',
   candle1m: { openTime: 1000, open: 99, high: 101, low: 98, close: 100, volume: 5000 },
   candle5m: { openTime: 1000, open: 98, high: 102, low: 97, close: 101, volume: 25000 },
@@ -92,10 +103,49 @@ describe('feature-schema', () => {
       expect(fv.funding_extreme_flag).toBe(0);
       expect(fv.oi).toBe(50000);
       expect(fv.oi_delta_1m).toBe(100);
+      expect(fv.oi_delta_5m).toBe(400);
       expect(fv.oi_zscore).toBe(1.2);
+      expect(fv.oi_divergence).toBe(0);
+      expect(fv.oi_spike).toBe(0);
       expect(fv.price_oi_regime).toBe(1);
       expect(fv.liquidation_volume_30s).toBe(500000);
       expect(fv.liquidation_side_bias_30s).toBe(0.3);
+    });
+
+    it('maps book slope and liquidity gap', () => {
+      const fv = buildFeatureVector(makeSource());
+      expect(fv.book_slope_bid).toBe(0.05);
+      expect(fv.book_slope_ask).toBe(0.04);
+      expect(fv.liquidity_gap).toBe(0.02);
+    });
+
+    it('maps extended trade flow features', () => {
+      const fv = buildFeatureVector(makeSource());
+      expect(fv.signed_volume_5s).toBe(5.0);
+      expect(fv.burstiness).toBe(1.2);
+      expect(fv.last_trade_direction_streak).toBe(3);
+      expect(fv.large_trade_flag).toBe(0);
+    });
+
+    it('maps candle-derived features from source', () => {
+      const fv = buildFeatureVector(makeSource());
+      expect(fv.volume_zscore_1m).toBe(0.8);
+      expect(fv.range_expansion).toBe(1.1);
+      expect(fv.trend_slope).toBe(0.001);
+      expect(fv.momentum_5m).toBe(0.03);
+    });
+
+    it('maps depth change tracking features', () => {
+      const fv = buildFeatureVector(makeSource());
+      expect(fv.cancel_intensity).toBe(0.5);
+      expect(fv.book_thinning).toBe(-0.02);
+      expect(fv.bid_wall_persistence).toBe(3.0);
+      expect(fv.ask_wall_persistence).toBe(2.5);
+    });
+
+    it('computes mark-last basis', () => {
+      const fv = buildFeatureVector(makeSource());
+      expect(fv.mark_last_basis).toBeCloseTo((100.1 - 100.05) / 100.05, 6);
     });
 
     it('computes candle-derived features', () => {

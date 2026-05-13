@@ -297,6 +297,11 @@ Items marked ✅ are already implemented.
 > inference client with circuit breaker (`inference-client.ts`), ML decision gate (`ml-gate.ts`),
 > prediction logger (`prediction-logger.ts`), wired into orchestrator behind `ML_ENABLED` flag.
 > Python ML bot scaffolding in `ml_bot/` (training, inference server, feature engine).
+> **16.2 Feature Schema** fully implemented: all ~50 feature columns built including microstructure
+> (book slope, liquidity gap, cancel intensity, book thinning, wall persistence), trade flow
+> (signed volume, burstiness, direction streak, large trade flag), candle-derived (volume zscore,
+> range expansion, trend slope, momentum), OI extensions (delta 5m, divergence, spike), and
+> mark-last basis. `DepthChangeTracker` added for stateful depth change features.
 > **Next**: Collect training data, train LightGBM baseline, deploy inference server.
 
 ---
@@ -330,11 +335,11 @@ Every row in the training set and live inference vector should contain:
 | ✅ | `obi_10` | Top-10 weighted bid/ask volume imbalance — `feature-schema.ts` |
 | ✅ | `weighted_depth_imbalance` | Level-distance weighted OBI — `feature-schema.ts` |
 | ✅ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff — `feature-schema.ts` (ofi_cumulative) |
-| ☐ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient |
-| ☐ | `liquidity_gap` | Largest price gap in top-20 levels |
-| ☐ | `cancel_intensity` | Rate of depth level removals |
-| ☐ | `book_thinning` | Rolling decrease in total top-N depth volume |
-| ☐ | `bid_wall_persistence` / `ask_wall_persistence` | How long large levels survive before cancellation |
+| ✅ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient — `microstructure.ts bookSlope()` + `feature-schema.ts` |
+| ✅ | `liquidity_gap` | Largest price gap in top-20 levels — `microstructure.ts liquidityGap()` + `feature-schema.ts` |
+| ✅ | `cancel_intensity` | Rate of depth level removals — `depth-change-tracker.ts` + `feature-schema.ts` |
+| ✅ | `book_thinning` | Rolling decrease in total top-N depth volume — `depth-change-tracker.ts` + `feature-schema.ts` |
+| ✅ | `bid_wall_persistence` / `ask_wall_persistence` | How long large levels survive before cancellation — `depth-change-tracker.ts` + `feature-schema.ts` |
 
 #### Trade flow / aggression features
 
@@ -342,10 +347,10 @@ Every row in the training set and live inference vector should contain:
 |--------|---------|--------|
 | ✅ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol — `feature-schema.ts` |
 | ✅ | `trade_intensity_1s` | Trade count per second — `feature-schema.ts` |
-| ☐ | `signed_volume_5s` | Net aggressor volume |
-| ☐ | `burstiness` | Variance of inter-trade arrival times |
-| ☐ | `last_trade_direction_streak` | Consecutive same-side trades |
-| ☐ | `large_trade_flag` | Trade qty > N × rolling avg qty |
+| ✅ | `signed_volume_5s` | Net aggressor volume — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `burstiness` | CV of inter-trade arrival times — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `last_trade_direction_streak` | Consecutive same-side trades — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `large_trade_flag` | Trade qty > 3× rolling avg qty — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
 
 #### OHLCV / candle features
 
@@ -355,28 +360,28 @@ Every row in the training set and live inference vector should contain:
 | ✅ | `vol_1m` | Realized volatility — `feature-schema.ts` (rv_1s, rv_5s, rv_1m) |
 | ✅ | `candle_body_pct` | `abs(close − open) / (high − low)` — `feature-schema.ts` |
 | ✅ | `wick_ratio_upper` | Wick size relative to range — `feature-schema.ts` |
-| ☐ | `volume_zscore_1m` | Volume vs rolling mean/std |
-| ☐ | `range_expansion` | Current range vs N-bar avg range |
-| ☐ | `trend_slope` | Linear regression slope over last N bars |
-| ☐ | `momentum_5m` / `momentum_15m` | Close-to-close return over N bars |
+| ✅ | `volume_zscore_1m` | Volume vs rolling mean/std — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `range_expansion` | Current range vs N-bar avg range — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `trend_slope` | Linear regression slope over last N bars — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `momentum_5m` / `momentum_15m` | Close-to-close return over N bars — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
 
 #### Open interest / derivatives features
 
 | Status | Feature | Source |
 |--------|---------|--------|
 | ✅ | `oi_delta_1m` | Change in OI — `feature-schema.ts` |
-| ☐ | `oi_delta_5m` | Change in OI over 5 min |
+| ✅ | `oi_delta_5m` | Change in OI over 5 min — extended `OiPoller.snapshot()` + `feature-schema.ts` |
 | ✅ | `oi_zscore` | OI delta z-score — `feature-schema.ts` |
 | ✅ | `price_oi_regime` | Encoded 0–4 — `feature-schema.ts` |
-| ☐ | `oi_divergence` | OI direction opposing price direction |
-| ☐ | `oi_spike` | OI change > N × rolling std |
+| ✅ | `oi_divergence` | OI direction opposing price direction — extended `OiPoller.snapshot()` + `feature-schema.ts` |
+| ✅ | `oi_spike` | OI change > 2σ rolling std — extended `OiPoller.snapshot()` + `feature-schema.ts` |
 
 #### Funding / mark price features
 
 | Status | Feature | Source |
 |--------|---------|--------|
 | ✅ | `funding_zscore` | Current funding rate vs rolling 24h mean/std — `feature-schema.ts` |
-| ☐ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` |
+| ✅ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` — computed in `buildFeatureVector()` |
 | ✅ | `liquidation_pressure_proxy` | Rolling forced-order volume — `feature-schema.ts` (liquidation_volume_30s) |
 | ✅ | `funding_extreme_flag` | Funding > 2 std — `feature-schema.ts` |
 

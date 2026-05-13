@@ -11,7 +11,10 @@ export type PriceOiRegime =
 export interface OiSnapshot {
   oi: number;
   oiDelta1m: number;
+  oiDelta5m: number;
   oiZscore: number;
+  oiDivergence: number;
+  oiSpike: number;
   regime: PriceOiRegime;
 }
 
@@ -62,17 +65,27 @@ export class OiPoller {
 
   snapshot(): OiSnapshot {
     const len = this.history.length;
-    if (len < 2) return { oi: this.history[len - 1] ?? 0, oiDelta1m: 0, oiZscore: 0, regime: 'neutral' };
+    if (len < 2) return { oi: this.history[len - 1] ?? 0, oiDelta1m: 0, oiDelta5m: 0, oiZscore: 0, oiDivergence: 0, oiSpike: 0, regime: 'neutral' };
 
     const current = this.history[len - 1];
     const samplesPerMin = Math.max(1, Math.round(60 / this.intervalSec));
-    const prev = this.history[Math.max(0, len - 1 - samplesPerMin)];
-    const oiDelta1m = current - prev;
+    const prev1m = this.history[Math.max(0, len - 1 - samplesPerMin)];
+    const oiDelta1m = current - prev1m;
+
+    const samplesPer5m = Math.max(1, Math.round(300 / this.intervalSec));
+    const prev5m = this.history[Math.max(0, len - 1 - samplesPer5m)];
+    const oiDelta5m = current - prev5m;
 
     const deltas = this.computeDeltas();
     const oiZscore = this.zscore(deltas, oiDelta1m);
 
-    return { oi: current, oiDelta1m, oiZscore, regime: this.classify(oiDelta1m) };
+    const priceDir = this.currentPrice > this.prevPrice ? 1 : this.currentPrice < this.prevPrice ? -1 : 0;
+    const oiDir = oiDelta1m > 0 ? 1 : oiDelta1m < 0 ? -1 : 0;
+    const oiDivergence = (priceDir !== 0 && oiDir !== 0 && priceDir !== oiDir) ? 1 : 0;
+
+    const oiSpike = (deltas.length >= 2 && Math.abs(oiZscore) > 2) ? 1 : 0;
+
+    return { oi: current, oiDelta1m, oiDelta5m, oiZscore, oiDivergence, oiSpike, regime: this.classify(oiDelta1m) };
   }
 
   private computeDeltas(): number[] {

@@ -199,6 +199,175 @@ export const spreadBps = (book: LocalOrderBook): number | null => {
   return (s / mid) * 10_000;
 };
 
+// ─── Book Slope ──────────────────────────────────────────────────────────
+
+export interface BookSlopeResult {
+  bidSlope: number;
+  askSlope: number;
+}
+
+/**
+ * Volume-weighted price gradient: Σ(qty × distance) / Σ(qty) for each side.
+ * Higher slope = volume is concentrated away from best; lower = clustered near top.
+ */
+export const bookSlope = (book: LocalOrderBook, levels: number): BookSlopeResult => {
+  const mid = book.midPrice();
+  if (mid === null || mid <= 0) return { bidSlope: 0, askSlope: 0 };
+
+  const { bids, asks } = book.topLevels(levels);
+
+  const slopeOfSide = (side: PriceLevel[]): number => {
+    let weightedDist = 0;
+    let totalQty = 0;
+    for (const lvl of side) {
+      const dist = Math.abs(lvl.price - mid);
+      weightedDist += lvl.qty * dist;
+      totalQty += lvl.qty;
+    }
+    return totalQty > 0 ? weightedDist / totalQty : 0;
+  };
+
+  return { bidSlope: slopeOfSide(bids), askSlope: slopeOfSide(asks) };
+};
+
+// ─── Liquidity Gap ───────────────────────────────────────────────────────
+
+/**
+ * Largest price gap between consecutive levels in the top N of each side.
+ * Returns the max of bid-side and ask-side gaps. Signals thin liquidity pockets.
+ */
+export const liquidityGap = (book: LocalOrderBook, levels: number): number => {
+  const { bids, asks } = book.topLevels(levels);
+
+  const maxGap = (side: PriceLevel[]): number => {
+    if (side.length < 2) return 0;
+    let gap = 0;
+    for (let i = 1; i < side.length; i++) {
+      gap = Math.max(gap, Math.abs(side[i].price - side[i - 1].price));
+    }
+    return gap;
+  };
+
+  return Math.max(maxGap(bids), maxGap(asks));
+};
+
+// ─── Trade Flow Extended ─────────────────────────────────────────────────
+
+export interface TradeFlowExtended {
+  signedVolume: number;
+  burstiness: number;
+  directionStreak: number;
+  largeTradeFlag: number;
+}
+
+/**
+ * Extended trade flow features from the aggTrade tape.
+ * - signedVolume: net buy - sell volume (same as TFI but explicit naming)
+ * - burstiness: coefficient of variation of inter-trade arrival times (higher = more bursty)
+ * - directionStreak: consecutive trades on the same side (positive = buys, negative = sells)
+ * - largeTradeFlag: 1 if the latest trade qty > 3× rolling avg qty, else 0
+ */
+export const tradeFlowExtended = (tape: AggTradeTape, windowSec: number): TradeFlowExtended => {
+  const trades = tape.recent(windowSec);
+  if (trades.length < 2) {
+    return { signedVolume: 0, burstiness: 0, directionStreak: 0, largeTradeFlag: 0 };
+  }
+
+  let buyVol = 0;
+  let sellVol = 0;
+  const interArrivals: number[] = [];
+
+  for (let i = 0; i < trades.length; i++) {
+    if (trades[i].makerSide) buyVol += trades[i].qty;
+    else sellVol += trades[i].qty;
+    if (i > 0) interArrivals.push(trades[i].ts - trades[i - 1].ts);
+  }
+
+  let burstiness = 0;
+  if (interArrivals.length > 1) {
+    const mean = interArrivals.reduce((a, b) => a + b, 0) / interArrivals.length;
+    if (mean > 0) {
+      const variance = interArrivals.reduce((s, v) => s + (v - mean) ** 2, 0) / interArrivals.length;
+      burstiness = Math.sqrt(variance) / mean;
+    }
+  }
+
+  let streak = 0;
+  const last = trades[trades.length - 1];
+  const lastDir = last.makerSide;
+  for (let i = trades.length - 1; i >= 0; i--) {
+    if (trades[i].makerSide !== lastDir) break;
+    streak++;
+  }
+  const directionStreak = lastDir ? streak : -streak;
+
+  const avgQty = trades.reduce((s, t) => s + t.qty, 0) / trades.length;
+  const largeTradeFlag = last.qty > 3 * avgQty ? 1 : 0;
+
+  return {
+    signedVolume: buyVol - sellVol,
+    burstiness,
+    directionStreak,
+    largeTradeFlag,
+  };
+};
+
+// ─── Candle-Derived Features ─────────────────────────────────────────────
+
+export interface CandleDerivedFeatures {
+  volumeZscore: number;
+  rangeExpansion: number;
+  trendSlope: number;
+  momentum: number;
+}
+
+/**
+ * Compute candle-derived features from a series of candles.
+ * - volumeZscore: latest bar volume vs rolling mean/std
+ * - rangeExpansion: latest bar range vs N-bar average range
+ * - trendSlope: linear regression slope of closes over last N bars (normalized by mean close)
+ * - momentum: close-to-close return over N bars
+ */
+export const candleDerivedFeatures = (
+  candles: ReadonlyArray<{ open: number; high: number; low: number; close: number; volume: number }>,
+  lookback = 20,
+): CandleDerivedFeatures => {
+  if (candles.length < 3) {
+    return { volumeZscore: 0, rangeExpansion: 0, trendSlope: 0, momentum: 0 };
+  }
+
+  const n = Math.min(lookback, candles.length);
+  const recent = candles.slice(-n);
+  const latest = recent[recent.length - 1];
+
+  const volumes = recent.map((c) => c.volume);
+  const vMean = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+  const vStd = Math.sqrt(volumes.reduce((s, v) => s + (v - vMean) ** 2, 0) / volumes.length);
+  const volumeZscore = vStd > 0 ? (latest.volume - vMean) / vStd : 0;
+
+  const ranges = recent.map((c) => c.high - c.low);
+  const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
+  const latestRange = latest.high - latest.low;
+  const rangeExpansion = avgRange > 0 ? latestRange / avgRange : 0;
+
+  const closes = recent.map((c) => c.close);
+  const meanClose = closes.reduce((a, b) => a + b, 0) / closes.length;
+  let sumXY = 0;
+  let sumX2 = 0;
+  const halfN = (closes.length - 1) / 2;
+  for (let i = 0; i < closes.length; i++) {
+    const x = i - halfN;
+    sumXY += x * closes[i];
+    sumX2 += x * x;
+  }
+  const trendSlope = sumX2 > 0 && meanClose > 0 ? (sumXY / sumX2) / meanClose : 0;
+
+  const first = recent[0];
+  const momentum = first.close > 0 ? Math.log(latest.close / first.close) : 0;
+
+  return { volumeZscore, rangeExpansion, trendSlope, momentum };
+};
+
 // ─── Extended Snapshot ───────────────────────────────────────────────────
 
 export interface MicrostructureSnapshot {

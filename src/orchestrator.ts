@@ -62,6 +62,8 @@ import { publish, CHANNELS } from './services/pubsub';
 import { setPosition, clearPosition, isKillSwitchActive } from './services/state';
 import { ExecutionRouter } from './execution/execution-router';
 import { buildFeatureVector, type FeatureSourceData } from './ai/feature-schema';
+import { bookSlope, liquidityGap, tradeFlowExtended, candleDerivedFeatures } from './binance/microstructure';
+import { DepthChangeTracker } from './binance/depth-change-tracker';
 import { FeatureNormalizer } from './ai/feature-normalizer';
 import { FeatureRecorder } from './ai/feature-recorder';
 import { InferenceClient } from './ai/inference-client';
@@ -200,6 +202,7 @@ export class HybridOrchestrator {
   private readonly mlRecorder: FeatureRecorder | null;
   private readonly mlInferenceClient: InferenceClient | null;
   private readonly mlPredictionLogger: PredictionLogger | null;
+  private readonly depthChangeTracker: DepthChangeTracker | null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -323,12 +326,14 @@ export class HybridOrchestrator {
         timeoutMs: cfg.ML_INFERENCE_TIMEOUT_MS,
       });
       this.mlPredictionLogger = new PredictionLogger(cfg.ML_PREDICTION_DIR);
+      this.depthChangeTracker = new DepthChangeTracker();
       this.log.info('ml_pipeline_initialized', { shadow: cfg.ML_SHADOW_MODE, inferenceUrl: cfg.ML_INFERENCE_URL });
     } else {
       this.mlNormalizer = null;
       this.mlRecorder = null;
       this.mlInferenceClient = null;
       this.mlPredictionLogger = null;
+      this.depthChangeTracker = null;
     }
   }
 
@@ -602,14 +607,26 @@ export class HybridOrchestrator {
     const liquidation = this.liquidationTracker.snapshot();
     const ofi = this.orderbook.isBootstrapped() ? 0 : 0;
 
-    const oiSnap = { oi: 0, oiDelta1m: 0, oiZscore: 0, regime: 'neutral' as const };
+    const oiSnap: import('./signals/oi-poller').OiSnapshot = { oi: 0, oiDelta1m: 0, oiDelta5m: 0, oiZscore: 0, oiDivergence: 0, oiSpike: 0, regime: 'neutral' };
+
+    this.depthChangeTracker?.update(this.orderbook);
 
     const candle1m = this.store.getSeries(sym, '1m').at(-1);
     const candle5m = this.store.getSeries(sym, '5m').at(-1);
+    const series1m = this.store.getSeries(sym, '1m');
+    const series5m = this.store.getSeries(sym, '5m');
 
     const src: FeatureSourceData = {
       micro, funding, oi: oiSnap, liquidation,
       ofiCumulative: ofi,
+      bookSlope: bookSlope(this.orderbook, 10),
+      liquidityGap: liquidityGap(this.orderbook, 20),
+      tradeFlowExt: tradeFlowExtended(this.tapeFor(sym), 5),
+      candleFeatures1m: candleDerivedFeatures(series1m, 20),
+      candleFeatures5m: candleDerivedFeatures(series5m, 20),
+      depthChange: this.depthChangeTracker?.snapshot() ?? { cancelIntensity: 0, bookThinning: 0, bidWallPersistence: 0, askWallPersistence: 0 },
+      markPrice: micro.mid ?? 0,
+      lastTradePrice: this.tapeFor(sym).lastPrice() ?? 0,
       candle1m, candle5m, symbol: sym,
     };
     return buildFeatureVector(src);
