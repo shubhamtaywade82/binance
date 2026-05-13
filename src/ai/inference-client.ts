@@ -79,11 +79,15 @@ export class InferenceClient {
       if (!res.ok) throw new Error(`inference HTTP ${res.status}`);
 
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      const output: ModelOutput = {
         p_up: Number(data.p_up) || 0,
         p_down: Number(data.p_down) || 0,
         p_flat: Number(data.p_flat) || 0,
       };
+      if (typeof data.model_version === 'string' && data.model_version) {
+        output.model_version = data.model_version;
+      }
+      return output;
     } finally {
       clearTimeout(timer);
     }

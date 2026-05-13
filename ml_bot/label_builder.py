@@ -1,44 +1,187 @@
-"""Build direction, volatility, and cost-adjusted labels from feature CSVs."""
+"""Build multi-horizon direction, regression, volatility, regime, and cost-adjusted labels."""
+
+from __future__ import annotations
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from typing import Sequence
 
-THRESHOLD_BPS = 4
-TAKER_FEE_BPS = 4
-HORIZONS = [5, 30, 60]
+THRESHOLD_BPS: float = 4.0
+TAKER_FEE_BPS: float = 4.0
+SLIPPAGE_BPS: float = 1.0
+HORIZONS_SEC: list[int] = [5, 30, 60, 300]
+CLIP_BPS: float = 50.0
+
+# Regime thresholds
+TREND_SLOPE_THRESH: float = 0.0003
+VOL_HIGH_THRESH: float = 0.002
 
 
-def build_labels(df: pd.DataFrame) -> pd.DataFrame:
-    threshold = THRESHOLD_BPS / 10_000
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
 
-    for h in HORIZONS:
-        col = f"future_return_{h}s"
-        df[col] = (df["mid_price"].shift(-h) - df["mid_price"]) / df["mid_price"].replace(0, np.nan)
+def _future_return(mid: pd.Series, horizon: int) -> pd.Series:
+    """Raw forward return over *horizon* rows (1-second rows assumed)."""
+    return (mid.shift(-horizon) - mid) / mid.replace(0, np.nan)
 
-        def label_direction(x: float) -> int:
-            if pd.isna(x):
-                return 0
-            if x > threshold:
-                return 1
-            if x < -threshold:
-                return -1
-            return 0
 
-        df[f"y_{h}s"] = df[col].apply(label_direction)
+def _realized_vol(mid: pd.Series, horizon: int) -> pd.Series:
+    """Forward-looking realized volatility: std of log-returns over next *horizon* rows."""
+    log_ret = np.log(mid / mid.shift(1))
+    return log_ret.shift(-horizon).rolling(horizon).std()
 
-    df["y_vol_30s"] = (
-        df["mid_price"]
-        .pct_change()
-        .rolling(30)
-        .std()
-        .shift(-30)
+
+# ---------------------------------------------------------------------------
+# 1. Direction labels (multi-horizon)
+# ---------------------------------------------------------------------------
+
+def _direction_labels(df: pd.DataFrame, horizons: Sequence[int], threshold_bps: float) -> pd.DataFrame:
+    threshold = threshold_bps / 10_000
+    for h in horizons:
+        ret_col = f"y_return_{h}s"
+        df[ret_col] = _future_return(df["mid_price"], h)
+
+        df[f"y_direction_{h}s"] = np.select(
+            [df[ret_col] > threshold, df[ret_col] < -threshold],
+            [1, -1],
+            default=0,
+        )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 2. Regression labels (clipped)
+# ---------------------------------------------------------------------------
+
+def _regression_labels(df: pd.DataFrame, horizons: Sequence[int], clip_bps: float) -> pd.DataFrame:
+    clip_val = clip_bps / 10_000
+    for h in horizons:
+        ret_col = f"y_return_{h}s"
+        if ret_col not in df.columns:
+            df[ret_col] = _future_return(df["mid_price"], h)
+        df[f"y_reg_{h}s"] = df[ret_col].clip(-clip_val, clip_val)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 3. Volatility labels (forward-looking realized vol)
+# ---------------------------------------------------------------------------
+
+def _volatility_labels(df: pd.DataFrame, horizons: Sequence[int]) -> pd.DataFrame:
+    for h in horizons:
+        df[f"y_vol_{h}s"] = _realized_vol(df["mid_price"], h)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 4. Regime labels (rule-based: 0=chop, 1=trend, 2=high-vol)
+# ---------------------------------------------------------------------------
+
+def _regime_labels(df: pd.DataFrame) -> pd.DataFrame:
+    trend_slope = df.get("trend_slope", pd.Series(0.0, index=df.index))
+    rv_1m = df.get("rv_1m", pd.Series(0.0, index=df.index))
+
+    is_high_vol = rv_1m.abs() > VOL_HIGH_THRESH
+    is_trend = trend_slope.abs() > TREND_SLOPE_THRESH
+
+    df["label_regime"] = np.select(
+        [is_high_vol, is_trend],
+        [2, 1],
+        default=0,
     )
+    return df
 
-    df["tradeable"] = df["future_return_30s"].abs() > TAKER_FEE_BPS * 2 / 10_000
+
+# ---------------------------------------------------------------------------
+# 5. Leakage guard
+# ---------------------------------------------------------------------------
+
+_LABEL_PREFIXES = ("y_", "label_", "tradeable", "future_return")
+
+def validate_no_leakage(
+    df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    max_horizon: int,
+) -> list[str]:
+    """Return a list of violation messages if any feature column correlates
+    suspiciously with future data beyond the label horizon.
+
+    Checks:
+      1. No feature column name matches a label prefix.
+      2. For each feature, the cross-correlation with the *shifted* mid_price
+         at lag = -max_horizon should be near zero.
+    """
+    violations: list[str] = []
+
+    for col in feature_cols:
+        if any(col.startswith(p) for p in _LABEL_PREFIXES):
+            violations.append(f"Feature '{col}' has a label prefix — likely leakage")
+
+    if "mid_price" in df.columns:
+        future_mid = df["mid_price"].shift(-max_horizon)
+        for col in feature_cols:
+            if col not in df.columns:
+                continue
+            corr = df[col].corr(future_mid)
+            if abs(corr) > 0.95:
+                violations.append(
+                    f"Feature '{col}' has {corr:.3f} correlation with mid_price "
+                    f"shifted by -{max_horizon} — possible leakage"
+                )
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# 6. Cost-adjusted labels
+# ---------------------------------------------------------------------------
+
+def _cost_adjusted_labels(
+    df: pd.DataFrame,
+    horizons: Sequence[int],
+    taker_fee_bps: float,
+    slippage_bps: float,
+) -> pd.DataFrame:
+    round_trip_cost = (taker_fee_bps + slippage_bps) * 2 / 10_000
+    for h in horizons:
+        ret_col = f"y_return_{h}s"
+        if ret_col not in df.columns:
+            continue
+        net = df[ret_col].abs() - round_trip_cost
+        df[f"y_tradeable_{h}s"] = net > 0
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 7. Public entry point — single-pass multi-horizon labeling
+# ---------------------------------------------------------------------------
+
+def build_labels(
+    df: pd.DataFrame,
+    horizons: Sequence[int] | None = None,
+    threshold_bps: float = THRESHOLD_BPS,
+    clip_bps: float = CLIP_BPS,
+    taker_fee_bps: float = TAKER_FEE_BPS,
+    slippage_bps: float = SLIPPAGE_BPS,
+) -> pd.DataFrame:
+    """Generate all label families from a single forward pass over *df*."""
+    if horizons is None:
+        horizons = HORIZONS_SEC
+
+    df = _direction_labels(df, horizons, threshold_bps)
+    df = _regression_labels(df, horizons, clip_bps)
+    df = _volatility_labels(df, horizons)
+    df = _regime_labels(df)
+    df = _cost_adjusted_labels(df, horizons, taker_fee_bps, slippage_bps)
 
     return df
 
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main(feature_dir: str = "../data/features", output: str = "features_labeled.csv") -> None:
     p = Path(feature_dir)
@@ -53,14 +196,33 @@ def main(feature_dir: str = "../data/features", output: str = "features_labeled.
 
     df = build_labels(df)
 
-    for h in HORIZONS:
-        counts = df[f"y_{h}s"].value_counts()
-        print(f"\ny_{h}s distribution:")
+    # Leakage check
+    feature_cols = [c for c in df.columns if not any(c.startswith(p) for p in _LABEL_PREFIXES)]
+    violations = validate_no_leakage(df, feature_cols, max_horizon=max(HORIZONS_SEC))
+    if violations:
+        print("\n⚠ Leakage violations:")
+        for v in violations:
+            print(f"  - {v}")
+    else:
+        print("\nLeakage check passed.")
+
+    for h in HORIZONS_SEC:
+        counts = df[f"y_direction_{h}s"].value_counts()
+        print(f"\ny_direction_{h}s distribution:")
         for label, count in sorted(counts.items()):
             print(f"  {label:+d}: {count} ({count / len(df) * 100:.1f}%)")
 
-    tradeable_pct = df["tradeable"].sum() / len(df) * 100
-    print(f"\nTradeable: {df['tradeable'].sum()} ({tradeable_pct:.1f}%)")
+    for h in HORIZONS_SEC:
+        tradeable_col = f"y_tradeable_{h}s"
+        if tradeable_col in df.columns:
+            n = df[tradeable_col].sum()
+            print(f"Tradeable ({h}s): {n} ({n / len(df) * 100:.1f}%)")
+
+    regime_counts = df["label_regime"].value_counts()
+    regime_map = {0: "chop", 1: "trend", 2: "high-vol"}
+    print("\nRegime distribution:")
+    for label, count in sorted(regime_counts.items()):
+        print(f"  {regime_map.get(label, label)}: {count} ({count / len(df) * 100:.1f}%)")
 
     df.to_csv(output, index=False)
     print(f"\nSaved labeled dataset to {output}")

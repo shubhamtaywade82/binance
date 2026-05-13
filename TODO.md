@@ -293,16 +293,14 @@ Items marked ✅ are already implemented.
 
 ## 16. AI / ML Trading System
 
-> **Current state**: Feature pipeline built (`feature-schema.ts`, `feature-normalizer.ts`, `feature-recorder.ts`),
-> inference client with circuit breaker (`inference-client.ts`), ML decision gate (`ml-gate.ts`),
-> prediction logger (`prediction-logger.ts`), wired into orchestrator behind `ML_ENABLED` flag.
-> Python ML bot scaffolding in `ml_bot/` (training, inference server, feature engine).
-> **16.2 Feature Schema** fully implemented: all ~50 feature columns built including microstructure
-> (book slope, liquidity gap, cancel intensity, book thinning, wall persistence), trade flow
-> (signed volume, burstiness, direction streak, large trade flag), candle-derived (volume zscore,
-> range expansion, trend slope, momentum), OI extensions (delta 5m, divergence, spike), and
-> mark-last basis. `DepthChangeTracker` added for stateful depth change features.
-> **Next**: Collect training data, train LightGBM baseline, deploy inference server.
+> **Current state — COMPLETE (infra + Phase 1)**:
+> All sections 16.1–16.9 implemented. Feature pipeline (55 columns), label builder (direction/regression/vol/regime
+> with leakage guard, cost-adjusted, multi-horizon), data pipeline (stream alignment, stale guard, OI poll),
+> Phase 1 models (LightGBM direction + vol regressor, SHAP, walk-forward), live inference (ONNX export,
+> model versioning, model registry), decision logic (vol sizing, hold-time optimizer, execution gate),
+> training pipeline (drift detection, scheduled retraining), post-trade analytics (calibration, feature drift,
+> signal decay, PnL attribution). Phase 2/3 (sequence models, multimodal ensemble) deferred to future work.
+> **Next**: Collect training data → train baseline → deploy inference server → validate in shadow mode.
 
 ---
 
@@ -391,13 +389,13 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Direction labels** | `y = 1` if `future_return_30s > +4 bps`; `y = −1` if `< −4 bps`; else `0` — avoids noisy mid-zone |
-| ☐ | **Regression labels** | `y = clip(future_return_Ns, −50bps, +50bps)` |
-| ☐ | **Volatility labels** | `y = realized_vol(next N seconds)` |
-| ☐ | **Regime labels** | Rule-based clustering initially: trend/chop/high-vol; learn from rules later |
-| ☐ | **Leakage guard** | Never use any feature that includes data from after label horizon |
-| ☐ | **Cost-adjusted labels** | Subtract taker fee + estimated slippage; if edge disappears, label is useless |
-| ☐ | **Multi-horizon labeling** | Generate labels for 5 s, 30 s, 1 m, 5 m simultaneously from single pass |
+| ✅ | **Direction labels** | `y_direction_{h}s` for 5/30/60/300s horizons — `label_builder.py` vectorized `np.select` |
+| ✅ | **Regression labels** | `y_reg_{h}s = clip(future_return, ±50bps)` — `label_builder.py` |
+| ✅ | **Volatility labels** | `y_vol_{h}s = realized_vol(next N seconds)` — forward-looking std of log-returns |
+| ✅ | **Regime labels** | `label_regime` 0=chop/1=trend/2=high-vol — rule-based from `trend_slope` + `rv_1m` |
+| ✅ | **Leakage guard** | `validate_no_leakage()` — checks feature names vs label prefixes + correlation guard |
+| ✅ | **Cost-adjusted labels** | `y_tradeable_{h}s` — subtracts round-trip taker fee + slippage; only valid if edge survives |
+| ✅ | **Multi-horizon labeling** | All labels generated for [5, 30, 60, 300] seconds in single `build_labels()` pass |
 
 ---
 
@@ -407,12 +405,12 @@ Every row in the training set and live inference vector should contain:
 |--------|-----------|-------|
 | ✅ | **Rolling feature builder** | `feature-schema.ts` + `buildFeatureVector()` merges all signal snapshots |
 | ✅ | **Feature normalization** | `feature-normalizer.ts` — per-feature rolling z-score (Welford online) with ±5σ winsorization |
-| ☐ | **Stream alignment** | All streams timestamped and aligned to common clock before feature join |
-| ☐ | **Stale-state guard** | Mark book state stale if no depth update in > 500 ms; exclude from features |
+| ✅ | **Stream alignment** | `stream-aligner.ts` — `StreamAligner` tracks per-stream timestamps, `isAligned(maxSkewMs)`, `stalestStream()` |
+| ✅ | **Stale-state guard** | `stale-guard.ts` — `StaleGuard` with `markFresh()`, `anyStale()`; wired into orchestrator heartbeat |
 | ✅ | **Feature vector snapshot** | `feature-recorder.ts` — serialize normalized feature rows to CSV with daily rotation |
 | ✅ | **Label join** | `ml_bot/label_builder.py` — direction/volatility labels at 5s/30s/60s horizons |
 | ✅ | **Walk-forward splits** | `ml_bot/train.py` — chronological 80/20 split, never shuffle |
-| ☐ | **OI poll integration** | Poll `/fapi/v1/openInterest` every 5–10 s; interpolate to feature timestamps |
+| ✅ | **OI poll integration** | `oi-poll-integrator.ts` — polls `/fapi/v1/openInterest` every 7s; `interpolateAt(ts)`, `latestDelta(windowSec)` |
 
 ---
 
@@ -422,10 +420,10 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **LightGBM direction classifier** | `P(up) / P(down) / P(flat)` on 30 s horizon; fastest path to usable alpha |
-| ☐ | **LightGBM volatility regressor** | Predict next-1m realized vol for position sizing and regime detection |
-| ☐ | **Feature importance analysis** | SHAP values to identify which features actually carry signal |
-| ☐ | **Walk-forward validation** | Rolling window: train on T months, test on T+1; repeat across full history |
+| ✅ | **LightGBM direction classifier** | `train.py train_direction()` — 54-feature classifier with early stopping, expanded feature set |
+| ✅ | **LightGBM volatility regressor** | `train.py train_volatility()` — predicts 60s forward realized vol, MAE/R² reporting |
+| ✅ | **Feature importance analysis** | `train.py shap_analysis()` — TreeExplainer SHAP, multi-class support, saves CSV |
+| ✅ | **Walk-forward validation** | `train.py walk_forward_validation()` — rolling window train/test, per-fold accuracy + mean |
 
 #### Phase 2 — Sequence Models
 
@@ -453,11 +451,11 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Component | Notes |
 |--------|-----------|-------|
-| ☐ | **ONNX / TorchScript export** | Export trained model for sub-100 µs inference without Python overhead |
+| ✅ | **ONNX / TorchScript export** | `export_onnx.py` — loads `.pkl`, exports via `onnxmltools`, validates output matches original |
 | ✅ | **Inference server** | `ml_bot/inference_server.py` — FastAPI `/infer` endpoint |
 | ✅ | **Model output schema** | `model-types.ts` — `ModelOutput { p_up, p_down, p_flat }` |
 | ✅ | **Threshold gate** | `ml-gate.ts` — `mlDecide()` with probability + chop + edge checks |
-| ☐ | **Model versioning** | Track which model version produced each trade for post-trade attribution |
+| ✅ | **Model versioning** | `model_version` in `ModelOutput` + `PredictionRecord`; `model_registry.py` JSON manifest; `inference-client.ts` parses version |
 | ✅ | **Fallback to rule-based** | `inference-client.ts` circuit breaker → falls back to SMC when server unavailable |
 
 ---
@@ -487,9 +485,9 @@ THEN enter short
 | Status | Task | Notes |
 |--------|------|-------|
 | ✅ | **Replace naked signal entries** | ML gate wraps SMC signal in `orchestrator.ts evaluate()` behind `ML_ENABLED` + `ML_SHADOW_MODE` |
-| ☐ | **Dynamic sizing from volatility forecast** | Scale `CAPITAL_PER_TRADE_USDT` down when `expected_volatility` is high |
-| ☐ | **Hold-time optimization** | Use expected-return horizon to set max hold time before exit |
-| ☐ | **Execution model gating** | Skip entry when `slippage_probability` is high (e.g. thin book, high vol regime) |
+| ✅ | **Dynamic sizing from volatility forecast** | `volatility-sizer.ts` — `volatilitySizedPosition()` scales inversely to expected vol; wired into `runMlGate()` |
+| ✅ | **Hold-time optimization** | `hold-time-optimizer.ts` — `optimalHoldTimeMs()` adapts to regime + expected return; stored on orchestrator |
+| ✅ | **Execution model gating** | `execution-gate.ts` — `shouldSkipEntry()` blocks on wide spread, thin book, vol regime + gap; wired into `runMlGate()` |
 
 ---
 
@@ -499,9 +497,9 @@ THEN enter short
 |--------|------|-------|
 | ✅ | **Offline training script** | `ml_bot/train.py` — load CSVs → label → LightGBM → classification report → export .pkl |
 | ✅ | **Walk-forward harness** | `ml_bot/train.py` — chronological 80/20 split with early stopping |
-| ☐ | **Concept drift detection** | Monitor live feature distribution vs training distribution; alert when gap exceeds threshold |
-| ☐ | **Scheduled retraining** | Weekly / monthly retrain on newest N weeks of data; gate deployment on walk-forward passing min Sharpe |
-| ☐ | **Model registry** | Store model artifacts with metadata (train period, feature schema version, validation metrics) |
+| ✅ | **Concept drift detection** | `drift_detector.py` — PSI-based per-feature drift detection; `compute_psi()`, `check_drift()`, `is_drifted()` |
+| ✅ | **Scheduled retraining** | `retrain_scheduler.py` — `should_retrain()` + `retrain_if_due()` with walk-forward gate on min Sharpe |
+| ✅ | **Model registry** | `model_registry.py` — JSON manifest with metadata (train period, schema version, metrics, active flag) |
 | ✅ | **Shadow mode testing** | `ML_SHADOW_MODE=true` — logs predictions without overriding SMC decisions |
 
 ---
@@ -511,10 +509,10 @@ THEN enter short
 | Status | Task | Notes |
 |--------|------|-------|
 | ✅ | **Prediction vs outcome log** | `prediction-logger.ts` — CSV with `(timestamp, model_output, signal, actual_outcome)` |
-| ☐ | **Calibration check** | Plot predicted `p_up` vs actual win rate at each decile |
-| ☐ | **Feature drift report** | Rolling mean/std of each feature vs training baseline |
-| ☐ | **Signal decay tracking** | Monitor if model accuracy degrades over time (common in alpha signals) |
-| ☐ | **PnL attribution by model** | Split realized PnL into: model signal contribution vs execution quality vs market regime |
+| ✅ | **Calibration check** | `analytics/calibration.py` — bins by p_up decile, computes actual win rate, calibration error |
+| ✅ | **Feature drift report** | `analytics/feature_drift.py` — training vs live distribution PSI, drift flags per feature |
+| ✅ | **Signal decay tracking** | `analytics/signal_decay.py` — rolling accuracy over time windows, linear regression slope for trend detection |
+| ✅ | **PnL attribution by model** | `analytics/pnl_attribution.py` — splits PnL into signal, regime filter, and execution quality components |
 
 ---
 

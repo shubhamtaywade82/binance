@@ -69,6 +69,11 @@ import { FeatureRecorder } from './ai/feature-recorder';
 import { InferenceClient } from './ai/inference-client';
 import { mlDecide } from './ai/ml-gate';
 import { PredictionLogger } from './ai/prediction-logger';
+import { shouldSkipEntry, type ExecutionContext } from './ai/execution-gate';
+import { volatilitySizedPosition } from './ai/volatility-sizer';
+import { optimalHoldTimeMs } from './ai/hold-time-optimizer';
+import type { ExtendedModelOutput } from './ai/model-types';
+import { StaleGuard } from './ai/stale-guard';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -203,6 +208,12 @@ export class HybridOrchestrator {
   private readonly mlInferenceClient: InferenceClient | null;
   private readonly mlPredictionLogger: PredictionLogger | null;
   private readonly depthChangeTracker: DepthChangeTracker | null;
+  private readonly staleGuard: StaleGuard | null;
+
+  /** Set by runMlGate when volatility model output is available. */
+  private mlVolatilitySizedQty: number | null = null;
+  /** Set by runMlGate when extended model output is available. */
+  private mlHoldTimeMs: number | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -327,6 +338,7 @@ export class HybridOrchestrator {
       });
       this.mlPredictionLogger = new PredictionLogger(cfg.ML_PREDICTION_DIR);
       this.depthChangeTracker = new DepthChangeTracker();
+      this.staleGuard = new StaleGuard();
       this.log.info('ml_pipeline_initialized', { shadow: cfg.ML_SHADOW_MODE, inferenceUrl: cfg.ML_INFERENCE_URL });
     } else {
       this.mlNormalizer = null;
@@ -334,6 +346,7 @@ export class HybridOrchestrator {
       this.mlInferenceClient = null;
       this.mlPredictionLogger = null;
       this.depthChangeTracker = null;
+      this.staleGuard = null;
     }
   }
 
@@ -481,11 +494,13 @@ export class HybridOrchestrator {
     this.tapeFor(symU).push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
     if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
     this.book.ingestTrade(symU, t.price);
+    this.staleGuard?.markFresh('trade');
   }
 
   private onDepthDiffEvent(d: import('./binance/orderbook').DepthDiff & { s: string }): void {
     const symU = d.s.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) this.staleGuard?.markFresh('depth');
     if (this.cfg.BINANCE_DEPTH_LEVELS > 0) return;
     const ob = this.obFor(symU);
     if (!ob.isBootstrapped()) {
@@ -509,6 +524,7 @@ export class HybridOrchestrator {
   private onDepthPartialEvent(p: import('./binance/ws-multiplex').DepthPartialEvent): void {
     const symU = (p.symbol ?? this.pairs.binanceSymbol).toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) this.staleGuard?.markFresh('depth');
     this.obFor(symU).replaceFromPartial({ bids: p.bids, asks: p.asks });
     this.recordDepthSnapshot(symU);
   }
@@ -592,10 +608,14 @@ export class HybridOrchestrator {
     });
 
     if (this.mlRecorder && this.mlNormalizer) {
-      const fv = this.buildMlFeatureVector();
-      if (fv) {
-        const normalized = this.mlNormalizer.normalize(fv);
-        this.mlRecorder.record(normalized);
+      if (this.staleGuard?.anyStale()) {
+        this.log.info('ml_feature_skipped_stale', { staleSources: this.staleGuard.staleSources() });
+      } else {
+        const fv = this.buildMlFeatureVector();
+        if (fv) {
+          const normalized = this.mlNormalizer.normalize(fv);
+          this.mlRecorder.record(normalized);
+        }
       }
     }
   }
@@ -859,6 +879,7 @@ export class HybridOrchestrator {
   ): void {
     if (!Number.isFinite(price)) return;
     this.lastMark = price;
+    this.staleGuard?.markFresh('markPrice');
     if (ltpSource === 'ticker') this.confirmLtp('ticker', price, eventTime);
     else this.confirmLtp(ltpSource, price, eventTime);
     const symU = this.pairs.binanceSymbol.toUpperCase();
@@ -1236,6 +1257,9 @@ export class HybridOrchestrator {
     symbol: string,
     refPrice: number,
   ): Promise<'pass' | 'blocked'> {
+    this.mlVolatilitySizedQty = null;
+    this.mlHoldTimeMs = null;
+
     if (!this.cfg.ML_ENABLED || !this.mlInferenceClient || !this.mlNormalizer) return 'pass';
 
     const fv = this.buildMlFeatureVector();
@@ -1276,7 +1300,33 @@ export class HybridOrchestrator {
     });
 
     if (this.cfg.ML_SHADOW_MODE) return 'pass';
-    return signal !== null ? 'pass' : 'blocked';
+    if (signal === null) return 'blocked';
+
+    const execCtx: ExecutionContext = {
+      spreadBps: fv.spread_bps,
+      bookThinning: fv.book_thinning,
+      volRegimeFlag: fv.vol_regime_flag,
+      cancelIntensity: fv.cancel_intensity,
+      liquidityGap: fv.liquidity_gap,
+    };
+    const gateResult = shouldSkipEntry(execCtx);
+    if (gateResult.skip) {
+      this.log.info('execution_gate_skip', { reason: gateResult.reason });
+      return 'blocked';
+    }
+
+    if (fv.rv_1m > 0) {
+      this.mlVolatilitySizedQty = volatilitySizedPosition(1, fv.rv_1m);
+      this.log.info('ml_volatility_sizing', { rv1m: +fv.rv_1m.toFixed(6), scale: +this.mlVolatilitySizedQty.toFixed(4) });
+    }
+
+    const extended = modelOutput as ExtendedModelOutput;
+    if (extended.regime != null || extended.expected_return != null) {
+      this.mlHoldTimeMs = optimalHoldTimeMs(extended);
+      this.log.info('ml_hold_time', { holdMs: this.mlHoldTimeMs, regime: extended.regime });
+    }
+
+    return 'pass';
   }
 
   private binanceLiveAdapter(): BinanceLiveExecutionAdapter | null {

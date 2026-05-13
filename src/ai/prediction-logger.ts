@@ -4,7 +4,7 @@ import type { ModelOutput, PredictionRecord } from './model-types';
 
 const CSV_HEADER = [
   'timestamp', 'symbol', 'p_up', 'p_down', 'p_flat',
-  'signal', 'mid_price', 'actual_outcome', 'actual_direction', 'outcome_filled_at',
+  'signal', 'mid_price', 'model_version', 'actual_outcome', 'actual_direction', 'outcome_filled_at',
 ].join(',');
 
 export class PredictionLogger {
@@ -31,6 +31,7 @@ export class PredictionLogger {
       model_output: output,
       signal,
       mid_price: midPrice,
+      model_version: output.model_version,
     };
     this.pending.set(ts, record);
     this.appendRow(record);
@@ -79,6 +80,7 @@ export class PredictionLogger {
       r.model_output.p_flat.toFixed(4),
       r.signal,
       r.mid_price,
+      r.model_version ?? '',
       r.actual_outcome?.toFixed(6) ?? '',
       r.actual_direction ?? '',
       r.outcome_filled_at ?? '',
