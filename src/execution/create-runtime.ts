@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { binanceRestBase, binanceWsBase, type AppConfig } from '../config';
+import { binanceApiCredentials, binanceRestBase, binanceWsBase, type AppConfig } from '../config';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
 import { CoinDcxExecutionAdapter } from './coindcx-adapter';
 import { BinanceLiveExecutionAdapter } from './binance-adapter';
@@ -38,14 +38,24 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
 
     // ── Binance live adapter ──────────────────────────────────────────────
     if (cfg.BINANCE_EXECUTION_ADAPTER) {
-      if (!cfg.BINANCE_API_KEY.trim() || !cfg.BINANCE_API_SECRET.trim()) {
+      const { apiKey, apiSecret } = binanceApiCredentials(cfg);
+
+      if (!apiKey || !apiSecret) {
+        const keyVar = cfg.BINANCE_FUTURES_TESTNET ? 'BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET' : 'BINANCE_API_KEY / BINANCE_API_SECRET';
+        throw new Error(`BINANCE_EXECUTION_ADAPTER=true requires ${keyVar}.`);
+      }
+
+      // Require explicit opt-in before sending real orders to mainnet.
+      if (!cfg.BINANCE_FUTURES_TESTNET && !cfg.CONFIRMED_LIVE_TRADING) {
         throw new Error(
-          'BINANCE_EXECUTION_ADAPTER=true requires BINANCE_API_KEY and BINANCE_API_SECRET.',
+          'CONFIRMED_LIVE_TRADING must be set to true to enable live trading on mainnet. ' +
+          'This guard prevents accidental real-money orders.',
         );
       }
+
       const binanceRestClient = new BinanceRestClient({
-        apiKey: cfg.BINANCE_API_KEY.trim(),
-        apiSecret: cfg.BINANCE_API_SECRET.trim(),
+        apiKey,
+        apiSecret,
         baseUrl: binanceRestBase(cfg),
       });
       const adapter = new BinanceLiveExecutionAdapter({

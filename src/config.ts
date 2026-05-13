@@ -216,16 +216,34 @@ export const AppConfigSchema = z.object({
   BINANCE_FUTURES_TESTNET: boolFromString(false),
 
   /**
-   * Binance HMAC-SHA256 REST trading credentials.
-   * Required when `BINANCE_EXECUTION_ADAPTER=true` (live orders via Binance FAPI).
-   * Enable Futures trading on the API key and restrict by IP for safety.
+   * Binance HMAC-SHA256 REST trading credentials — **mainnet**.
+   * Required when `BINANCE_EXECUTION_ADAPTER=true` and `BINANCE_FUTURES_TESTNET=false`.
+   * Enable Futures trading on the API key and restrict by IP before going live.
    */
   BINANCE_API_KEY: z.string().default(''),
   BINANCE_API_SECRET: z.string().default(''),
 
   /**
+   * Binance HMAC-SHA256 REST trading credentials — **testnet**.
+   * Required when `BINANCE_EXECUTION_ADAPTER=true` and `BINANCE_FUTURES_TESTNET=true`.
+   * Generate at https://testnet.binancefuture.com — these keys are completely separate
+   * from mainnet keys and will produce -2015 errors if used against mainnet endpoints.
+   */
+  BINANCE_TESTNET_API_KEY: z.string().default(''),
+  BINANCE_TESTNET_API_SECRET: z.string().default(''),
+
+  /**
+   * Safety interlock for mainnet live trading.
+   * Must be set to `true` (or `"true"`) when `EXECUTION_MODE=live`,
+   * `BINANCE_EXECUTION_ADAPTER=true`, and `BINANCE_FUTURES_TESTNET=false`.
+   * Prevents accidental real-money orders during development.
+   */
+  CONFIRMED_LIVE_TRADING: boolFromString(false),
+
+  /**
    * When true, live execution uses Binance FAPI directly (HMAC REST + private WS) instead of CoinDCX.
-   * Requires `BINANCE_API_KEY` + `BINANCE_API_SECRET`, `EXECUTION_MODE=live`, `READ_ONLY=false`.
+   * Requires matching API keys, `EXECUTION_MODE=live`, `READ_ONLY=false`.
+   * For mainnet also requires `CONFIRMED_LIVE_TRADING=true`.
    */
   BINANCE_EXECUTION_ADAPTER: boolFromString(false),
 
@@ -352,6 +370,24 @@ export const applyTradingAssetPreset = (cfg: AppConfig): AppConfig => {
 export const loadConfig = (): AppConfig => {
   const parsed = AppConfigSchema.parse(process.env);
   return applyTradingAssetPreset(parsed);
+}
+
+/**
+ * Returns the correct HMAC API key and secret for the active environment.
+ * Testnet and mainnet use completely separate key pairs — mixing them
+ * produces a -2015 Invalid API-key error from Binance.
+ */
+export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecret: string } => {
+  if (cfg.BINANCE_FUTURES_TESTNET) {
+    return {
+      apiKey: cfg.BINANCE_TESTNET_API_KEY.trim(),
+      apiSecret: cfg.BINANCE_TESTNET_API_SECRET.trim(),
+    };
+  }
+  return {
+    apiKey: cfg.BINANCE_API_KEY.trim(),
+    apiSecret: cfg.BINANCE_API_SECRET.trim(),
+  };
 }
 
 export const binanceRestBase = (cfg: AppConfig): string => {
