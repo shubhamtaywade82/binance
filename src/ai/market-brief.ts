@@ -75,6 +75,38 @@ const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
   };
 }
 
+const MAX_THINKING_FALLBACK_CHARS = 12_000;
+
+/** Ollama `/api/chat` JSON shape varies by server version and model (e.g. thinking models). */
+const pickAssistantTextFromChatResponse = (response: unknown): string | null => {
+  if (response === null || typeof response !== 'object') return null;
+  const r = response as Record<string, unknown>;
+  const msg = r.message;
+  if (msg === null || typeof msg !== 'object') return null;
+  const m = msg as Record<string, unknown>;
+  const content = typeof m.content === 'string' ? m.content.trim() : '';
+  if (content.length > 0) return content;
+  const thinkingRaw = typeof m.thinking === 'string' ? m.thinking.trim() : '';
+  if (thinkingRaw.length === 0) return null;
+  const thinking =
+    thinkingRaw.length > MAX_THINKING_FALLBACK_CHARS
+      ? `${thinkingRaw.slice(0, MAX_THINKING_FALLBACK_CHARS)}\n\n…`
+      : thinkingRaw;
+  return `## Brief\n\n_(This model returned reasoning in a separate field; consider a standard chat model for cleaner briefs.)_\n\n${thinking}`;
+};
+
+const emptyCompletionHint = (response: unknown, model: string): string => {
+  const r = response !== null && typeof response === 'object' ? (response as Record<string, unknown>) : {};
+  const dr = r.done_reason != null ? String(r.done_reason) : '?';
+  const ec = r.eval_count != null ? String(r.eval_count) : '?';
+  const respModel = typeof r.model === 'string' && r.model.trim() ? r.model.trim() : model;
+  return (
+    `empty_completion — Ollama returned no assistant text (model=${respModel}, done_reason=${dr}, eval_count=${ec}). ` +
+    `Confirm OLLAMA_MODEL matches an installed name from \`ollama list\`, run \`ollama pull ${model}\`, and try \`ollama run ${model} "Reply with one word: OK"\`. ` +
+    'If you use Ollama on Windows while the bot runs in WSL, point the client at the Windows host IP instead of 127.0.0.1.'
+  );
+};
+
 export const requestMarketBrief = async (cfg: OllamaBriefConfig, snapshot: MarketSignalsSnapshot): Promise<{ text: string | null; error: string | null }> => {
   const model = cfg.model.trim();
   if (!model) {
@@ -106,9 +138,9 @@ export const requestMarketBrief = async (cfg: OllamaBriefConfig, snapshot: Marke
       },
     });
 
-    const text = response.message?.content?.trim() ?? null;
+    const text = pickAssistantTextFromChatResponse(response);
     if (!text) {
-      return { text: null, error: 'empty_completion' };
+      return { text: null, error: emptyCompletionHint(response, model) };
     }
     return { text, error: null };
   } catch (e) {

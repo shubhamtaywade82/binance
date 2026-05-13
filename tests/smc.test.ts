@@ -10,6 +10,19 @@ describe('analyzeSmc', () => {
   it('returns zero score for empty/short history', () => {
     const r = analyzeSmc([], 0, 'LONG');
     expect(r.score).toBe(0);
+    expect(r.bosLine).toBeNull();
+    expect(r.chochLine).toBeNull();
+  });
+
+  it('exposes bosLine from swing high to last bar when BOS is bullish', () => {
+    const cs: Candle[] = [];
+    for (let i = 0; i < 30; i++) cs.push(mk(100, 100.2, 99.8, 100, i));
+    cs[10] = mk(100, 105, 99.5, 100, 10);
+    cs[20] = mk(100, 108, 99.5, 100, 20);
+    cs[29] = mk(100, 112, 107.5, 111, 29);
+    const r = analyzeSmc(cs, 111, 'LONG');
+    expect(r.bos).toBe('BULLISH');
+    expect(r.bosLine).toEqual({ startIndex: 20, endIndex: 29, price: 108 });
   });
 
   it('detects bullish FVG', () => {

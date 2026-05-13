@@ -86,10 +86,29 @@ describe('requestMarketBrief', () => {
     expect(r.error).toBe('connection refused');
   });
 
-  it('maps empty message content to error', async () => {
-    mockChat.mockResolvedValueOnce({ message: { content: '   ' } });
+  it('maps empty message content to diagnostic error', async () => {
+    mockChat.mockResolvedValueOnce({
+      message: { content: '   ' },
+      done_reason: 'stop',
+      eval_count: 0,
+      model: 'llama3.2',
+    });
     const r = await requestMarketBrief({ ...baseCfg }, snapshot);
     expect(r.text).toBeNull();
-    expect(r.error).toBe('empty_completion');
+    expect(r.error).toMatch(/empty_completion/);
+    expect(r.error).toContain('eval_count=0');
+    expect(r.error).toContain('ollama list');
+  });
+
+  it('falls back to message.thinking when content is blank', async () => {
+    mockChat.mockResolvedValueOnce({
+      message: { content: '', thinking: '## Analysis\nMarket is choppy.' },
+      done_reason: 'stop',
+      eval_count: 3,
+    });
+    const r = await requestMarketBrief({ ...baseCfg }, snapshot);
+    expect(r.error).toBeNull();
+    expect(r.text).toContain('choppy');
+    expect(r.text).toContain('reasoning');
   });
 });

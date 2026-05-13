@@ -18,12 +18,23 @@ export interface FairValueGap {
   index: number;
 }
 
+/** Horizontal segment from swing bar to confirmation bar (BOS / CHoCH on chart). */
+export interface SmcStructureLine {
+  startIndex: number;
+  endIndex: number;
+  price: number;
+}
+
 export interface SmcAnalysis {
   liquiditySweep: 'LONG' | 'SHORT' | 'NONE';
   orderBlock: OrderBlock | null;
   fvg: FairValueGap | null;
   bos: SmcDirection;
   choch: SmcDirection;
+  /** Swing level broken for BOS (null when `bos` is NONE). */
+  bosLine: SmcStructureLine | null;
+  /** Swing level broken for CHoCH (null when `choch` is NONE). */
+  chochLine: SmcStructureLine | null;
   score: number;
   /** Pool registry + sweep state machine output (null only when history is too short). */
   liquidity: LiquidityEngineResult | null;
@@ -87,11 +98,19 @@ const detectFvg = (candles: Candle[]): FairValueGap | null => {
   return null;
 }
 
-const detectBosChoch = (candles: Candle[]): { bos: SmcDirection; choch: SmcDirection } => {
+const detectBosChoch = (
+  candles: Candle[],
+): {
+  bos: SmcDirection;
+  choch: SmcDirection;
+  bosLine: SmcStructureLine | null;
+  chochLine: SmcStructureLine | null;
+} => {
   const sw = swingHighsLows(candles, 3);
   const last = candles[candles.length - 1];
+  const endIndex = candles.length - 1;
   if (sw.highs.length < 2 || sw.lows.length < 2) {
-    return { bos: 'NONE', choch: 'NONE' };
+    return { bos: 'NONE', choch: 'NONE', bosLine: null, chochLine: null };
   }
   const lastHigh = sw.highs[sw.highs.length - 1];
   const prevHigh = sw.highs[sw.highs.length - 2];
@@ -107,7 +126,20 @@ const detectBosChoch = (candles: Candle[]): { bos: SmcDirection; choch: SmcDirec
   if (last.close > lastHigh.price && lastLow.price < prevLow.price) choch = 'BULLISH';
   else if (last.close < lastLow.price && lastHigh.price > prevHigh.price) choch = 'BEARISH';
 
-  return { bos, choch };
+  let bosLine: SmcStructureLine | null = null;
+  let chochLine: SmcStructureLine | null = null;
+  if (bos === 'BULLISH') {
+    bosLine = { startIndex: lastHigh.index, endIndex, price: lastHigh.price };
+  } else if (bos === 'BEARISH') {
+    bosLine = { startIndex: lastLow.index, endIndex, price: lastLow.price };
+  }
+  if (choch === 'BULLISH') {
+    chochLine = { startIndex: lastHigh.index, endIndex, price: lastHigh.price };
+  } else if (choch === 'BEARISH') {
+    chochLine = { startIndex: lastLow.index, endIndex, price: lastLow.price };
+  }
+
+  return { bos, choch, bosLine, chochLine };
 }
 
 export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: TrendBias, opts?: { timeframe?: string }): SmcAnalysis => {
@@ -118,7 +150,7 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
     liquidity.liquiditySweep !== 'NONE' ? liquidity.liquiditySweep : legacySweep;
   const orderBlock = detectOrderBlock(candles);
   const fvg = detectFvg(candles);
-  const { bos, choch } = detectBosChoch(candles);
+  const { bos, choch, bosLine, chochLine } = detectBosChoch(candles);
 
   let score = 0;
   if (htfTrend === 'LONG') {
@@ -138,5 +170,15 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
   const liquidityPayload =
     liquidity.pools.length > 0 || liquidity.events.length > 0 ? liquidity : null;
 
-  return { liquiditySweep, orderBlock, fvg, bos, choch, score, liquidity: liquidityPayload };
+  return {
+    liquiditySweep,
+    orderBlock,
+    fvg,
+    bos,
+    choch,
+    bosLine,
+    chochLine,
+    score,
+    liquidity: liquidityPayload,
+  };
 }

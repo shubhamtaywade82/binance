@@ -1,6 +1,11 @@
 /**
  * chart.js — TradingView Lightweight Charts integration
  * Handles: candlestick, volume, EMA 9/21/50, supertrend
+ *
+ * Browser persistence (localStorage, same tab origin):
+ * - `qt_chart_tf` — last chart timeframe (1m … 1d)
+ * - `qt_chart_show_ema` / `qt_chart_show_supertrend` — overlay toggles (`1` / `0`)
+ * - Book top, SMC overlay, signal HUD, candle theme use their own keys (see respective modules / below)
  */
 import { createChart, LineStyle } from 'lightweight-charts';
 import {
@@ -20,6 +25,7 @@ import {
   renderStrategyHud,
   storeSignalHudEnabled,
 } from './chart-strategy-hud.js';
+import { SmcZoneBoxesPrimitive } from './chart-smc-zone-primitive.js';
 
 const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
 
@@ -112,6 +118,47 @@ const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
 
+/** Persisted chart timeframe (must match `.tf-btn` data-tf). */
+const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
+const CHART_SHOW_EMA_STORAGE_KEY = 'qt_chart_show_ema';
+const CHART_SHOW_ST_STORAGE_KEY = 'qt_chart_show_supertrend';
+
+const readStoredChartTf = () => {
+  try {
+    const raw = localStorage.getItem(CHART_TF_STORAGE_KEY)?.trim().toLowerCase();
+    if (raw && TF_TAB_ORDER.includes(raw)) return raw;
+  } catch {
+    /* ignore */
+  }
+  return null;
+};
+
+const storeChartTf = (tf) => {
+  try {
+    if (tf && TF_TAB_ORDER.includes(tf)) localStorage.setItem(CHART_TF_STORAGE_KEY, tf);
+  } catch {
+    /* ignore */
+  }
+};
+
+const readStoredIndicatorOn = (key, defaultOn = true) => {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === null) return defaultOn;
+    return v !== '0';
+  } catch {
+    return defaultOn;
+  }
+};
+
+const storeIndicatorOn = (key, on) => {
+  try {
+    localStorage.setItem(key, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+};
+
 export class ChartManager {
   constructor(containerId) {
     this.containerId = containerId;
@@ -122,11 +169,9 @@ export class ChartManager {
     this.ema21Series = null;
     this.ema50Series = null;
     this.stSeries = null;
-    this.currentTf = '5m';
+    this.currentTf = readStoredChartTf() ?? '5m';
     this.candleMap = {}; // tf → candle[] cache
     this.indicMap = {}; // tf → indicators cache
-    this.showEma = true;
-    this.showSupertrend = true;
     this._resizeObs = null;
     /** @type {Record<string, boolean>} */
     this._historyExhausted = {};
@@ -172,10 +217,14 @@ export class ChartManager {
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
     this._smcSignalPriceLines = [];
+    /** Shaded OB / FVG zones (LWC series primitive). */
+    this._smcZonePrimitive = null;
     this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
     /** Latest WS `signals` payload for redraw after `setData`. */
     this._lastSignalsForChart = null;
     this._signalHudEnabled = readSignalHudEnabled();
+    this.showEma = readStoredIndicatorOn(CHART_SHOW_EMA_STORAGE_KEY, true);
+    this.showSupertrend = readStoredIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, true);
   }
 
   _readSmcOverlayEnabled() {
@@ -210,6 +259,8 @@ export class ChartManager {
     } catch {
       /* ignore */
     }
+    this._smcZonePrimitive?.setZones([]);
+    this._smcZonePrimitive?.setLines([]);
   }
 
   /** Map server SMC bar index → chart unix seconds (LW `time`). */
@@ -258,6 +309,11 @@ export class ChartManager {
     if (!smc) return;
 
     const markers = [];
+    /** @type {{ t1: number; t2: number; top: number; bottom: number; fill: string; stroke?: string; text?: string; textColor?: string }[]} */
+    const smcZones = [];
+    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number }[]} */
+    const smcStructLines = [];
+    const lastT = this._lastVisibleBarTimeSec(refTf);
 
     const ob = smc.orderBlock;
     if (ob && Number.isFinite(ob.index)) {
@@ -273,8 +329,27 @@ export class ChartManager {
           id: 'smc-ob',
         });
       }
-      if (Number.isFinite(ob.high)) this._addSmcPriceLine(ob.high, '#7c4dff', 'OB+', LineStyle.Dashed);
-      if (Number.isFinite(ob.low)) this._addSmcPriceLine(ob.low, '#7c4dff', 'OB−', LineStyle.Dashed);
+      if (
+        lastT != null &&
+        Number.isFinite(ob.high) &&
+        Number.isFinite(ob.low) &&
+        Number.isFinite(ob.index)
+      ) {
+        const tOb = this._signalBarTimeSec(refTf, ob.index);
+        if (tOb != null) {
+          const bull = ob.type === 'BULLISH';
+          smcZones.push({
+            t1: tOb,
+            t2: lastT,
+            top: Math.max(ob.high, ob.low),
+            bottom: Math.min(ob.high, ob.low),
+            fill: bull ? 'rgba(38,166,154,0.2)' : 'rgba(239,83,80,0.2)',
+            stroke: bull ? 'rgba(38,166,154,0.55)' : 'rgba(239,83,80,0.55)',
+            text: bull ? 'Demand OB' : 'Supply OB',
+            textColor: bull ? 'rgba(200,255,240,0.95)' : 'rgba(255,220,220,0.95)',
+          });
+        }
+      }
     }
 
     const fvg = smc.fvg;
@@ -290,11 +365,26 @@ export class ChartManager {
           id: 'smc-fvg',
         });
       }
-      this._addSmcPriceLine(fvg.high, 'rgba(255,171,0,0.85)', 'FVG+', LineStyle.Dotted);
-      this._addSmcPriceLine(fvg.low, 'rgba(255,171,0,0.85)', 'FVG−', LineStyle.Dotted);
+      if (lastT != null && Number.isFinite(fvg.index)) {
+        const i = Math.trunc(fvg.index);
+        const tFvg =
+          this._signalBarTimeSec(refTf, Math.max(0, i - 2)) ?? this._signalBarTimeSec(refTf, i);
+        if (tFvg != null) {
+          const bull = fvg.type === 'BULLISH';
+          smcZones.push({
+            t1: tFvg,
+            t2: lastT,
+            top: Math.max(fvg.high, fvg.low),
+            bottom: Math.min(fvg.high, fvg.low),
+            fill: bull ? 'rgba(255,171,0,0.18)' : 'rgba(255,171,0,0.12)',
+            stroke: 'rgba(255,171,0,0.55)',
+            text: bull ? 'Bull FVG' : 'Bear FVG',
+            textColor: 'rgba(255,224,178,0.95)',
+          });
+        }
+      }
     }
 
-    const lastT = this._lastVisibleBarTimeSec(refTf);
     if (lastT != null) {
       let hasLiqSweepMarker = false;
       if (smc.bos && smc.bos !== 'NONE') {
@@ -369,11 +459,46 @@ export class ChartManager {
       }
     }
 
+    const bosLinePayload = smc.bosLine;
+    const chochLinePayload = smc.chochLine;
+    const bosActive = smc.bos && smc.bos !== 'NONE';
+    const chochActive = smc.choch && smc.choch !== 'NONE';
+    const sameBosChochGeometry =
+      bosActive &&
+      chochActive &&
+      bosLinePayload &&
+      chochLinePayload &&
+      bosLinePayload.startIndex === chochLinePayload.startIndex &&
+      bosLinePayload.endIndex === chochLinePayload.endIndex &&
+      Math.abs(bosLinePayload.price - chochLinePayload.price) < 1e-10;
+
+    const pushSmcStructureSegment = (line, color, label) => {
+      if (!line || !Number.isFinite(line.price)) return;
+      const tA = this._signalBarTimeSec(refTf, line.startIndex);
+      const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
+      if (tA == null || tB == null) return;
+      const t1 = Math.min(tA, tB);
+      const t2 = Math.max(tA, tB);
+      if (t2 <= t1) return;
+      smcStructLines.push({ t1, t2, price: line.price, color, label, lineWidth: 2 });
+    };
+
+    if (sameBosChochGeometry && bosLinePayload) {
+      pushSmcStructureSegment(bosLinePayload, '#a389d4', 'BOS · CHoCH');
+    } else {
+      if (bosActive) pushSmcStructureSegment(bosLinePayload, '#b388ff', 'BOS');
+      if (chochActive) pushSmcStructureSegment(chochLinePayload, '#80cbc4', 'CHoCH');
+    }
+
     if (Number.isFinite(s.refPrice)) {
       this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
     }
 
+    this._smcZonePrimitive?.setZones(smcZones);
+    this._smcZonePrimitive?.setLines(smcStructLines);
+
     if (markers.length) {
+      markers.sort((a, b) => a.time - b.time);
       try {
         this.candleSeries.setMarkers(markers);
       } catch (e) {
@@ -980,6 +1105,8 @@ export class ChartManager {
       lastValueVisible: false,
       priceLineVisible: false,
     });
+    this._smcZonePrimitive = new SmcZoneBoxesPrimitive();
+    this.candleSeries.attachPrimitive(this._smcZonePrimitive);
 
     this.volumeSeries = this.chart.addHistogramSeries({
       color: initialTheme.volumeUp,
@@ -1012,12 +1139,21 @@ export class ChartManager {
 
     document.getElementById('toggle-ema').addEventListener('change', (e) => {
       this.showEma = e.target.checked;
+      storeIndicatorOn(CHART_SHOW_EMA_STORAGE_KEY, this.showEma);
       this._toggleEma(this.showEma);
     });
     document.getElementById('toggle-supertrend').addEventListener('change', (e) => {
       this.showSupertrend = e.target.checked;
+      storeIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, this.showSupertrend);
       this.stSeries.applyOptions({ visible: this.showSupertrend });
     });
+
+    const emaEl = document.getElementById('toggle-ema');
+    if (emaEl instanceof HTMLInputElement) emaEl.checked = this.showEma;
+    const stEl = document.getElementById('toggle-supertrend');
+    if (stEl instanceof HTMLInputElement) stEl.checked = this.showSupertrend;
+    this._toggleEma(this.showEma);
+    this.stSeries.applyOptions({ visible: this.showSupertrend });
 
     const ctWrap = document.getElementById('candle-theme-wrap');
     const ctTrigger = document.getElementById('candle-theme-trigger');
@@ -1081,6 +1217,10 @@ export class ChartManager {
       });
     }
 
+    document.querySelectorAll('.tf-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tf === this.currentTf);
+    });
+
     document.querySelectorAll('.tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.tf-btn').forEach((b) => b.classList.remove('active'));
@@ -1091,6 +1231,7 @@ export class ChartManager {
         }
         const alignToVisibleTimeRange = this._getSafeVisibleTimeRange();
         this.currentTf = btn.dataset.tf;
+        storeChartTf(this.currentTf);
         this._clearSmcChartVisuals();
         this._loadTf(this.currentTf, { alignToVisibleTimeRange });
         this._onTfChange?.(this.currentTf);
@@ -1375,6 +1516,7 @@ export class ChartManager {
     if (this._availableTfSet && !this._availableTfSet.has(this.currentTf)) {
       const next = this._pickFirstAvailableTf();
       this.currentTf = next;
+      storeChartTf(next);
       document.querySelectorAll('.tf-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.tf === next);
       });
