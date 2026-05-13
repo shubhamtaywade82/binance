@@ -379,6 +379,23 @@ export const AppConfigSchema = z.object({
   /** Trailing stop callback rate (%). 0 = use fixed SL instead. */
   TRAILING_STOP_CALLBACK_RATE: numFromString(0),
 
+  /** Enable ML inference pipeline (feature collection, inference client, ML gate). */
+  ML_ENABLED: boolFromString(false),
+  /** ML inference server URL (Python FastAPI). */
+  ML_INFERENCE_URL: z.string().default('http://localhost:8000/infer'),
+  /** Minimum model probability to act on a signal. */
+  ML_MIN_PROBABILITY: numFromString(0.65),
+  /** Minimum edge in bps after fees for ML to allow entry. */
+  ML_MIN_EDGE_BPS: numFromString(8),
+  /** When true, ML logs predictions but does not override SMC entry decisions. */
+  ML_SHADOW_MODE: boolFromString(true),
+  /** Inference timeout in ms. */
+  ML_INFERENCE_TIMEOUT_MS: numFromString(2000),
+  /** Directory for recorded feature vectors (training data). */
+  ML_FEATURE_DIR: z.string().default('./data/features'),
+  /** Directory for prediction logs. */
+  ML_PREDICTION_DIR: z.string().default('./data/predictions'),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 

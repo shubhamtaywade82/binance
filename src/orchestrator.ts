@@ -61,6 +61,12 @@ import { getRedisClient } from './services/redis';
 import { publish, CHANNELS } from './services/pubsub';
 import { setPosition, clearPosition, isKillSwitchActive } from './services/state';
 import { ExecutionRouter } from './execution/execution-router';
+import { buildFeatureVector, type FeatureSourceData } from './ai/feature-schema';
+import { FeatureNormalizer } from './ai/feature-normalizer';
+import { FeatureRecorder } from './ai/feature-recorder';
+import { InferenceClient } from './ai/inference-client';
+import { mlDecide } from './ai/ml-gate';
+import { PredictionLogger } from './ai/prediction-logger';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -190,6 +196,11 @@ export class HybridOrchestrator {
   /** ioredis client — null when REDIS_URL is not configured (all publish calls are no-ops). */
   private readonly redis: ReturnType<typeof getRedisClient>;
 
+  private readonly mlNormalizer: FeatureNormalizer | null;
+  private readonly mlRecorder: FeatureRecorder | null;
+  private readonly mlInferenceClient: InferenceClient | null;
+  private readonly mlPredictionLogger: PredictionLogger | null;
+
   constructor(
     private readonly cfg: AppConfig,
     private readonly log: OrchestratorLogger = consoleLogger,
@@ -303,6 +314,22 @@ export class HybridOrchestrator {
     }
 
     this.redis = getRedisClient(cfg.REDIS_URL);
+
+    if (cfg.ML_ENABLED) {
+      this.mlNormalizer = new FeatureNormalizer();
+      this.mlRecorder = new FeatureRecorder(cfg.ML_FEATURE_DIR);
+      this.mlInferenceClient = new InferenceClient({
+        url: cfg.ML_INFERENCE_URL,
+        timeoutMs: cfg.ML_INFERENCE_TIMEOUT_MS,
+      });
+      this.mlPredictionLogger = new PredictionLogger(cfg.ML_PREDICTION_DIR);
+      this.log.info('ml_pipeline_initialized', { shadow: cfg.ML_SHADOW_MODE, inferenceUrl: cfg.ML_INFERENCE_URL });
+    } else {
+      this.mlNormalizer = null;
+      this.mlRecorder = null;
+      this.mlInferenceClient = null;
+      this.mlPredictionLogger = null;
+    }
   }
 
   async start(): Promise<void> {
@@ -338,6 +365,7 @@ export class HybridOrchestrator {
     }
     this.scheduleLtpWatchdog();
     this.scheduleRestMarkPoll();
+    this.mlRecorder?.start();
     this.scheduleHeartbeat();
     this.log.info('orchestrator_started', {
       tradingAsset: this.cfg.TRADING_ASSET,
@@ -360,6 +388,7 @@ export class HybridOrchestrator {
     this.clearLtpWatchdog();
     this.clearDeadmanTimer();
     this.clearOrderRateTimer();
+    this.mlRecorder?.stop();
     this.execution.stopFunding?.();
     this.book.stop();
     if (this.ws) this.ws.stop();
@@ -556,6 +585,34 @@ export class HybridOrchestrator {
       weightedObi5: +micro.weightedObi5.weightedObi.toFixed(4),
       microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
     });
+
+    if (this.mlRecorder && this.mlNormalizer) {
+      const fv = this.buildMlFeatureVector();
+      if (fv) {
+        const normalized = this.mlNormalizer.normalize(fv);
+        this.mlRecorder.record(normalized);
+      }
+    }
+  }
+
+  private buildMlFeatureVector() {
+    const sym = this.pairs.binanceSymbol;
+    const micro = this.getMicrostructure();
+    const funding = this.fundingTracker.snapshot();
+    const liquidation = this.liquidationTracker.snapshot();
+    const ofi = this.orderbook.isBootstrapped() ? 0 : 0;
+
+    const oiSnap = { oi: 0, oiDelta1m: 0, oiZscore: 0, regime: 'neutral' as const };
+
+    const candle1m = this.store.getSeries(sym, '1m').at(-1);
+    const candle5m = this.store.getSeries(sym, '5m').at(-1);
+
+    const src: FeatureSourceData = {
+      micro, funding, oi: oiSnap, liquidation,
+      ofiCumulative: ofi,
+      candle1m, candle5m, symbol: sym,
+    };
+    return buildFeatureVector(src);
   }
 
   /** Daily bias when SOL MTF strategy is on; else HTF EMA bias from the secondary candle buffer. */
@@ -1075,17 +1132,20 @@ export class HybridOrchestrator {
 
       if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
 
+      const smcSide: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
+      const mlResult = await this.runMlGate(smcSide, sym, refPrice);
+      if (mlResult === 'blocked') return;
+
       if (await isKillSwitchActive(this.redis)) {
         this.log.warn('kill_switch_active', { symbol: sym });
         return;
       }
-      const side: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
-      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: side, source: 'sol_mtf', ts: Date.now() });
+      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'sol_mtf', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
-      const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+      const opened = await this.positionManager.open(smcSide, refPrice, prec, this.pairs.coindcxPair);
       if (opened) {
-        setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
-        publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+        setPosition(this.redis, sym, { side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
+        publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
       }
       return;
     }
@@ -1134,12 +1194,15 @@ export class HybridOrchestrator {
       return;
     }
 
+    const side: Side = ltf.direction === 'LONG' ? 'LONG' : 'SHORT';
+    const mlResult = await this.runMlGate(side, sym, refPrice);
+    if (mlResult === 'blocked') return;
+
     if (await isKillSwitchActive(this.redis)) {
       this.log.warn('kill_switch_active', { symbol: sym });
       return;
     }
 
-    const side: Side = ltf.direction === 'LONG' ? 'LONG' : 'SHORT';
     publish(this.redis, CHANNELS.SIGNALS, {
       symbol: sym, direction: side, htfBias, ltfConfidence: ltf.confidence, smcScore: smc.score, source: 'htf_ltf', ts: Date.now(),
     });
@@ -1149,6 +1212,54 @@ export class HybridOrchestrator {
       setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
       publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
     }
+  }
+
+  private async runMlGate(
+    smcSignal: 'LONG' | 'SHORT',
+    symbol: string,
+    refPrice: number,
+  ): Promise<'pass' | 'blocked'> {
+    if (!this.cfg.ML_ENABLED || !this.mlInferenceClient || !this.mlNormalizer) return 'pass';
+
+    const fv = this.buildMlFeatureVector();
+    if (!fv) return 'pass';
+
+    const normalized = this.mlNormalizer.normalize(fv);
+    const features: Record<string, number> = {};
+    for (const [k, v] of Object.entries(normalized)) {
+      if (typeof v === 'number') features[k] = v;
+    }
+
+    const modelOutput = await this.mlInferenceClient.predict(features);
+
+    if (!modelOutput) {
+      this.log.info('ml_inference_unavailable', { fallback: 'rule_based' });
+      return 'pass';
+    }
+
+    const signal = mlDecide(modelOutput, smcSignal, {
+      minProbability: this.cfg.ML_MIN_PROBABILITY,
+      minEdgeBps: this.cfg.ML_MIN_EDGE_BPS,
+    });
+
+    this.mlPredictionLogger?.logPrediction(
+      symbol,
+      modelOutput,
+      signal ?? 'HOLD',
+      refPrice,
+    );
+
+    this.log.info('ml_gate', {
+      p_up: +modelOutput.p_up.toFixed(3),
+      p_down: +modelOutput.p_down.toFixed(3),
+      p_flat: +modelOutput.p_flat.toFixed(3),
+      smcSignal,
+      mlSignal: signal,
+      shadow: this.cfg.ML_SHADOW_MODE,
+    });
+
+    if (this.cfg.ML_SHADOW_MODE) return 'pass';
+    return signal !== null ? 'pass' : 'blocked';
   }
 
   private binanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
