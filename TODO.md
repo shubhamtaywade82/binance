@@ -1732,6 +1732,199 @@ Phase 4 — Live trading (small capital)
   ✔ BINANCE_FUTURES_TESTNET=false
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
   ✘ MAX_NOTIONAL_USDT cap not built (see §20.2)
-  ✘ CONFIRMED_LIVE guard not built (see §20.2)
+  ✘ CONFIRMED_LIVE guard not built (see §20.2)  ← ✅ NOW DONE (CONFIRMED_LIVE_TRADING in config.ts)
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```
+
+> ✅ **Implemented (this session):** `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` env vars,
+> `binanceApiCredentials()` helper, `CONFIRMED_LIVE_TRADING` safety guard in `create-runtime.ts`,
+> and `.env.example` updated with inline warnings.
+
+---
+
+## 21. Redis Event Bus + Multi-Service Docker Architecture
+
+Current state: single-process Node.js bot with an in-process WS bridge for the browser UI.
+Goal: decouple ingestion, strategy, execution, and UI into separate services connected via Redis.
+
+### 21.1 Target Architecture
+
+```
+Binance WS (depth + aggTrade + markPrice)
+        │
+        ▼
+┌─────────────────┐
+│  Bot Engine     │  TypeScript — ingestion + features + strategy + execution
+│  (this repo)    │
+└──────┬──────────┘
+       │  redis.publish("ticks" / "signals" / "orders" / "positions")
+       ▼
+┌─────────────────┐
+│  Redis          │  pub/sub channels + streams (time-series) + state keys
+│  - pub/sub      │
+│  - XADD streams │
+│  - HSET state   │
+└──────┬──────────┘
+       │  sub.subscribe("ticks" / "signals")
+       ▼
+┌─────────────────┐
+│  WS Gateway     │  fanout to browser clients (replaces current in-process bridge)
+│  (Node server)  │
+└──────┬──────────┘
+       │  WebSocket
+       ▼
+┌─────────────────┐
+│  Dashboard UI   │  Next.js / React (currently: plain HTML + Vite)
+└─────────────────┘
+```
+
+### 21.2 Redis Channel Design
+
+| Status | Channel / Key | Producer | Consumer | Contents |
+|--------|--------------|----------|----------|---------|
+| ☐ | `ticks` (pub/sub) | Bot engine | WS gateway, ML service | `{ symbol, price, ts }` |
+| ☐ | `signals` (pub/sub) | Strategy engine | Execution engine, dashboard | `{ symbol, direction, confidence, ts }` |
+| ☐ | `orders` (pub/sub) | Execution engine | Dashboard, audit log | `{ orderId, side, qty, price, ts }` |
+| ☐ | `positions` (pub/sub) | `ORDER_TRADE_UPDATE` handler | Dashboard, risk engine | position state delta |
+| ☐ | `price_stream` (XADD) | Bot engine | ML feature store, backtester | rolling tick time-series |
+| ☐ | `orderbook_stream` (XADD) | Orderbook engine | ML feature store | L2 snapshot per N ms |
+| ☐ | `state:position:<sym>` (HSET) | Execution engine | Risk engine, restart recovery | current open position |
+| ☐ | `state:balance` (HSET) | `ACCOUNT_UPDATE` handler | Risk engine, dashboard | wallet balance |
+| ☐ | `state:kill_switch` (SET) | Risk engine / operator | All services | `"1"` = halt all trading |
+
+### 21.3 Bot Engine — Redis Publisher
+
+```typescript
+// src/redis/publisher.ts
+import Redis from 'ioredis';
+
+export class BotPublisher {
+  private redis: Redis;
+
+  constructor(url: string) {
+    this.redis = new Redis(url);
+  }
+
+  async publishTick(symbol: string, price: number) {
+    const payload = JSON.stringify({ symbol, price, ts: Date.now() });
+    await this.redis.publish('ticks', payload);
+    await this.redis.xadd('price_stream', '*', 'symbol', symbol, 'price', String(price));
+  }
+
+  async publishSignal(signal: { symbol: string; direction: string; confidence: number }) {
+    await this.redis.publish('signals', JSON.stringify({ ...signal, ts: Date.now() }));
+  }
+
+  async setPosition(symbol: string, position: object) {
+    await this.redis.hset(`state:position:${symbol}`, position as Record<string, string>);
+  }
+
+  async isKillSwitchActive(): Promise<boolean> {
+    return (await this.redis.get('state:kill_switch')) === '1';
+  }
+}
+```
+
+### 21.4 WS Gateway — Redis Subscriber → Browser
+
+```typescript
+// ws-gateway/index.ts
+import WebSocket, { WebSocketServer } from 'ws';
+import Redis from 'ioredis';
+
+const sub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+const wss = new WebSocketServer({ port: 4000 });
+
+const channels = ['ticks', 'signals', 'orders', 'positions'];
+sub.subscribe(...channels);
+
+sub.on('message', (_channel: string, message: string) => {
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+});
+
+wss.on('connection', ws => {
+  ws.send(JSON.stringify({ type: 'connected', ts: Date.now() }));
+});
+```
+
+### 21.5 Docker Compose (full system)
+
+```yaml
+# docker-compose.yml
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
+    command: redis-server --save 60 1 --loglevel warning
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on: [redis]
+    restart: unless-stopped
+
+  ws-gateway:
+    build: ./ws-gateway
+    ports: ["4000:4000"]
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on: [redis]
+    restart: unless-stopped
+
+  ui:
+    build: ./ui
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_WS_URL: ws://ws-gateway:4000
+    depends_on: [ws-gateway]
+
+  prometheus:
+    image: prom/prometheus
+    volumes: [./prometheus.yml:/etc/prometheus/prometheus.yml]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+volumes:
+  redis_data:
+```
+
+### 21.6 Kill Switch via Redis
+
+```typescript
+// Any process can halt all trading instantly:
+await redis.set('state:kill_switch', '1');
+
+// Bot engine checks before every signal execution:
+if (await publisher.isKillSwitchActive()) {
+  logger.warn('kill switch active — skipping signal');
+  return;
+}
+
+// CLI reset:
+// redis-cli SET state:kill_switch 0
+```
+
+### 21.7 Implementation Tasks
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | `src/redis/publisher.ts` | BotPublisher class (tick + signal + position publish) |
+| ☐ | Wire publisher into orchestrator | Call `publishTick` on each aggTrade, `publishSignal` on each strategy output |
+| ☐ | Kill switch check in orchestrator | `isKillSwitchActive()` before executing any signal |
+| ☐ | `ws-gateway/` service | Redis subscriber → WebSocket fanout (replace current in-process bridge) |
+| ☐ | `docker-compose.yml` | Full system: redis + bot + ws-gateway + ui + prometheus + grafana |
+| ☐ | `Dockerfile` for bot | `node:22-alpine`, non-root user, health check |
+| ☐ | Redis position state | Write open position to `state:position:<sym>` on open/close |
+| ☐ | Redis balance state | Write balance to `state:balance` on `ACCOUNT_UPDATE` |
+| ☐ | Startup state recovery | On bot restart, read `state:position:*` from Redis before subscribing WS |
+| ☐ | `REDIS_URL` env var | Add to `config.ts` + `.env.example`; default `redis://localhost:6379` |
