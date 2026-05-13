@@ -1279,3 +1279,403 @@ For ONNX upgrade:
 ```
 pip install onnxruntime skl2onnx
 ```
+
+---
+
+## 19. PnL Dashboard + Monitoring System
+
+Separates the bot from a production system.
+Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Next.js frontend.
+
+---
+
+### 19.1 What to Track
+
+#### Trading metrics
+| Status | Metric | Notes |
+|--------|--------|-------|
+| ☐ | Realized PnL (running total) | Sum of closed trade PnL |
+| ☐ | Unrealized PnL | Current open position mark-to-market |
+| ☐ | Equity curve | Cumulative PnL time-series |
+| ☐ | Drawdown | Peak-to-trough in equity, max and current |
+| ☐ | Win rate | Winning trades / total trades |
+| ☐ | Avg win / avg loss | Profit factor = avg_win / avg_loss |
+| ☐ | Sharpe ratio | Rolling 7-day / 30-day |
+
+#### Execution metrics
+| Status | Metric | Notes |
+|--------|--------|-------|
+| ☐ | Order send latency | Time from signal to REST response |
+| ☐ | Fill latency | Time from REST response to `ORDER_TRADE_UPDATE` |
+| ☐ | Slippage bps | Fill price vs microprice at order time |
+| ☐ | Fill rate | Filled / placed (market = ~100%; limit may miss) |
+
+#### Model metrics
+| Status | Metric | Notes |
+|--------|--------|-------|
+| ☐ | p_up / p_down distributions | Histogram every N minutes |
+| ☐ | Confidence histogram | How often model is above threshold |
+| ☐ | Live prediction accuracy | Compare model label vs actual outcome |
+| ☐ | Feature drift | Rolling mean/std vs training baseline |
+
+#### System metrics
+| Status | Metric | Notes |
+|--------|--------|-------|
+| ☐ | WS message lag | Time between Binance event and processing |
+| ☐ | Queue depth | Backlog in async queue |
+| ☐ | CPU / memory | Per-process |
+| ☐ | Errors per minute | Uncaught exceptions, API errors |
+| ☐ | WS reconnects | Count per hour |
+
+---
+
+### 19.2 PostgreSQL Schema
+
+```sql
+-- Closed trades
+CREATE TABLE trades (
+    id           SERIAL PRIMARY KEY,
+    timestamp    BIGINT NOT NULL,
+    symbol       TEXT   NOT NULL,
+    side         TEXT   NOT NULL,         -- LONG / SHORT
+    qty          FLOAT  NOT NULL,
+    entry_price  FLOAT  NOT NULL,
+    exit_price   FLOAT  NOT NULL,
+    pnl          FLOAT  NOT NULL,
+    fee          FLOAT  NOT NULL,
+    close_reason TEXT,                    -- TP / SL / REVERSAL / KILL
+    strategy     TEXT DEFAULT 'smc_ml'
+);
+
+-- Open / closed positions snapshot
+CREATE TABLE positions (
+    symbol          TEXT PRIMARY KEY,
+    qty             FLOAT NOT NULL,
+    entry_price     FLOAT NOT NULL,
+    unrealized_pnl  FLOAT NOT NULL DEFAULT 0,
+    updated_at      BIGINT NOT NULL
+);
+
+-- ML prediction log (for calibration and drift)
+CREATE TABLE predictions (
+    timestamp  BIGINT NOT NULL,
+    symbol     TEXT   NOT NULL,
+    p_up       FLOAT  NOT NULL,
+    p_down     FLOAT  NOT NULL,
+    p_flat     FLOAT  NOT NULL,
+    mid_price  FLOAT  NOT NULL,
+    signal     TEXT,                     -- LONG / SHORT / HOLD
+    actual_y   INT                       -- filled in post-hoc: +1 / -1 / 0
+);
+
+-- Equity snapshots (for curve chart)
+CREATE TABLE equity_snapshots (
+    timestamp      BIGINT PRIMARY KEY,
+    equity         FLOAT NOT NULL,
+    drawdown       FLOAT NOT NULL,
+    open_positions INT   NOT NULL
+);
+```
+
+---
+
+### 19.3 Bot → DB Logging
+
+```python
+# monitoring/db.py
+import asyncpg, time
+
+async def get_pool(dsn: str) -> asyncpg.Pool:
+    return await asyncpg.create_pool(dsn)
+
+async def log_trade(pool, trade: dict):
+    await pool.execute("""
+        INSERT INTO trades
+            (timestamp, symbol, side, qty, entry_price, exit_price, pnl, fee, close_reason)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    """, int(time.time()*1000), trade["symbol"], trade["side"],
+        trade["qty"], trade["entry_price"], trade["exit_price"],
+        trade["pnl"], trade["fee"], trade.get("reason"))
+
+async def log_prediction(pool, pred: dict, mid: float, signal: str):
+    await pool.execute("""
+        INSERT INTO predictions (timestamp, symbol, p_up, p_down, p_flat, mid_price, signal)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+    """, int(time.time()*1000), pred["symbol"],
+        pred["p_up"], pred["p_down"], pred["p_flat"], mid, signal)
+
+async def snapshot_equity(pool, equity: float, drawdown: float, open_pos: int):
+    await pool.execute("""
+        INSERT INTO equity_snapshots VALUES ($1,$2,$3,$4)
+        ON CONFLICT (timestamp) DO NOTHING
+    """, int(time.time()*1000), equity, drawdown, open_pos)
+```
+
+---
+
+### 19.4 Prometheus Metrics (bot side)
+
+```python
+# monitoring/metrics.py
+from prometheus_client import start_http_server, Gauge, Counter, Histogram
+
+pnl_gauge        = Gauge("bot_pnl_usdt",         "Total realized PnL in USDT")
+equity_gauge     = Gauge("bot_equity_usdt",       "Current equity")
+drawdown_gauge   = Gauge("bot_drawdown_pct",      "Current drawdown fraction")
+trades_counter   = Counter("bot_trades_total",    "Total trades placed", ["side"])
+errors_counter   = Counter("bot_errors_total",    "Errors", ["type"])
+order_latency    = Histogram("bot_order_latency_ms", "Order send latency ms",
+                             buckets=[1, 2, 5, 10, 25, 50, 100, 250, 500])
+inference_lat    = Histogram("bot_inference_latency_ms", "ML inference latency ms",
+                             buckets=[0.1, 0.5, 1, 2, 5, 10])
+
+def start_metrics_server(port: int = 9000):
+    start_http_server(port)
+```
+
+---
+
+### 19.5 FastAPI Backend
+
+```python
+# dashboard/api.py
+from fastapi import FastAPI, WebSocket
+import asyncpg, asyncio
+
+app  = FastAPI()
+pool: asyncpg.Pool = None
+_ws_clients: list[WebSocket] = []
+
+@app.on_event("startup")
+async def startup():
+    global pool
+    pool = await asyncpg.create_pool("postgresql://postgres:pass@localhost/bot")
+
+@app.get("/pnl")
+async def get_pnl():
+    row = await pool.fetchrow("SELECT COALESCE(SUM(pnl),0) AS total FROM trades")
+    return {"pnl": row["total"]}
+
+@app.get("/trades")
+async def get_trades(limit: int = 100):
+    rows = await pool.fetch(
+        "SELECT * FROM trades ORDER BY timestamp DESC LIMIT $1", limit)
+    return [dict(r) for r in rows]
+
+@app.get("/equity")
+async def get_equity():
+    rows = await pool.fetch(
+        "SELECT timestamp, equity, drawdown FROM equity_snapshots ORDER BY timestamp")
+    return [dict(r) for r in rows]
+
+@app.get("/metrics/model")
+async def model_metrics():
+    rows = await pool.fetch("""
+        SELECT DATE_TRUNC('minute', TO_TIMESTAMP(timestamp/1000)) AS minute,
+               AVG(p_up) AS avg_p_up, AVG(p_down) AS avg_p_down
+        FROM predictions
+        WHERE timestamp > EXTRACT(EPOCH FROM NOW()-INTERVAL '1 hour')*1000
+        GROUP BY 1 ORDER BY 1
+    """)
+    return [dict(r) for r in rows]
+
+@app.websocket("/ws")
+async def ws_live(ws: WebSocket):
+    await ws.accept()
+    _ws_clients.append(ws)
+    try:
+        while True:
+            await asyncio.sleep(1)   # keep alive; bot pushes via broadcast()
+    except Exception:
+        _ws_clients.remove(ws)
+
+async def broadcast(event: dict):
+    dead = []
+    for c in _ws_clients:
+        try: await c.send_json(event)
+        except Exception: dead.append(c)
+    for c in dead: _ws_clients.remove(c)
+```
+
+---
+
+### 19.6 Alert System
+
+```python
+# monitoring/alerts.py
+import aiohttp, os
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT  = os.getenv("TELEGRAM_CHAT_ID")
+SLACK_WEBHOOK  = os.getenv("SLACK_WEBHOOK")
+
+async def send_telegram(msg: str):
+    if not TELEGRAM_TOKEN: return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    async with aiohttp.ClientSession() as s:
+        await s.post(url, json={"chat_id": TELEGRAM_CHAT, "text": msg})
+
+async def send_slack(msg: str):
+    if not SLACK_WEBHOOK: return
+    async with aiohttp.ClientSession() as s:
+        await s.post(SLACK_WEBHOOK, json={"text": msg})
+
+async def alert(msg: str):
+    await send_telegram(msg)
+    await send_slack(msg)
+
+# Usage in risk manager:
+# if drawdown > MAX_DAILY_LOSS: await alert(f"⚠️ Kill switch triggered. Drawdown={drawdown:.1%}")
+# if ws_lag_ms > 2000:          await alert(f"⚠️ WS lag spike: {ws_lag_ms}ms")
+```
+
+---
+
+### 19.7 Next.js Frontend Skeleton
+
+```bash
+npx create-next-app@latest dashboard --ts
+cd dashboard
+npm install recharts swr
+```
+
+```typescript
+// pages/index.tsx
+import useSWR from "swr";
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+
+const fetcher = (url: string) => fetch(url).then(r => r.json());
+
+export default function Dashboard() {
+  const { data: pnl }    = useSWR("http://localhost:8001/pnl",    fetcher, { refreshInterval: 2000 });
+  const { data: equity } = useSWR("http://localhost:8001/equity", fetcher, { refreshInterval: 5000 });
+  const { data: trades } = useSWR("http://localhost:8001/trades", fetcher, { refreshInterval: 2000 });
+
+  return (
+    <main style={{ padding: 24, background: "#0d1117", color: "#e6edf3", minHeight: "100vh" }}>
+      <h1>Trading Bot Dashboard</h1>
+
+      {/* PnL summary */}
+      <section>
+        <h2>Realized PnL: {pnl?.pnl?.toFixed(2)} USDT</h2>
+      </section>
+
+      {/* Equity curve */}
+      <section>
+        <h2>Equity Curve</h2>
+        <LineChart width={900} height={300} data={equity ?? []}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
+          <XAxis dataKey="timestamp" tickFormatter={t => new Date(t).toLocaleTimeString()} />
+          <YAxis />
+          <Tooltip />
+          <Line type="monotone" dataKey="equity" stroke="#00ff99" dot={false} />
+          <Line type="monotone" dataKey="drawdown" stroke="#ff4444" dot={false} yAxisId="right" />
+        </LineChart>
+      </section>
+
+      {/* Recent trades */}
+      <section>
+        <h2>Recent Trades</h2>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>{["Time","Symbol","Side","Qty","Entry","Exit","PnL","Reason"].map(h =>
+              <th key={h} style={{ padding: 8, borderBottom: "1px solid #30363d" }}>{h}</th>
+            )}</tr>
+          </thead>
+          <tbody>
+            {(trades ?? []).map((t: any) => (
+              <tr key={t.id} style={{ color: t.pnl >= 0 ? "#00ff99" : "#ff4444" }}>
+                <td>{new Date(t.timestamp).toLocaleTimeString()}</td>
+                <td>{t.symbol}</td>
+                <td>{t.side}</td>
+                <td>{t.qty}</td>
+                <td>{t.entry_price?.toFixed(2)}</td>
+                <td>{t.exit_price?.toFixed(2)}</td>
+                <td>{t.pnl?.toFixed(4)}</td>
+                <td>{t.close_reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  );
+}
+```
+
+---
+
+### 19.8 Deployment Stack
+
+```yaml
+# docker-compose.yml  (skeleton)
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: bot
+      POSTGRES_PASSWORD: pass
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+
+  prometheus:
+    image: prom/prometheus
+    volumes: [./prometheus.yml:/etc/prometheus/prometheus.yml]
+
+  grafana:
+    image: grafana/grafana
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+  api:
+    build: ./dashboard
+    command: uvicorn api:app --host 0.0.0.0 --port 8001
+    depends_on: [postgres]
+
+  dashboard:
+    build: ./dashboard/frontend
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_API: http://api:8001
+
+volumes:
+  pgdata:
+```
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: trading_bot
+    static_configs:
+      - targets: ["host.docker.internal:9000"]
+```
+
+---
+
+### 19.9 Grafana Panels
+
+| Panel | Query |
+|-------|-------|
+| Realized PnL | `bot_pnl_usdt` |
+| Equity | `bot_equity_usdt` |
+| Drawdown | `bot_drawdown_pct * 100` |
+| Trades/min | `rate(bot_trades_total[1m])` |
+| Order latency P95 | `histogram_quantile(0.95, bot_order_latency_ms_bucket)` |
+| Inference latency P95 | `histogram_quantile(0.95, bot_inference_latency_ms_bucket)` |
+| Error rate | `rate(bot_errors_total[1m])` |
+
+---
+
+### 19.10 Alert Rules
+
+| Condition | Action |
+|-----------|--------|
+| `drawdown > MAX_DAILY_LOSS` | Telegram + Slack: kill switch triggered |
+| `ws_lag_ms > 2000` | Telegram: WS latency spike |
+| `order_latency_p95 > 500 ms` | Slack: execution slow |
+| `bot_errors_total rate > 5/min` | Telegram: error storm |
+| `bot_pnl_usdt < −N` | Telegram: absolute loss threshold hit |
+| Bot process silent > 60 s | External watchdog → force-close all + alert |
