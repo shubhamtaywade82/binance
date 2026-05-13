@@ -41,6 +41,9 @@ import type { Candle, Side, TrendBias } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
 import type { OrderTradeUpdate, AccountUpdate } from './binance/private-ws';
+import { getRedisClient } from './services/redis';
+import { publish, CHANNELS } from './services/pubsub';
+import { setPosition, clearPosition, isKillSwitchActive } from './services/state';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -132,6 +135,8 @@ export class HybridOrchestrator {
   private readonly orderBookSnapshotRing: OrderBookSnapshotRing | null;
   /** Private user-data stream — non-null when BINANCE_EXECUTION_ADAPTER=true + live. */
   private privateWs: BinancePrivateWs | null = null;
+  /** ioredis client — null when REDIS_URL is not configured (all publish calls are no-ops). */
+  private readonly redis: ReturnType<typeof getRedisClient>;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -239,6 +244,8 @@ export class HybridOrchestrator {
         },
       });
     }
+
+    this.redis = getRedisClient(cfg.REDIS_URL);
   }
 
   async start(): Promise<void> {
@@ -689,7 +696,21 @@ export class HybridOrchestrator {
     if (!liveBook) this.feedSyntheticBook(price);
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
-    void this.positionManager.onMark(price, this.reversalTrendBias());
+    publish(this.redis, CHANNELS.TICKS, { symbol: sym, price, ts: Date.now() });
+    this.positionManager.onMark(price, this.reversalTrendBias()).then((closeEvent) => {
+      if (!closeEvent) return;
+      clearPosition(this.redis, sym);
+      publish(this.redis, CHANNELS.POSITIONS, {
+        event: 'close',
+        symbol: sym,
+        side: closeEvent.position.side,
+        entryPrice: closeEvent.position.entryPrice,
+        exitPrice: closeEvent.exitPrice,
+        reason: closeEvent.reason,
+        netUsdt: closeEvent.pnl.netUsdt,
+        ts: Date.now(),
+      });
+    }).catch(() => undefined);
   }
 
   private scheduleRestMarkPoll(): void {
@@ -775,6 +796,16 @@ export class HybridOrchestrator {
       if (fillPrice > 0) {
         const result = binanceAdapter.notifyFilled(o.si, fillPrice);
         if (result?.fullyFilled) {
+          const sym = this.pairs.binanceSymbol.toUpperCase();
+          clearPosition(this.redis, sym);
+          publish(this.redis, CHANNELS.POSITIONS, {
+            event: 'close',
+            symbol: sym,
+            exitPrice: result.closed.exitPrice,
+            reason: result.closed.reason,
+            source: 'exchange_algo',
+            ts: Date.now(),
+          });
           void this.positionManager.notifyExchangeClose(result.closed.exitPrice, result.closed.reason);
         }
       }
@@ -888,9 +919,18 @@ export class HybridOrchestrator {
 
       if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
 
+      if (await isKillSwitchActive(this.redis)) {
+        this.log.warn('kill_switch_active', { symbol: sym });
+        return;
+      }
       const side: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
+      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: side, source: 'sol_mtf', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
-      await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+      const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+      if (opened) {
+        setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
+        publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+      }
       return;
     }
 
@@ -938,8 +978,20 @@ export class HybridOrchestrator {
       return;
     }
 
+    if (await isKillSwitchActive(this.redis)) {
+      this.log.warn('kill_switch_active', { symbol: sym });
+      return;
+    }
+
     const side: Side = ltf.direction === 'LONG' ? 'LONG' : 'SHORT';
+    publish(this.redis, CHANNELS.SIGNALS, {
+      symbol: sym, direction: side, htfBias, ltfConfidence: ltf.confidence, smcScore: smc.score, source: 'htf_ltf', ts: Date.now(),
+    });
     const prec = this.precision ?? extractPrecisionFromInstrument(null);
-    await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+    const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+    if (opened) {
+      setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
+      publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+    }
   }
 }

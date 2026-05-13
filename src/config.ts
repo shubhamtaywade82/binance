@@ -335,6 +335,14 @@ export const AppConfigSchema = z.object({
 
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
+
+  /**
+   * ioredis connection URL. When set, the bot publishes ticks, signals, and position events
+   * to Redis pub/sub channels and writes position/balance state to Redis keys.
+   * When absent (default), all Redis calls are silently skipped — the bot runs unchanged.
+   * Example: `redis://localhost:6379`
+   */
+  REDIS_URL: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
