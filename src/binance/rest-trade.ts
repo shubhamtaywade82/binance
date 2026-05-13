@@ -831,6 +831,52 @@ export const getTicker24hr = async (
   return client.publicGet<Ticker24hrResponse | Ticker24hrResponse[]>('/fapi/v1/ticker/24hr', q);
 };
 
+// ─── Multi-Assets Margin Mode ──────────────────────────────────────────────
+
+export interface MultiAssetsMarginResponse {
+  multiAssetsMargin: boolean;
+}
+
+export const getMultiAssetsMargin = async (
+  client: BinanceRestClient,
+): Promise<MultiAssetsMarginResponse> => {
+  return client.signedGet<MultiAssetsMarginResponse>('/fapi/v1/multiAssetsMargin');
+};
+
+// ─── Recent Trades ─────────────────────────────────────────────────────────
+
+export interface RecentTrade {
+  id: number;
+  price: string;
+  qty: string;
+  quoteQty: string;
+  time: number;
+  isBuyerMaker: boolean;
+}
+
+export const getRecentTrades = async (
+  client: BinanceRestClient,
+  symbol: string,
+  limit?: number,
+): Promise<RecentTrade[]> => {
+  const q: Record<string, string | number> = { symbol: symbol.toUpperCase() };
+  if (limit !== undefined) q.limit = limit;
+  return client.publicGet<RecentTrade[]>('/fapi/v1/trades', q);
+};
+
+// ─── Historical Trades ─────────────────────────────────────────────────────
+
+export const getHistoricalTrades = async (
+  client: BinanceRestClient,
+  symbol: string,
+  params?: { limit?: number; fromId?: number },
+): Promise<RecentTrade[]> => {
+  const q: Record<string, string | number> = { symbol: symbol.toUpperCase() };
+  if (params?.limit !== undefined) q.limit = params.limit;
+  if (params?.fromId !== undefined) q.fromId = params.fromId;
+  return client.publicGet<RecentTrade[]>('/fapi/v1/historicalTrades', q);
+};
+
 // ─── Server Time ───────────────────────────────────────────────────────────
 
 export const getServerTime = async (client: BinanceRestClient): Promise<number> => {

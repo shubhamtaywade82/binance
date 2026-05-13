@@ -131,6 +131,10 @@ export interface PrivateWsCallbacks {
   onAccountConfigUpdate?: (event: AccountConfigUpdate) => void;
   /** Lightweight fill notification (lower bandwidth than ORDER_TRADE_UPDATE). */
   onTradeLite?: (event: TradeLiteEvent) => void;
+  /** Grid/strategy order state updates. */
+  onStrategyUpdate?: (event: Record<string, unknown>) => void;
+  /** Grid trading order events. */
+  onGridUpdate?: (event: Record<string, unknown>) => void;
   onListenKeyExpired?: () => void;
   onError?: (err: Error) => void;
   onReconnect?: (attempt: number) => void;
@@ -282,6 +286,14 @@ export class BinancePrivateWs {
     }
     if (evt === 'TRADE_LITE') {
       this.cb.onTradeLite?.(msg as unknown as TradeLiteEvent);
+      return;
+    }
+    if (evt === 'STRATEGY_UPDATE') {
+      this.cb.onStrategyUpdate?.(msg);
+      return;
+    }
+    if (evt === 'GRID_UPDATE') {
+      this.cb.onGridUpdate?.(msg);
       return;
     }
     if (evt === 'listenKeyExpired') {

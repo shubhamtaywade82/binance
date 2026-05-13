@@ -43,7 +43,7 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v1/accountConfig` | **Account Configuration** — `getAccountConfig` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/symbolConfig` | **Symbol Configuration** — `getSymbolConfig` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/leverageBracket` | **Notional & Leverage Brackets** — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket` |
-| ☐ | `GET /fapi/v1/multiAssetsMargin` | **Multi-Assets Mode** — detect if portfolio margin is active |
+| ✅ | `GET /fapi/v1/multiAssetsMargin` | **Multi-Assets Mode** — `getMultiAssetsMargin` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/positionSide/dual` | **Position Mode** — `getPositionSideDual`; hedge → `positionSide` on live orders |
 | ✅ | `GET /fapi/v1/rateLimit/order` | **Order Rate Limit** — polled; pauses new entries when `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` exceeded |
 | ✅ | `GET /fapi/v1/income` | **Income History** — `getIncomeHistory` in `rest-trade.ts`; realized PnL, fees, funding flows |
@@ -61,8 +61,8 @@ Items marked ✅ are already implemented.
 | ✅ | `GET /fapi/v1/ticker/bookTicker` | **REST Best Bid/Ask** — `getBookTicker` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/ticker/24hr` | **24h Ticker Stats** — `getTicker24hr` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/fundingRate` | **Funding Rate History** — `getFundingRateHistory` in `rest-trade.ts` |
-| ☐ | `GET /fapi/v1/trades` | **Recent Trades** |
-| ☐ | `GET /fapi/v1/historicalTrades` | **Historical Trades** |
+| ✅ | `GET /fapi/v1/trades` | **Recent Trades** — `getRecentTrades` in `rest-trade.ts` |
+| ✅ | `GET /fapi/v1/historicalTrades` | **Historical Trades** — `getHistoricalTrades` in `rest-trade.ts` |
 | ✅ | `GET /fapi/v1/openInterest` | **Current Open Interest** — `getOpenInterest` in `rest-trade.ts` |
 | ✅ | `GET /futures/data/openInterestHist` | **OI Statistics History** — `getOpenInterestHist` in `rest-trade.ts` |
 
@@ -79,12 +79,12 @@ Items marked ✅ are already implemented.
 | ✅ | `<symbol>@bookTicker` | Best bid/ask |
 | ✅ | `<symbol>@ticker` | 24h ticker / LTP |
 | ✅ | `<symbol>@forceOrder` | Per-symbol liquidations |
-| ☐ | `<symbol>@miniTicker` | **Mini Ticker** — lightweight 24h stats for watchlist symbols |
-| ☐ | `!ticker@arr` | **All-symbol Ticker Array** — global market scan |
-| ☐ | `!miniTicker@arr` | **All-symbol Mini Ticker Array** |
-| ☐ | `!bookTicker` | **All-symbol Best Bid/Ask** — multi-symbol execution anchor |
+| ✅ | `<symbol>@miniTicker` | **Mini Ticker** — `useMiniTicker` option + `onMiniTicker` callback in multiplex |
+| ✅ | `!ticker@arr` | **All-symbol Ticker Array** — `useGlobalTicker` option; dispatches to `on24hrTicker` per item |
+| ✅ | `!miniTicker@arr` | **All-symbol Mini Ticker Array** — `useGlobalMiniTicker` option; dispatches to `onMiniTicker` per item |
+| ✅ | `!bookTicker` | **All-symbol Best Bid/Ask** — `useGlobalBookTicker` option in multiplex |
 | ✅ | `!forceOrder@arr` | **All-symbol Liquidation Stream** — `useGlobalForceOrder` option in multiplex; config `BINANCE_USE_GLOBAL_FORCE_ORDER` |
-| ☐ | `!contractInfo` | **Contract Info Stream** — live symbol listing/delisting events |
+| ✅ | `!contractInfo` | **Contract Info Stream** — `useContractInfo` option + `onContractInfo` callback in multiplex |
 
 ---
 
@@ -99,8 +99,8 @@ Items marked ✅ are already implemented.
 | ✅ | `ACCOUNT_CONFIG_UPDATE` | **Account Config Update** — `onAccountConfigUpdate` handler in `private-ws.ts` |
 | ✅ | `ALGO_ORDER_UPDATE` | **Algo stream** — private WS dispatches `ALGO_UPDATE` / `ALGO_ORDER_UPDATE` to structured log |
 | ✅ | `CONDITIONAL_ORDER_TRIGGER_REJECT` | **Conditional Reject** — private WS logs `CONDITIONAL_ORDER_TRIGGER_REJECT` |
-| ☐ | `STRATEGY_UPDATE` | **Strategy Update** — grid/strategy order state |
-| ☐ | `GRID_UPDATE` | **Grid Update** — grid trading order events |
+| ✅ | `STRATEGY_UPDATE` | **Strategy Update** — `onStrategyUpdate` handler in `private-ws.ts` |
+| ✅ | `GRID_UPDATE` | **Grid Update** — `onGridUpdate` handler in `private-ws.ts` |
 | ✅ | Listen-key expiry handling | **On `listenKeyExpired`** — mint new key, delete old (best-effort), reconnect WS |
 
 ---
