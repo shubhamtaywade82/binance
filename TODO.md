@@ -283,3 +283,251 @@ Items marked ✅ are already implemented.
 24. Redis hot state cache
 25. Multi-symbol live execution
 26. Walk-forward parameter validation
+
+---
+
+## 16. AI / ML Trading System
+
+> Current state: only Ollama LLM advisory (`market-brief.ts`, `supertrend-tune.ts`).
+> No feature pipeline, no label builder, no ML models, no live inference.
+
+---
+
+### 16.1 What to Predict (Model Targets)
+
+| Status | Target | Notes |
+|--------|--------|-------|
+| ☐ | `P(return > +N bps in next T seconds)` | Direction classification — avoids noisy regression |
+| ☐ | `P(return < −N bps in next T seconds)` | Down probability (independent head) |
+| ☐ | `expected_return` over next N seconds | Clipped regression target |
+| ☐ | `expected_volatility` over next N seconds | Realized vol forecast |
+| ☐ | `regime` ∈ {trend, mean-revert, chop, high-vol, low-liq} | Controls whether alpha model should trade at all |
+| ☐ | `fill_probability` | Will a limit order fill before adverse move? |
+| ☐ | `slippage_bps` | Expected execution cost beyond spread |
+| ☐ | `adverse_move_probability` | P(price moves against entry within T seconds of fill) |
+
+---
+
+### 16.2 Feature Schema
+
+Every row in the training set and live inference vector should contain:
+
+#### Microstructure features (strongest short-term signal)
+
+| Status | Feature | Source |
+|--------|---------|--------|
+| ☐ | `spread` | Best ask − best bid |
+| ☐ | `microprice` | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` |
+| ☐ | `obi_5` | Top-5 weighted bid/ask volume imbalance |
+| ☐ | `obi_10` | Top-10 weighted bid/ask volume imbalance |
+| ☐ | `weighted_depth_imbalance` | Level-distance weighted OBI |
+| ☐ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff |
+| ☐ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient |
+| ☐ | `liquidity_gap` | Largest price gap in top-20 levels |
+| ☐ | `cancel_intensity` | Rate of depth level removals |
+| ☐ | `book_thinning` | Rolling decrease in total top-N depth volume |
+| ☐ | `bid_wall_persistence` / `ask_wall_persistence` | How long large levels survive before cancellation |
+
+#### Trade flow / aggression features
+
+| Status | Feature | Source |
+|--------|---------|--------|
+| ☐ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol (from `aggTrade.m`) |
+| ☐ | `trade_intensity_1s` | Trade count per second |
+| ☐ | `signed_volume_5s` | Net aggressor volume |
+| ☐ | `burstiness` | Variance of inter-trade arrival times |
+| ☐ | `last_trade_direction_streak` | Consecutive same-side trades |
+| ☐ | `large_trade_flag` | Trade qty > N × rolling avg qty |
+
+#### OHLCV / candle features
+
+| Status | Feature | Source |
+|--------|---------|--------|
+| ☐ | `ret_1m` / `ret_5m` / `ret_15m` | Log returns at each TF |
+| ☐ | `vol_1m` / `vol_5m` | Realized volatility (rolling std of log returns) |
+| ☐ | `candle_body_pct` | `abs(close − open) / (high − low)` |
+| ☐ | `wick_ratio_upper` / `wick_ratio_lower` | Wick size relative to range |
+| ☐ | `volume_zscore_1m` | Volume vs rolling mean/std |
+| ☐ | `range_expansion` | Current range vs N-bar avg range |
+| ☐ | `trend_slope` | Linear regression slope over last N bars |
+| ☐ | `momentum_5m` / `momentum_15m` | Close-to-close return over N bars |
+
+#### Open interest / derivatives features
+
+| Status | Feature | Source |
+|--------|---------|--------|
+| ☐ | `oi_delta_1m` | Change in OI over last minute |
+| ☐ | `oi_delta_5m` | Change in OI over 5 min |
+| ☐ | `oi_zscore` | OI delta z-score vs rolling window |
+| ☐ | `price_oi_regime` | Encoded: price↑+OI↑ / price↑+OI↓ / price↓+OI↑ / price↓+OI↓ |
+| ☐ | `oi_divergence` | OI direction opposing price direction |
+| ☐ | `oi_spike` | OI change > N × rolling std |
+
+#### Funding / mark price features
+
+| Status | Feature | Source |
+|--------|---------|--------|
+| ☐ | `funding_zscore` | Current funding rate vs rolling 24h mean/std |
+| ☐ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` |
+| ☐ | `liquidation_pressure_proxy` | Rolling forced-order volume from `@forceOrder` |
+| ☐ | `funding_extreme_flag` | Funding > 2 std → crowded side signal |
+
+---
+
+### 16.3 Label Builder
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **Direction labels** | `y = 1` if `future_return_30s > +4 bps`; `y = −1` if `< −4 bps`; else `0` — avoids noisy mid-zone |
+| ☐ | **Regression labels** | `y = clip(future_return_Ns, −50bps, +50bps)` |
+| ☐ | **Volatility labels** | `y = realized_vol(next N seconds)` |
+| ☐ | **Regime labels** | Rule-based clustering initially: trend/chop/high-vol; learn from rules later |
+| ☐ | **Leakage guard** | Never use any feature that includes data from after label horizon |
+| ☐ | **Cost-adjusted labels** | Subtract taker fee + estimated slippage; if edge disappears, label is useless |
+| ☐ | **Multi-horizon labeling** | Generate labels for 5 s, 30 s, 1 m, 5 m simultaneously from single pass |
+
+---
+
+### 16.4 Data Pipeline Architecture
+
+| Status | Component | Notes |
+|--------|-----------|-------|
+| ☐ | **Rolling feature builder** | Per-event update of feature windows: 100 ms, 1 s, 5 s, 30 s, 1 m, 5 m, 15 m |
+| ☐ | **Feature normalization** | Per-symbol rolling z-score (mean/std over sliding N-bar window) |
+| ☐ | **Stream alignment** | All streams timestamped and aligned to common clock before feature join |
+| ☐ | **Stale-state guard** | Mark book state stale if no depth update in > 500 ms; exclude from features |
+| ☐ | **Feature vector snapshot** | Serialize full feature row at each bar/event to Parquet/ClickHouse |
+| ☐ | **Label join** | After collection, join feature rows with forward-looking labels for each horizon |
+| ☐ | **Walk-forward splits** | Chronological train/val/test split — never random shuffle |
+| ☐ | **OI poll integration** | Poll `/fapi/v1/openInterest` every 5–10 s; interpolate to feature timestamps |
+
+---
+
+### 16.5 Model Architecture
+
+#### Phase 1 — Tabular Baseline (build first)
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **LightGBM direction classifier** | `P(up) / P(down) / P(flat)` on 30 s horizon; fastest path to usable alpha |
+| ☐ | **LightGBM volatility regressor** | Predict next-1m realized vol for position sizing and regime detection |
+| ☐ | **Feature importance analysis** | SHAP values to identify which features actually carry signal |
+| ☐ | **Walk-forward validation** | Rolling window: train on T months, test on T+1; repeat across full history |
+
+#### Phase 2 — Sequence Models
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **TCN (Temporal Convolutional Network)** | Rolling window of raw orderbook + flow + OHLCV features; good first sequence model |
+| ☐ | **LSTM / GRU** | Baseline RNN for comparison with TCN |
+| ☐ | **Transformer encoder** | Self-attention over feature sequence; best for complex cross-feature patterns |
+| ☐ | **Compare vs LightGBM baseline** | Sequence model only justified if it beats baseline after costs |
+
+#### Phase 3 — Multimodal Ensemble
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **OHLCV encoder branch** | Multi-TF candle features → dense embedding |
+| ☐ | **Order book encoder branch** | Depth snapshots / deltas → embedding |
+| ☐ | **OI / funding encoder branch** | OI delta, funding z-score, mark basis → embedding |
+| ☐ | **Fusion layer** | Concatenate branch embeddings → direction + volatility + regime heads |
+| ☐ | **Regime gating** | Regime head output gates whether direction head is acted upon |
+| ☐ | **Execution quality head** | Separate head for slippage / adverse-move probability |
+
+---
+
+### 16.6 Live Inference Engine
+
+| Status | Component | Notes |
+|--------|-----------|-------|
+| ☐ | **ONNX / TorchScript export** | Export trained model for sub-100 µs inference without Python overhead |
+| ☐ | **Inference server** | Thin async service: receive feature vector → return probability output in < 1 ms |
+| ☐ | **Model output schema** | `{ p_up, p_down, p_chop, vol_regime, expected_return, expected_slippage }` — structured, not just "buy/sell" |
+| ☐ | **Threshold gate** | `if p_up > 0.65 AND regime != chop AND expected_return > fees + slippage + buffer THEN enter` |
+| ☐ | **Model versioning** | Track which model version produced each trade for post-trade attribution |
+| ☐ | **Fallback to rule-based** | If inference latency spikes or model service is down, revert to existing SMC strategy |
+
+---
+
+### 16.7 Decision Logic Integration
+
+```
+p_up = model.p_up
+p_down = model.p_down
+regime = model.regime
+expected_return = model.expected_return
+expected_slippage = model.expected_slippage
+
+IF p_up > 0.65
+AND regime NOT IN [chop, low_liq]
+AND expected_return > taker_fee + expected_slippage + MIN_EDGE_BPS
+AND OI/orderbook/trade-flow confirm direction    ← existing SMC signals
+THEN enter long
+
+IF p_down > 0.65
+AND regime NOT IN [chop, low_liq]
+AND expected_return > taker_fee + expected_slippage + MIN_EDGE_BPS
+AND OI/orderbook/trade-flow confirm direction
+THEN enter short
+```
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **Replace naked signal entries** | Wrap existing SMC/trend strategy output with ML probability gate |
+| ☐ | **Dynamic sizing from volatility forecast** | Scale `CAPITAL_PER_TRADE_USDT` down when `expected_volatility` is high |
+| ☐ | **Hold-time optimization** | Use expected-return horizon to set max hold time before exit |
+| ☐ | **Execution model gating** | Skip entry when `slippage_probability` is high (e.g. thin book, high vol regime) |
+
+---
+
+### 16.8 Training & Retraining Pipeline
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **Offline training script** | Python: load Parquet features → normalize → label join → train → evaluate → export |
+| ☐ | **Walk-forward harness** | Automate rolling train/test windows; report Sharpe / hit-rate / cost-adjusted PnL per fold |
+| ☐ | **Concept drift detection** | Monitor live feature distribution vs training distribution; alert when gap exceeds threshold |
+| ☐ | **Scheduled retraining** | Weekly / monthly retrain on newest N weeks of data; gate deployment on walk-forward passing min Sharpe |
+| ☐ | **Model registry** | Store model artifacts with metadata (train period, feature schema version, validation metrics) |
+| ☐ | **Shadow mode testing** | Run new model in parallel with no execution; compare signals vs live model before promoting |
+
+---
+
+### 16.9 Post-Trade Analytics Loop
+
+| Status | Task | Notes |
+|--------|------|-------|
+| ☐ | **Prediction vs outcome log** | Store `(feature_vector, model_output, actual_outcome)` per trade |
+| ☐ | **Calibration check** | Plot predicted `p_up` vs actual win rate at each decile |
+| ☐ | **Feature drift report** | Rolling mean/std of each feature vs training baseline |
+| ☐ | **Signal decay tracking** | Monitor if model accuracy degrades over time (common in alpha signals) |
+| ☐ | **PnL attribution by model** | Split realized PnL into: model signal contribution vs execution quality vs market regime |
+
+---
+
+### 16.10 Updated Build Order (AI/ML additions)
+
+#### P1 — Foundational (add to P1 queue)
+- Feature builder for microstructure: TFI, weighted OBI, microprice, OFI, spread (feeds both existing strategy and future ML)
+- Rolling z-score normalization layer
+- Feature snapshot serialization to Parquet
+
+#### P2 — Baseline Model
+- Label builder (direction 30 s, volatility 1 m, multi-horizon)
+- LightGBM direction classifier + walk-forward validation
+- LightGBM volatility regressor for dynamic sizing
+- SHAP feature importance
+
+#### P3 — Live Inference
+- ONNX model export
+- Inference service (< 1 ms target)
+- Probability gate wrapping existing execution engine
+- Model output schema + threshold config
+- Shadow mode harness
+
+#### P4 — Sequence & Ensemble
+- TCN / Transformer sequence model
+- Multimodal encoder architecture
+- Execution quality head (slippage / adverse-move model)
+- Scheduled retraining pipeline
+- Concept drift monitoring
