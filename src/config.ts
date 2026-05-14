@@ -167,6 +167,11 @@ export const AppConfigSchema = z.object({
 
   /** Append NDJSON log lines (empty = stdout/stderr only). */
   APP_LOG_PATH: z.string().default('./logs/app.ndjson'),
+  /**
+   * When true, emit **info** / **warn** on stdout/stderr as NDJSON (same shape as `APP_LOG_PATH` file lines).
+   * Default keeps human-readable `msg {json}` lines for local dev; enable in Docker / log aggregators.
+   */
+  LOG_JSON_CONSOLE: boolFromString(false),
 
   EXECUTION_MODE: z
     .union([ExecutionModeEnum, z.string()])
