@@ -13,6 +13,7 @@ FEATURE_ORDER: list[str] = [
     "trade_imbalance_1s", "trade_imbalance_5s", "trade_imbalance_30s", "trade_intensity_1s",
     "signed_volume_5s", "burstiness", "last_trade_direction_streak", "large_trade_flag",
     "ofi_cumulative", "rv_1s", "rv_5s", "rv_1m",
+    "micro_bar_1s_close_ret", "micro_bar_1s_volume", "micro_bar_5s_close_ret", "micro_bar_5s_volume",
     "ret_1m", "ret_5m", "vol_1m", "candle_body_1m", "wick_ratio_upper_1m",
     "volume_zscore_1m", "range_expansion", "trend_slope", "momentum_5m",
     "oi", "oi_delta_1m", "oi_delta_5m", "oi_zscore", "oi_divergence", "oi_spike",
