@@ -415,6 +415,7 @@ export class HybridOrchestrator {
     this.clearOrderRateTimer();
     this.mlRecorder?.stop();
     this.execution.stopFunding?.();
+    this.execution.stopPgWriter?.().catch(() => {});
     this.book.stop();
     if (this.ws) this.ws.stop();
     if (this.multiplex) void this.multiplex.stop();

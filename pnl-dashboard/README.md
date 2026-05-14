@@ -48,7 +48,7 @@ This starts:
 
 | Service    | URL                          | Credentials       |
 |------------|------------------------------|--------------------|
-| PostgreSQL | `localhost:5432`             | `postgres:postgres` (db: `bot`) |
+| PostgreSQL | `localhost:5434`             | `postgres:postgres` (db: `bot`) |
 | Prometheus | http://localhost:9091        | —                  |
 | Grafana    | http://localhost:3001        | `admin` / `admin`  |
 | FastAPI    | http://localhost:8001        | —                  |
@@ -61,7 +61,7 @@ Add these to your `.env`:
 
 ```bash
 # PostgreSQL persistence (writes trades, positions, equity to Postgres)
-POSTGRES_URL=postgresql://postgres:postgres@localhost:5432/bot
+POSTGRES_URL=postgresql://postgres:postgres@localhost:5434/bot
 
 # Prometheus metrics endpoint
 PROMETHEUS_ENABLED=true
@@ -174,7 +174,7 @@ If the database already exists (not a fresh start), apply the schema manually:
 Or with a custom connection:
 
 ```bash
-POSTGRES_URL=postgresql://postgres:postgres@localhost:5432/bot ./pnl-dashboard/db/migrate.sh
+POSTGRES_URL=postgresql://postgres:postgres@localhost:5434/bot ./pnl-dashboard/db/migrate.sh
 ```
 
 ### Reset data

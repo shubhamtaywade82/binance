@@ -6,4 +6,4 @@ export async function fetchApi<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export const swrFetcher = (path: string) => fetchApi(path);
+export const swrFetcher = <T>(path: string): Promise<T> => fetchApi<T>(path);

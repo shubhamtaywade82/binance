@@ -19,18 +19,33 @@ let server: http.Server | null = null;
 
 export const startPrometheusServer = (port = 9090): void => {
   if (server) return;
-  server = http.createServer(async (_req, res) => {
-    try {
-      res.setHeader('Content-Type', register.contentType);
-      res.end(await register.metrics());
-    } catch {
-      res.statusCode = 500;
-      res.end();
-    }
-  });
-  server.listen(port, () => {
-    console.log(`[prometheus] Metrics server listening on :${port}`);
-  });
+  try {
+    server = http.createServer(async (_req, res) => {
+      try {
+        res.setHeader('Content-Type', register.contentType);
+        res.end(await register.metrics());
+      } catch (err) {
+        res.statusCode = 500;
+        res.end();
+      }
+    });
+
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`[prometheus] Port ${port} already in use, metrics server disabled. This is normal if another instance is running.`);
+      } else {
+        console.warn(`[prometheus] Server error: ${err.message}`);
+      }
+      server = null;
+    });
+
+    server.listen(port, () => {
+      console.log(`[prometheus] Metrics server listening on :${port}`);
+    });
+  } catch (err) {
+    console.warn(`[prometheus] Failed to initialize metrics server: ${(err as Error).message}`);
+    server = null;
+  }
 };
 
 export const stopPrometheusServer = (): void => {

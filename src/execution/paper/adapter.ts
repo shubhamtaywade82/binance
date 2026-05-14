@@ -268,7 +268,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   getOpenPositions(): Array<{
     orderId: string;
     symbol: string;
-    side: string;
+    side: 'LONG' | 'SHORT';
     entryPrice: number;
     quantity: number;
     leverage: number;
@@ -293,6 +293,10 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
   getWalletState() {
     return this.opts.wallet.state();
+  }
+
+  setOnTradeClose(cb: (trade: ClosedPosition) => void): void {
+    this.opts.onTradeClose = cb;
   }
 
   async setLeverage(_pair: string, _lev: number): Promise<void> {

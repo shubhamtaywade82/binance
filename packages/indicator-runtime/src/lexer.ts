@@ -8,7 +8,7 @@
 // Strings: { type: 'string', value }. Newlines are significant — emitted as { type: 'newline' }
 // so the parser can use them as statement terminators.
 
-import { LexError } from './errors';
+import { LexError } from './errors.js';
 
 const KEYWORDS = new Set([
   'indicator',

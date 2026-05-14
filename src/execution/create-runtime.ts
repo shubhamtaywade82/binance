@@ -25,6 +25,8 @@ export interface ExecutionRuntime {
   /** Router wrapper for hot-swapping exchange/env at runtime. Present in all production paths;
    *  absent only in unit tests that inject a minimal stub adapter directly. */
   router?: ExecutionRouter;
+  /** Present only when EXECUTION_MODE=paper. */
+  paperAdapter?: PaperExecutionAdapter;
 }
 
 const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
@@ -135,6 +137,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     adapter: paperRouter,
     book,
     router: paperRouter,
+    paperAdapter,
     stopFunding: () => funding.stop(),
     stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
   };

@@ -1175,9 +1175,21 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
 
   const listen = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
-          httpServer.once('error', reject);
+          const errorHandler = (err: NodeJS.ErrnoException) => {
+            if (err.code === 'EADDRINUSE') {
+              log.warn('dashboard_bridge_port_conflict', {
+                port: cfg.DASHBOARD_PORT,
+                hint: `Port ${cfg.DASHBOARD_PORT} is already in use. Ensure no other instance of the bot is running (e.g., check with 'lsof -i :${cfg.DASHBOARD_PORT}').`,
+              });
+              reject(new Error(`Dashboard port ${cfg.DASHBOARD_PORT} in use`));
+            } else {
+              reject(err);
+            }
+          };
+
+          httpServer.once('error', errorHandler);
           httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
-            httpServer.off('error', reject);
+            httpServer.off('error', errorHandler);
             resolve();
           });
         });

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 from .db import init_pool, close_pool
 from .routers import trades, positions, equity, wallet, predictions
@@ -25,6 +26,10 @@ app.include_router(positions.router, prefix="/positions", tags=["positions"])
 app.include_router(equity.router, prefix="/equity", tags=["equity"])
 app.include_router(wallet.router, prefix="/wallet", tags=["wallet"])
 app.include_router(predictions.router, prefix="/predictions", tags=["predictions"])
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/docs")
 
 @app.get("/health")
 async def health():

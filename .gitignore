@@ -9,3 +9,10 @@ coverage/
 /paper/
 # NanoPine server-side script store (populated by /api/scripts at runtime).
 /data/nanopine-scripts.json
+
+# PnL Dashboard
+pnl-dashboard/frontend/node_modules/
+pnl-dashboard/frontend/.next/
+pnl-dashboard/frontend/out/
+pnl-dashboard/api/__pycache__/
+pnl-dashboard/api/routers/__pycache__/
