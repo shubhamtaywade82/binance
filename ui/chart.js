@@ -508,94 +508,74 @@ export class ChartManager {
     }
 
     if (knn) {
-      // kNN Market Architecture Logic
-      const profileWidthSec = 3600 * 6; // Wider profile area
+      const profileWidthSec = 3600 * 6;
       const chartRightEdge = lastT + profileWidthSec;
-      
+
       const renderKnnLine = (lineData, color, style, label) => {
-        const startT = lastT - 3600 * 24;
-        if (lineData.high) {
-          smcStructLines.push({ t1: startT, t2: chartRightEdge, price: lineData.high, color, label: label + ' H', lineWidth: 1.5, lineStyle: style });
+        if (lineData.high != null) {
+          const t1 = (lineData.highIndex != null) ? (this._signalBarTimeSec(refTf, lineData.highIndex) ?? lastT - 3600 * 12) : lastT - 3600 * 12;
+          smcStructLines.push({ t1, t2: chartRightEdge, price: lineData.high, color, label, lineWidth: 1.5, lineStyle: style, position: 'top' });
         }
-        if (lineData.low) {
-          smcStructLines.push({ t1: startT, t2: chartRightEdge, price: lineData.low, color, label: label + ' L', lineWidth: 1.5, lineStyle: style });
+        if (lineData.low != null) {
+          const t1 = (lineData.lowIndex != null) ? (this._signalBarTimeSec(refTf, lineData.lowIndex) ?? lastT - 3600 * 12) : lastT - 3600 * 12;
+          smcStructLines.push({ t1, t2: chartRightEdge, price: lineData.low, color, label, lineWidth: 1.5, lineStyle: style, position: 'bottom' });
         }
       };
-      
-      // Colors: brighter and more institutional
-      renderKnnLine(knn.stLines, 'rgba(176,190,197,0.5)', 2, 'ST'); // Dotted
-      renderKnnLine(knn.mtLines, 'rgba(207,216,220,0.7)', 1, 'MT'); // Dashed
-      renderKnnLine(knn.ltLines, 'rgba(255,255,255,0.9)', 0, 'LT'); // Solid White for LT
 
-      // BOS Markers
-      const addBosMarkers = (list, label, color, lineStyle) => {
+      renderKnnLine(knn.stLines, 'rgba(176,190,197,0.5)', 2, 'ST');
+      renderKnnLine(knn.mtLines, 'rgba(207,216,220,0.7)', 1, 'MT');
+      renderKnnLine(knn.ltLines, 'rgba(255,255,255,0.9)', 0, 'LT');
+
+      const addBosLines = (list, label, color, lineStyle) => {
         for (const b of list) {
-          const t = this._signalBarTimeSec(refTf, b.index);
-          if (t) {
-            markers.push({ 
-              time: t, 
-              position: b.type === 'BULLISH' ? 'aboveBar' : 'belowBar', 
-              shape: b.type === 'BULLISH' ? 'arrowUp' : 'arrowDown', 
-              color, 
-              text: label, 
-              size: 0.4 
-            });
-            // Add a line segment leading up to the break (visualize the broken level)
-            const lookback = 3600 * 2; 
-            smcStructLines.push({
-              t1: t - lookback,
-              t2: t,
-              price: b.price,
-              color: color + '99', // Add transparency
-              label: '',
-              lineWidth: 1,
-              lineStyle: lineStyle
-            });
-          }
+          const tBreak = this._signalBarTimeSec(refTf, b.index);
+          const tFrom = this._signalBarTimeSec(refTf, b.fromIndex);
+          if (!tBreak) continue;
+          const t1 = tFrom ?? tBreak - 3600 * 2;
+          smcStructLines.push({
+            t1, t2: tBreak, price: b.price,
+            color, label, lineWidth: 1, lineStyle,
+            position: b.type === 'BULLISH' ? 'top' : 'bottom',
+          });
         }
       };
-      addBosMarkers(knn.stBOS, 'ST BOS', '#26a69a', 2);
-      addBosMarkers(knn.mtBOS, 'MT BOS', '#4db6ac', 1);
-      addBosMarkers(knn.ltBOS, 'LT BOS', '#80cbc4', 0);
+      addBosLines(knn.stBOS, 'ST BOS', '#ef5350', 2);
+      addBosLines(knn.mtBOS, 'MT BOS', '#ef5350', 1);
+      addBosLines(knn.ltBOS, 'LT BOS', '#26a69a', 0);
 
-      // Delta Tanks - Institutional Look
       for (const tank of knn.deltaTanks) {
         const isBull = tank.delta >= 0;
         const color = isBull ? '#00e676' : '#ff5252';
-        const fill = isBull ? 'rgba(0,230,118,0.25)' : 'rgba(255,82,82,0.25)';
-        
+        const fill = isBull ? 'rgba(0,230,118,0.15)' : 'rgba(255,82,82,0.15)';
+        const absRatio = Math.min(1, Math.abs(tank.ratio));
+
         smcZones.push({
-          t1: lastT,
-          t2: chartRightEdge,
-          top: tank.price * 1.003,
-          bottom: tank.price * 0.997,
-          fill: fill,
-          stroke: color,
-          tankRatio: tank.ratio,
-          text: `[DELTA TANK] ${(tank.ratio * 100).toFixed(0)}%`,
-          textColor: '#ffffff',
-          labelAlign: 'right'
+          t1: lastT, t2: chartRightEdge,
+          top: tank.price * 1.002, bottom: tank.price * 0.998,
+          fill, stroke: color,
+          tankRatio: absRatio,
+          text: `[ DELTA TANK ] ▼\n${(absRatio * 100).toFixed(0)}%`,
+          textColor: '#ffffff', labelAlign: 'right',
         });
       }
 
-      // Anchored Volume Profile - Right Aligned
       if (Array.isArray(knn.volumeProfile) && knn.volumeProfile.length > 1) {
         const maxVol = Math.max(...knn.volumeProfile.map(v => v.volume));
         const binHeight = (knn.volumeProfile[1].price - knn.volumeProfile[0].price) * 0.98;
-        
+        const pocPrice = knn.volumeProfile.find(b => b.isPoc)?.price;
+        const midPrice = pocPrice ?? ((knn.ltLines.high || 0) + (knn.ltLines.low || 0)) / 2;
+
         for (const bin of knn.volumeProfile) {
           if (bin.volume === 0) continue;
           const binWidth = (bin.volume / maxVol) * profileWidthSec;
-          const isBull = bin.price > (knn.ltLines.high || s.refPrice || 0);
-          
+          const above = bin.price >= midPrice;
+
           smcZones.push({
-            t1: chartRightEdge - binWidth,
-            t2: chartRightEdge,
-            top: bin.price + binHeight / 2,
-            bottom: bin.price - binHeight / 2,
-            fill: bin.isPoc ? 'rgba(255,255,255,0.4)' : (isBull ? 'rgba(38,166,154,0.3)' : 'rgba(239,83,80,0.3)'),
-            stroke: bin.isPoc ? '#ffffff' : 'rgba(255,255,255,0.1)',
-            isVolumeProfile: true
+            t1: chartRightEdge - binWidth, t2: chartRightEdge,
+            top: bin.price + binHeight / 2, bottom: bin.price - binHeight / 2,
+            fill: bin.isPoc ? 'rgba(255,255,255,0.35)' : (above ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)'),
+            stroke: bin.isPoc ? '#ffffff' : 'rgba(255,255,255,0.08)',
+            isVolumeProfile: true,
           });
         }
       }
