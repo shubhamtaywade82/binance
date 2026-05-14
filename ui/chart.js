@@ -16,7 +16,6 @@ import {
   storeCandleThemeId,
 } from './candle-themes.js';
 import {
-  fmtLtpDisplay,
   getMinTickDecimalPlaces,
   ltpPriceFromTicks,
   ltpTicksFromPrice,

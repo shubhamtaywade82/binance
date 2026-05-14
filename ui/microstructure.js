@@ -132,7 +132,7 @@ export class MicrostructurePanel {
     this._renderMicroprice('ms-microprice', s.microprice, s.mid);
   }
 
-  _renderTfi(id, tfi, windowSec) {
+  _renderTfi(id, tfi, _windowSec) {
     const el = document.getElementById(id);
     if (!el || !tfi) return;
     const { tfi: net, buyVol, sellVol } = tfi;
