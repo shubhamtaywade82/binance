@@ -14,6 +14,7 @@ import { computeFee } from './fees';
 import { FundingEngine } from './funding';
 import { Ledger, type OpenSnapshot } from './ledger';
 import { BookTickerFeed } from './book-ticker-feed';
+import type { PgWriter } from '../../persistence/pg-writer';
 
 export interface PaperAdapterOptions {
   wallet: PaperWallet;
@@ -27,6 +28,10 @@ export interface PaperAdapterOptions {
   latencyMs: number;
   equitySnapshotMs: number;
   symbolFor: (pair: string) => string;
+  partialFills?: boolean;
+  maxSlippageBps?: number;
+  onTradeClose?: (trade: ClosedPosition) => void;
+  pgWriter?: PgWriter;
 }
 
 interface OpenPaperPosition {
@@ -48,6 +53,7 @@ interface OpenPaperPosition {
 export class PaperExecutionAdapter implements ExecutionAdapter {
   readonly name = 'paper' as const;
   private positions = new Map<string, OpenPaperPosition>();
+  private unrealizedByOrder = new Map<string, number>();
   private lastSnapshotTs = 0;
 
   constructor(private readonly opts: PaperAdapterOptions) {}
@@ -60,12 +66,19 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? req.referencePrice;
     const spread = tick ? tick.spread : Math.max(refMid * 0.0001, 0);
 
+    const topBookQty = (this.opts.partialFills && tick)
+      ? (req.side === 'LONG' ? tick.bestAskQty : tick.bestBidQty)
+      : undefined;
+
     const slip = SlippageEngine.priceImpactUsdt({
       side: req.side,
       quantity: req.quantity,
       spread,
       volatilityPct: 0,
       baseSlippageBps: this.opts.baseSlippageBps,
+      topBookQty,
+      midPrice: refMid,
+      maxSlippageBps: this.opts.maxSlippageBps,
     });
 
     const baseAsk = tick ? tick.bestAsk : refMid;
@@ -108,6 +121,19 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     };
     this.positions.set(orderId, pos);
 
+    this.opts.pgWriter?.upsertPosition({
+      orderId, symbol, side: req.side, quantity: req.quantity,
+      entryPrice: fillPrice, leverage: req.leverage,
+      marginUsdt: margin, liqPrice, openedAt,
+    }).catch(() => {});
+
+    this.opts.pgWriter?.writeOrder({
+      orderId, symbol, side: req.side, quantity: req.quantity,
+      price: fillPrice, status: 'FILLED',
+      fillPrice, feeUsdt: fee, slippageUsdt: slip * req.quantity,
+      latencyMs: this.opts.latencyMs,
+    }).catch(() => {});
+
     this.opts.funding.trackPosition({
       positionId: orderId,
       symbol,
@@ -132,7 +158,9 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     for (const pos of this.positions.values()) {
       if (pos.symbol !== symU) continue;
       const sideMul = pos.side === 'LONG' ? 1 : -1;
-      totalUnrealized += (markPrice - pos.entryPrice) * pos.quantity * sideMul;
+      const unrealized = (markPrice - pos.entryPrice) * pos.quantity * sideMul;
+      this.unrealizedByOrder.set(pos.orderId, unrealized);
+      totalUnrealized += unrealized;
     }
     this.opts.wallet.setUnrealized(totalUnrealized);
 
@@ -154,6 +182,13 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
         unrealizedUsdt: ((markPrice - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
       }));
       this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
+
+      this.opts.pgWriter?.writeEquitySnapshot(
+        this.opts.wallet.state(),
+        0,
+        this.positions.size,
+      ).catch(() => {});
+
       this.opts.wallet.flushToDisk();
     }
   }
@@ -166,12 +201,19 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const lastTrade = this.opts.book.lastTrade(pos.symbol);
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? pos.entryPrice;
     const spread = tick ? tick.spread : Math.max(refMid * 0.0001, 0);
+    const topBookQty = (this.opts.partialFills && tick)
+      ? (pos.side === 'LONG' ? tick.bestBidQty : tick.bestAskQty)
+      : undefined;
+
     const slip = SlippageEngine.priceImpactUsdt({
       side: pos.side,
       quantity: pos.quantity,
       spread,
       volatilityPct: 0,
       baseSlippageBps: this.opts.baseSlippageBps,
+      topBookQty,
+      midPrice: refMid,
+      maxSlippageBps: this.opts.maxSlippageBps,
     });
 
     const baseAsk = tick ? tick.bestAsk : refMid;
@@ -191,6 +233,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     this.opts.liquidation.untrack(orderId);
     this.opts.funding.untrackPosition(orderId);
     this.positions.delete(orderId);
+    this.unrealizedByOrder.delete(orderId);
 
     const closed: ClosedPosition = {
       orderId,
@@ -207,8 +250,49 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       closedAt: Date.now(),
     };
     this.opts.ledger.appendTrade(closed);
+    this.opts.onTradeClose?.(closed);
+
+    this.opts.pgWriter?.writeTrade(closed, pos.symbol).catch(() => {});
+    this.opts.pgWriter?.removePosition(orderId).catch(() => {});
+    this.opts.pgWriter?.writeOrder({
+      orderId, symbol: pos.symbol, side: pos.side, quantity: pos.quantity,
+      price: exitPrice, status: 'CLOSED',
+      fillPrice: exitPrice, feeUsdt: exitFee,
+      slippageUsdt: slip * pos.quantity, latencyMs: this.opts.latencyMs,
+    }).catch(() => {});
+
     this.opts.wallet.flushToDisk();
     return closed;
+  }
+
+  getOpenPositions(): Array<{
+    orderId: string;
+    symbol: string;
+    side: string;
+    entryPrice: number;
+    quantity: number;
+    leverage: number;
+    marginUsdt: number;
+    liqPrice: number;
+    openedAt: number;
+    unrealizedUsdt: number;
+  }> {
+    return Array.from(this.positions.values()).map((p) => ({
+      orderId: p.orderId,
+      symbol: p.symbol,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      quantity: p.quantity,
+      leverage: p.leverage,
+      marginUsdt: p.marginUsdt,
+      liqPrice: p.liqPrice,
+      openedAt: p.openedAt,
+      unrealizedUsdt: this.unrealizedByOrder.get(p.orderId) ?? 0,
+    }));
+  }
+
+  getWalletState() {
+    return this.opts.wallet.state();
   }
 
   async setLeverage(_pair: string, _lev: number): Promise<void> {

@@ -188,6 +188,8 @@ export const AppConfigSchema = z.object({
   PAPER_LEDGER_DIR: z.string().default('./paper'),
   PAPER_FUNDING_POLL_SEC: numFromString(300),
   PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
+  PAPER_PARTIAL_FILLS: z.union([z.boolean(), z.string().transform(v => v === 'true' || v === '1')]).default(false),
+  PAPER_MAX_SLIPPAGE_BPS: numFromString(20),
 
   /** Comma-separated kline timeframes for the multiplex feed. First = execution (LTF) close. */
   BINANCE_TIMEFRAMES: z
@@ -460,6 +462,12 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 9090;
       return n;
     }),
+
+  /** When true, start the prom-client based Prometheus metrics HTTP server on PROMETHEUS_PORT. */
+  PROMETHEUS_ENABLED: boolFromString(false),
+
+  /** PostgreSQL connection URL for PnL dashboard persistence (empty = disabled). */
+  POSTGRES_URL: z.string().default(''),
 
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),

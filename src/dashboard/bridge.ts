@@ -26,6 +26,8 @@ import {
   buildSupertrendTuneSnapshot,
   requestSupertrendTune,
 } from '../ai/supertrend-tune';
+import type { ClosedPosition } from '../execution/types';
+import type { WalletState } from '../execution/paper/wallet';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
@@ -60,12 +62,20 @@ export interface DashboardFeeds {
    * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits only).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
+  paperWallet?: () => WalletState | null;
+  paperPositions?: () => Array<{
+    orderId: string; symbol: string; side: 'LONG' | 'SHORT';
+    entryPrice: number; quantity: number; leverage: number;
+    marginUsdt: number; liqPrice: number; openedAt: number;
+    unrealizedUsdt: number;
+  }>;
 }
 
 export interface DashboardBridge {
   multiplexSidecar: MultiplexCallbacks;
   listen: () => Promise<void>;
   stop: () => Promise<void>;
+  broadcastPaperTrade: (trade: ClosedPosition) => void;
 }
 
 /** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
@@ -325,6 +335,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let validationTimer: ReturnType<typeof setInterval> | null = null;
   let oiPollTimer: ReturnType<typeof setInterval> | null = null;
   let fundingTimer: ReturnType<typeof setInterval> | null = null;
+  let paperStateTimer: ReturnType<typeof setInterval> | null = null;
 
   const oiRestClient = new BinanceRestClient({
     apiKey: cfg.BINANCE_API_KEY ?? '',
@@ -1191,6 +1202,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
         }, 10_000);
 
+        if (feeds.paperWallet || feeds.paperPositions) {
+          paperStateTimer = setInterval(() => {
+            const wallet = feeds.paperWallet?.();
+            if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
+            const positions = feeds.paperPositions?.();
+            if (positions) broadcast({ type: 'paper_position_update', positions });
+          }, 2000);
+        }
+
         signalsTimer = setInterval(() => {
           for (const s of watchlistSymbols) {
             maybePeriodicSupertrendTune(s);
@@ -1238,6 +1258,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           clearInterval(fundingTimer);
           fundingTimer = null;
         }
+        if (paperStateTimer) {
+          clearInterval(paperStateTimer);
+          paperStateTimer = null;
+        }
         for (const p of oiPollers.values()) p.stop();
         oiPollers.clear();
         for (const c of wss.clients) {
@@ -1255,5 +1279,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         });
       }
 
-  return { multiplexSidecar, listen, stop };
+  const broadcastPaperTrade = (trade: ClosedPosition): void => {
+    broadcast({ type: 'paper_trade', ...trade });
+  };
+
+  return { multiplexSidecar, listen, stop, broadcastPaperTrade };
 }

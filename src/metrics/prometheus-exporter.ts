@@ -1,106 +1,41 @@
-import * as http from 'node:http';
+import http from 'http';
+import client from 'prom-client';
 
-export interface MetricsSnapshot {
-  realizedPnl: number;
-  unrealizedPnl: number;
-  drawdownPct: number;
-  winRate: number;
-  totalTrades: number;
-  sendLatencyMs: number[];
-  slippageBps: number;
-  mlPredictionAccuracy: number;
-  wsReconnectsTotal: number;
-  errorsTotal: number;
-  uptimeSeconds: number;
-}
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
 
-export interface MetricsCollector {
-  snapshot(): MetricsSnapshot;
-}
+export const botPnlGauge = new client.Gauge({ name: 'bot_pnl_usdt', help: 'Total realized PnL in USDT', registers: [register] });
+export const botEquityGauge = new client.Gauge({ name: 'bot_equity_usdt', help: 'Current equity in USDT', registers: [register] });
+export const botDrawdownGauge = new client.Gauge({ name: 'bot_drawdown_pct', help: 'Current drawdown fraction', registers: [register] });
+export const botUnrealizedPnlGauge = new client.Gauge({ name: 'bot_unrealized_pnl_usdt', help: 'Unrealized PnL in USDT', registers: [register] });
+export const botOpenPositionsGauge = new client.Gauge({ name: 'bot_open_positions', help: 'Number of open positions', registers: [register] });
+export const botTradesCounter = new client.Counter({ name: 'bot_trades_total', help: 'Total trades', labelNames: ['side'] as const, registers: [register] });
+export const botErrorsCounter = new client.Counter({ name: 'bot_errors_total', help: 'Total errors', labelNames: ['type'] as const, registers: [register] });
+export const botOrderLatency = new client.Histogram({ name: 'bot_order_latency_ms', help: 'Order send latency ms', buckets: [1, 2, 5, 10, 25, 50, 100, 250, 500], registers: [register] });
+export const botInferenceLatency = new client.Histogram({ name: 'bot_inference_latency_ms', help: 'ML inference latency ms', buckets: [0.1, 0.5, 1, 2, 5, 10], registers: [register] });
+export const botSlippageBps = new client.Histogram({ name: 'bot_slippage_bps', help: 'Fill slippage in basis points', buckets: [0.1, 0.5, 1, 2, 5, 10, 20], registers: [register] });
 
-const HISTOGRAM_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+let server: http.Server | null = null;
 
-function formatGauge(name: string, help: string, value: number): string {
-  return `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${value}\n`;
-}
-
-function formatCounter(name: string, help: string, value: number): string {
-  return `# HELP ${name} ${help}\n# TYPE ${name} counter\n${name} ${value}\n`;
-}
-
-function formatHistogram(name: string, help: string, values: number[]): string {
-  const lines: string[] = [];
-  lines.push(`# HELP ${name} ${help}`);
-  lines.push(`# TYPE ${name} histogram`);
-
-  let sum = 0;
-  const bucketCounts = new Array<number>(HISTOGRAM_BUCKETS.length).fill(0);
-
-  for (const v of values) {
-    sum += v;
-    for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
-      if (v <= HISTOGRAM_BUCKETS[i]) {
-        bucketCounts[i]++;
-        break;
-      }
+export const startPrometheusServer = (port = 9090): void => {
+  if (server) return;
+  server = http.createServer(async (_req, res) => {
+    try {
+      res.setHeader('Content-Type', register.contentType);
+      res.end(await register.metrics());
+    } catch {
+      res.statusCode = 500;
+      res.end();
     }
-  }
-
-  let cumulative = 0;
-  for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
-    cumulative += bucketCounts[i];
-    lines.push(`${name}_bucket{le="${HISTOGRAM_BUCKETS[i]}"} ${cumulative}`);
-  }
-  lines.push(`${name}_bucket{le="+Inf"} ${values.length}`);
-  lines.push(`${name}_sum ${sum}`);
-  lines.push(`${name}_count ${values.length}`);
-
-  return lines.join('\n') + '\n';
-}
-
-export function renderMetrics(collector: MetricsCollector): string {
-  const s = collector.snapshot();
-  const parts: string[] = [];
-
-  parts.push(formatGauge('trading_realized_pnl', 'Cumulative realized PnL in USDT', s.realizedPnl));
-  parts.push(formatGauge('trading_unrealized_pnl', 'Current unrealized PnL in USDT', s.unrealizedPnl));
-  parts.push(formatGauge('trading_drawdown_pct', 'Current drawdown as a fraction', s.drawdownPct));
-  parts.push(formatGauge('trading_win_rate', 'Win rate as a fraction', s.winRate));
-  parts.push(formatGauge('trading_total_trades', 'Total closed trades', s.totalTrades));
-  parts.push(formatHistogram('execution_send_latency_ms', 'Order send-to-ack latency in ms', s.sendLatencyMs));
-  parts.push(formatGauge('execution_slippage_bps', 'Mean execution slippage in basis points', s.slippageBps));
-  parts.push(formatGauge('ml_prediction_accuracy', 'ML model prediction accuracy', s.mlPredictionAccuracy));
-  parts.push(formatCounter('system_ws_reconnects_total', 'Total WebSocket reconnections', s.wsReconnectsTotal));
-  parts.push(formatCounter('system_errors_total', 'Total system errors', s.errorsTotal));
-  parts.push(formatGauge('system_uptime_seconds', 'Bot uptime in seconds', s.uptimeSeconds));
-
-  return parts.join('\n');
-}
-
-export function startMetricsServer(
-  collector: MetricsCollector,
-  port: number,
-): http.Server {
-  const server = http.createServer((req, res) => {
-    if (req.url === '/metrics' && req.method === 'GET') {
-      const body = renderMetrics(collector);
-      res.writeHead(200, {
-        'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
-      });
-      res.end(body);
-      return;
-    }
-
-    if (req.url === '/health' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok' }));
-      return;
-    }
-
-    res.writeHead(404);
-    res.end('Not Found');
   });
+  server.listen(port, () => {
+    console.log(`[prometheus] Metrics server listening on :${port}`);
+  });
+};
 
-  server.listen(port, '0.0.0.0');
-  return server;
-}
+export const stopPrometheusServer = (): void => {
+  if (server) {
+    server.close();
+    server = null;
+  }
+};

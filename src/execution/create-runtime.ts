@@ -12,6 +12,7 @@ import { Ledger } from './paper/ledger';
 import { LiquidationEngine } from './paper/liquidation';
 import { FundingEngine } from './paper/funding';
 import { ExecutionRouter } from './execution-router';
+import { PgWriter } from '../persistence/pg-writer';
 
 export interface ExecutionRuntime {
   /** The active execution adapter — always an ExecutionRouter in production. */
@@ -20,6 +21,7 @@ export interface ExecutionRuntime {
   /** REST client for Binance trading API (set when BINANCE_EXECUTION_ADAPTER=true). */
   binanceRestClient?: BinanceRestClient;
   stopFunding?: () => void;
+  stopPgWriter?: () => Promise<void>;
   /** Router wrapper for hot-swapping exchange/env at runtime. Present in all production paths;
    *  absent only in unit tests that inject a minimal stub adapter directly. */
   router?: ExecutionRouter;
@@ -105,6 +107,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   });
   funding.start();
 
+  let pgWriter: PgWriter | undefined;
+  if (cfg.POSTGRES_URL) {
+    pgWriter = new PgWriter({ connectionString: cfg.POSTGRES_URL });
+    pgWriter.connect().catch(() => {});
+  }
+
   const paperAdapter = new PaperExecutionAdapter({
     wallet,
     book,
@@ -117,6 +125,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     latencyMs: cfg.PAPER_LATENCY_MS,
     equitySnapshotMs: Math.max(1000, cfg.PAPER_EQUITY_SNAPSHOT_SEC * 1000),
     symbolFor: (pair) => symbolFromPair(cfg, pair),
+    partialFills: cfg.PAPER_PARTIAL_FILLS,
+    maxSlippageBps: cfg.PAPER_MAX_SLIPPAGE_BPS,
+    pgWriter,
   });
   const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 
@@ -125,5 +136,6 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     book,
     router: paperRouter,
     stopFunding: () => funding.stop(),
+    stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
   };
 }
