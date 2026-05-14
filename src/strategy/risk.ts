@@ -37,8 +37,13 @@ export class RiskManager {
       marginUsdt *= ratio;
     }
 
+    let notionalUsdt = marginUsdt * this.cfg.LEVERAGE;
+    const maxNotional = this.cfg.MAX_NOTIONAL_USDT;
+    if (maxNotional > 0 && notionalUsdt > maxNotional) {
+      notionalUsdt = maxNotional;
+      marginUsdt = this.cfg.LEVERAGE > 0 ? notionalUsdt / this.cfg.LEVERAGE : 0;
+    }
     const marginInr = marginUsdt * this.cfg.INR_PER_USDT;
-    const notionalUsdt = marginUsdt * this.cfg.LEVERAGE;
     const rawQty = notionalUsdt / entryPrice;
     const quantity = floorToStep(rawQty, stepSize);
     return { quantity, notionalUsdt, marginInr, marginUsdt };

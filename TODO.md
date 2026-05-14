@@ -1716,7 +1716,7 @@ WS API testnet URL). The gaps below are safety and workflow items.
 | ☐ | **Environment validation on startup** | If `BINANCE_FUTURES_TESTNET=false` and `EXECUTION_MODE=live`, log a loud warning and require explicit `CONFIRMED_LIVE=true` env var to proceed — prevents accidental mainnet live orders during development |
 | ☐ | **Shadow mode flag** (`SHADOW_MODE=true`) | Connect to mainnet data streams but suppress ALL order placement at the adapter level regardless of `EXECUTION_MODE`; log what *would* have been sent. Different from `READ_ONLY` (which is adapter-level, not enforced centrally). Needed for Phase 3 of the deployment workflow. |
 | ☐ | **Shadow prediction log** | When `SHADOW_MODE=true`, record every signal with timestamp, direction, and the actual price outcome N seconds later for offline accuracy measurement |
-| ☐ | **Max notional cap for Phase 4** | `MAX_NOTIONAL_USDT` env var that hard-caps order size regardless of risk engine output; set to e.g. 50 USDT during first live week |
+| ✅ | **Max notional cap for Phase 4** | `MAX_NOTIONAL_USDT` env var that hard-caps order size regardless of risk engine output; set to e.g. 50 USDT during first live week — `config.ts` + `risk.ts` |
 | ☐ | **`demo-fapi.binance.com` support** | Config comment mentions it but URL is not wired in; add as a third option (`BINANCE_PRODUCT=usdm_demo`) for the Binance portfolio margin demo environment |
 | ☐ | **Testnet liquidity warning** | Log a startup notice when `BINANCE_FUTURES_TESTNET=true` reminding that fills and slippage are not realistic and paper results will not transfer directly to mainnet |
 
@@ -1742,7 +1742,7 @@ Phase 3 — Shadow mode on mainnet
 Phase 4 — Live trading (small capital)
   ✔ BINANCE_FUTURES_TESTNET=false
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
-  ✘ MAX_NOTIONAL_USDT cap not built (see §20.2)
+  ✔ MAX_NOTIONAL_USDT cap (`config.ts`, `risk.ts`, `.env.example`)
   ✘ CONFIRMED_LIVE guard not built (see §20.2)  ← ✅ NOW DONE (CONFIRMED_LIVE_TRADING in config.ts)
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```
