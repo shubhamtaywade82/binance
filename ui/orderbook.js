@@ -276,16 +276,12 @@ export class OrderBookManager {
       const askPrice = a && showAsk ? this._fmtPrice(a.price) : '';
 
       parts.push(`
-      <div class="ob-mir-row">
+      <div class="ob-mir-row" style="--bid-pct:${bidPct.toFixed(1)}%;--ask-pct:${askPct.toFixed(1)}%">
+        ${b && showBid ? `<div class="ob-mir-bg-bar bid ${showBid ? '' : 'is-muted'}"></div>` : ''}
+        ${a && showAsk ? `<div class="ob-mir-bg-bar ask ${showAsk ? '' : 'is-muted'}"></div>` : ''}
         <span class="ob-mir-amt bid ${showBid ? '' : 'is-muted'}">${bidAmt}</span>
-        <div class="ob-mir-bar-cell bid ${showBid ? '' : 'is-muted'}">
-          ${b && showBid ? `<div class="ob-mir-bar bid" style="width:${bidPct.toFixed(1)}%"></div>` : ''}
-        </div>
         <span class="ob-mir-price bid ${showBid ? '' : 'is-muted'}">${bidPrice}</span>
         <span class="ob-mir-price ask ${showAsk ? '' : 'is-muted'}">${askPrice}</span>
-        <div class="ob-mir-bar-cell ask ${showAsk ? '' : 'is-muted'}">
-          ${a && showAsk ? `<div class="ob-mir-bar ask" style="width:${askPct.toFixed(1)}%"></div>` : ''}
-        </div>
         <span class="ob-mir-amt ask ${showAsk ? '' : 'is-muted'}">${askAmt}</span>
       </div>`);
     }

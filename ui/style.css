@@ -828,7 +828,7 @@ body::before {
 
 .book-grid-head {
   display: grid;
-  grid-template-columns: minmax(52px, 0.95fr) minmax(28px, 0.45fr) auto auto minmax(28px, 0.45fr) minmax(52px, 0.95fr);
+  grid-template-columns: minmax(52px, 0.95fr) auto auto minmax(52px, 0.95fr);
   gap: 2px 4px;
   align-items: center;
   padding: 2px 4px 4px;
@@ -841,7 +841,6 @@ body::before {
 }
 .book-grid-head .gh-amt:first-child { text-align: left; }
 .book-grid-head .gh-amt:last-child { text-align: right; }
-.book-grid-head .gh-bar { min-width: 4px; }
 .book-grid-head .gh-price.bid {
   text-align: right;
   color: var(--bull);
@@ -877,13 +876,14 @@ body::before {
 
 .ob-mir-row {
   display: grid;
-  grid-template-columns: minmax(52px, 0.95fr) minmax(28px, 0.45fr) auto auto minmax(28px, 0.45fr) minmax(52px, 0.95fr);
+  grid-template-columns: minmax(52px, 0.95fr) auto auto minmax(52px, 0.95fr);
   gap: 2px 4px;
-  align-items: stretch;
+  align-items: center;
   min-height: 20px;
   padding: 1px 4px;
   position: relative;
   border-radius: 2px;
+  overflow: hidden;
 }
 .ob-mir-row:hover { background: var(--bg-row-hover); }
 
@@ -914,33 +914,27 @@ body::before {
 .ob-mir-price.ask { color: var(--bear); justify-content: flex-start; padding-left: 2px; }
 .ob-mir-price.is-muted { opacity: 0.22; }
 
-.ob-mir-bar-cell {
-  position: relative;
-  min-height: 18px;
-  display: flex;
-  align-items: center;
-}
-.ob-mir-bar-cell.bid { justify-content: flex-end; }
-.ob-mir-bar-cell.ask { justify-content: flex-start; }
-.ob-mir-bar-cell.is-muted .ob-mir-bar { opacity: 0.12; }
-
-.ob-mir-bar {
+/* Background volume bars — full half-row, behind content */
+.ob-mir-bg-bar {
   position: absolute;
-  top: 1px;
-  bottom: 1px;
-  max-width: 100%;
-  border-radius: 2px;
+  top: 0;
+  bottom: 0;
   pointer-events: none;
+  border-radius: 2px;
   transition: width 0.22s ease;
+  z-index: 0;
 }
-.ob-mir-bar.bid {
-  right: 0;
-  background: linear-gradient(90deg, rgba(0, 230, 118, 0.06), rgba(0, 230, 118, 0.28));
+.ob-mir-bg-bar.bid {
+  right: 50%;
+  width: calc(var(--bid-pct, 0%) / 2);
+  background: linear-gradient(90deg, rgba(0, 230, 118, 0.04), rgba(0, 230, 118, 0.22));
 }
-.ob-mir-bar.ask {
-  left: 0;
-  background: linear-gradient(90deg, rgba(255, 23, 68, 0.28), rgba(255, 23, 68, 0.06));
+.ob-mir-bg-bar.ask {
+  left: 50%;
+  width: calc(var(--ask-pct, 0%) / 2);
+  background: linear-gradient(90deg, rgba(255, 23, 68, 0.22), rgba(255, 23, 68, 0.04));
 }
+.ob-mir-bg-bar.is-muted { opacity: 0.15; }
 
 .book-foot {
   display: flex;
