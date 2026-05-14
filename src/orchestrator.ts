@@ -391,13 +391,20 @@ export class HybridOrchestrator {
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
       placeOrder: this.cfg.PLACE_ORDER,
+      executionMode: this.cfg.EXECUTION_MODE,
       executionAdapter: this.cfg.BINANCE_EXECUTION_ADAPTER ? 'binance' : 'coindcx',
       privateWs: this.privateWs !== null,
       usdmMarkRestPollSec:
         this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',
       logFile: this.cfg.APP_LOG_PATH.trim() || '(stdout only — set APP_LOG_PATH for NDJSON file)',
+      postgres: this.cfg.POSTGRES_URL ? 'enabled' : 'disabled',
+      prometheus: this.cfg.PROMETHEUS_ENABLED ? `:${this.cfg.PROMETHEUS_PORT}` : 'disabled',
     });
+
+    if (this.cfg.PROMETHEUS_ENABLED) {
+      import('./metrics/prometheus-exporter').then(m => m.startPrometheusServer(this.cfg.PROMETHEUS_PORT)).catch(() => {});
+    }
   }
 
   stop(): void {
