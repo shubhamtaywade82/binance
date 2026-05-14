@@ -191,13 +191,13 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       return;
     }
     (async () => {
-      if (await scriptsAi.handle(req, res)) return;
-      if (await scriptsApi.handle(req, res)) return;
       if (req.url === '/api/scripts/capabilities') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ai: scriptsAi.enabled }));
         return;
       }
+      if (await scriptsAi.handle(req, res)) return;
+      if (await scriptsApi.handle(req, res)) return;
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('Trading bot — dashboard WebSocket (same process as orchestrator)\n');
     })().catch((err: Error) => {

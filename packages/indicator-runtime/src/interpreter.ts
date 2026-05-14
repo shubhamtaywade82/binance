@@ -143,32 +143,44 @@ function evalBinary(node: Extract<Expr, { type: 'Binary' }>, ctx: ExecutionConte
   const right = evalExpr(node.right, ctx);
   const a = toNumber(left);
   const b = toNumber(right);
+  let result: number | boolean;
   switch (node.op) {
     case '+':
-      return a + b;
+      result = a + b; break;
     case '-':
-      return a - b;
+      result = a - b; break;
     case '*':
-      return a * b;
+      result = a * b; break;
     case '/':
-      return b === 0 ? NaN : a / b;
+      result = b === 0 ? NaN : a / b; break;
     case '%':
-      return b === 0 ? NaN : a % b;
+      result = b === 0 ? NaN : a % b; break;
     case '==':
-      return a === b;
+      result = a === b; break;
     case '!=':
-      return a !== b;
+      result = a !== b; break;
     case '<':
-      return a < b;
+      result = a < b; break;
     case '<=':
-      return a <= b;
+      result = a <= b; break;
     case '>':
-      return a > b;
+      result = a > b; break;
     case '>=':
-      return a >= b;
+      result = a >= b; break;
     default:
       throw new RuntimeError(`Unknown binary op ${node.op}`, { line: node.line, col: node.col });
   }
+
+  if (typeof result === 'number' && (left instanceof Series || right instanceof Series)) {
+    let s = ctx.callState.get(node) as Series | undefined;
+    if (!s) {
+      s = new Series(ctx.capacity);
+      ctx.callState.set(node, s);
+    }
+    s.push(result);
+    return s;
+  }
+  return result;
 }
 
 function evalCall(node: Extract<Expr, { type: 'Call' }>, ctx: ExecutionContext): unknown {
