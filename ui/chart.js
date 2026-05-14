@@ -396,8 +396,11 @@ export class ChartManager {
       let hasLiqSweepMarker = false;
       if (smc.bos && smc.bos !== 'NONE') {
         const bull = smc.bos === 'BULLISH';
+        const tBos = smc.bosLine && Number.isFinite(smc.bosLine.endIndex) 
+          ? this._signalBarTimeSec(refTf, smc.bosLine.endIndex) 
+          : null;
         markers.push({
-          time: lastT,
+          time: tBos ?? lastT,
           position: 'aboveBar',
           shape: bull ? 'arrowUp' : 'arrowDown',
           color: '#b388ff',
@@ -407,8 +410,11 @@ export class ChartManager {
       }
       if (smc.choch && smc.choch !== 'NONE') {
         const bull = smc.choch === 'BULLISH';
+        const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) 
+          ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) 
+          : null;
         markers.push({
-          time: lastT,
+          time: tChoch ?? lastT,
           position: 'belowBar',
           shape: bull ? 'arrowUp' : 'arrowDown',
           color: '#80cbc4',
@@ -479,7 +485,7 @@ export class ChartManager {
       bosLinePayload.endIndex === chochLinePayload.endIndex &&
       Math.abs(bosLinePayload.price - chochLinePayload.price) < 1e-10;
 
-    const pushSmcStructureSegment = (line, color, label) => {
+    const pushSmcStructureSegment = (line, color, label, position) => {
       if (!line || !Number.isFinite(line.price)) return;
       const tA = this._signalBarTimeSec(refTf, line.startIndex);
       const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
@@ -487,14 +493,14 @@ export class ChartManager {
       const t1 = Math.min(tA, tB);
       const t2 = Math.max(tA, tB);
       if (t2 <= t1) return;
-      smcStructLines.push({ t1, t2, price: line.price, color, label, lineWidth: 2 });
+      smcStructLines.push({ t1, t2, price: line.price, color, label, position, lineWidth: 2 });
     };
 
     if (sameBosChochGeometry && bosLinePayload) {
-      pushSmcStructureSegment(bosLinePayload, '#a389d4', 'BOS · CHoCH');
+      pushSmcStructureSegment(bosLinePayload, '#a389d4', 'BOS · CHoCH', smc.bos === 'BULLISH' ? 'top' : 'bottom');
     } else {
-      if (bosActive) pushSmcStructureSegment(bosLinePayload, '#b388ff', 'BOS');
-      if (chochActive) pushSmcStructureSegment(chochLinePayload, '#80cbc4', 'CHoCH');
+      if (bosActive) pushSmcStructureSegment(bosLinePayload, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
+      if (chochActive) pushSmcStructureSegment(chochLinePayload, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
     }
 
     if (Number.isFinite(s.refPrice)) {

@@ -128,13 +128,22 @@ class SmcZonesPaneView {
             ctx.stroke();
             if (ln.label) {
               const pad = 4;
-              const lx = Math.min(right - 2, mediaSize.width - pad * 2);
               ctx.font = "11px 'JetBrains Mono', ui-monospace, monospace";
               ctx.fillStyle = ln.color;
               const metrics = ctx.measureText(ln.label);
-              let tx = lx - metrics.width;
+              
+              // Horizontally center the label
+              let tx = (left + right) / 2 - metrics.width / 2;
+              
+              // Ensure it doesn't clip off the screen on either side
               if (tx < left + pad) tx = left + pad;
-              ctx.fillText(ln.label, tx, y - 5);
+              const maxTx = Math.min(right, mediaSize.width) - metrics.width - pad;
+              if (tx > maxTx) tx = maxTx;
+
+              // Vertical position: 'top' goes above the line, 'bottom' goes below
+              const ty = ln.position === 'bottom' ? y + 14 : y - 5;
+              
+              ctx.fillText(ln.label, tx, ty);
             }
           }
         });

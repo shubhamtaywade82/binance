@@ -108,7 +108,6 @@ const detectBosChoch = (
 } => {
   const sw = swingHighsLows(candles, 3);
   const last = candles[candles.length - 1];
-  const endIndex = candles.length - 1;
   if (sw.highs.length < 2 || sw.lows.length < 2) {
     return { bos: 'NONE', choch: 'NONE', bosLine: null, chochLine: null };
   }
@@ -126,17 +125,25 @@ const detectBosChoch = (
   if (last.close > lastHigh.price && lastLow.price < prevLow.price) choch = 'BULLISH';
   else if (last.close < lastLow.price && lastHigh.price > prevHigh.price) choch = 'BEARISH';
 
+  const findBreakout = (startIdx: number, price: number, isBullish: boolean): number => {
+    for (let i = startIdx + 1; i < candles.length; i++) {
+      if (isBullish && candles[i].close > price) return i;
+      if (!isBullish && candles[i].close < price) return i;
+    }
+    return candles.length - 1;
+  };
+
   let bosLine: SmcStructureLine | null = null;
   let chochLine: SmcStructureLine | null = null;
   if (bos === 'BULLISH') {
-    bosLine = { startIndex: lastHigh.index, endIndex, price: lastHigh.price };
+    bosLine = { startIndex: lastHigh.index, endIndex: findBreakout(lastHigh.index, lastHigh.price, true), price: lastHigh.price };
   } else if (bos === 'BEARISH') {
-    bosLine = { startIndex: lastLow.index, endIndex, price: lastLow.price };
+    bosLine = { startIndex: lastLow.index, endIndex: findBreakout(lastLow.index, lastLow.price, false), price: lastLow.price };
   }
   if (choch === 'BULLISH') {
-    chochLine = { startIndex: lastHigh.index, endIndex, price: lastHigh.price };
+    chochLine = { startIndex: lastHigh.index, endIndex: findBreakout(lastHigh.index, lastHigh.price, true), price: lastHigh.price };
   } else if (choch === 'BEARISH') {
-    chochLine = { startIndex: lastLow.index, endIndex, price: lastLow.price };
+    chochLine = { startIndex: lastLow.index, endIndex: findBreakout(lastLow.index, lastLow.price, false), price: lastLow.price };
   }
 
   return { bos, choch, bosLine, chochLine };
