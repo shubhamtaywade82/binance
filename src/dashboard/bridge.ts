@@ -81,6 +81,8 @@ export interface DashboardSignalsPayload {
     /** Swing bar → confirmation bar at `price` (for chart BOS segment). */
     bosLine: { startIndex: number; endIndex: number; price: number } | null;
     chochLine: { startIndex: number; endIndex: number; price: number } | null;
+    structPoints: any[];
+    swings: any[];
     liquidity: LiquidityEngineResult | null;
     /** Top-of-book snapshot nearest the sweep candle close (or open); cleared from ring after attach. */
     liquidityOrderBook: OrderBookMicroSnapshot | null;
@@ -588,6 +590,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             choch: smc.choch,
             bosLine: smc.bosLine,
             chochLine: smc.chochLine,
+            structPoints: smc.structPoints,
+            swings: smc.swings,
             liquidity: smc.liquidity,
             liquidityOrderBook,
             sweepCandleIndex,

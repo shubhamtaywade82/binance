@@ -422,6 +422,38 @@ export class ChartManager {
           id: 'smc-choch',
         });
       }
+
+      // 1. Swing dots
+      if (Array.isArray(smc.swings)) {
+        for (const sw of smc.swings) {
+          const tSw = this._signalBarTimeSec(refTf, sw.index);
+          if (!tSw) continue;
+          markers.push({
+            time: tSw,
+            position: sw.kind === 'high' ? 'aboveBar' : 'belowBar',
+            shape: 'circle',
+            color: sw.kind === 'high' ? 'rgba(255,82,82,0.6)' : 'rgba(0,230,118,0.6)',
+            size: 0.5,
+          });
+        }
+      }
+
+      // 2. Structural Labels (HH, HL, LH, LL)
+      if (Array.isArray(smc.structPoints)) {
+        for (const sp of smc.structPoints) {
+          const tSp = this._signalBarTimeSec(refTf, sp.swing.index);
+          if (!tSp) continue;
+          const isHigh = sp.swing.kind === 'high';
+          markers.push({
+            time: tSp,
+            position: isHigh ? 'aboveBar' : 'belowBar',
+            shape: isHigh ? 'arrowDown' : 'arrowUp', // Use small arrows as pointers for labels
+            color: isHigh ? '#ff5252' : '#00e676',
+            text: sp.label.toUpperCase(),
+            size: 1.5,
+          });
+        }
+      }
       const liq = smc.liquidity;
       if (liq && typeof liq === 'object') {
         const pools = Array.isArray(liq.pools) ? liq.pools : [];
