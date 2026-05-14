@@ -8,9 +8,11 @@ export const MSG = {
   BAR: 'bar',
   REMOVE: 'remove',
   SWEEP: 'sweep',
+  WALK_FORWARD: 'walk_forward',
   // Worker → Main
   COMPILED: 'compiled',
   TICK: 'tick',
   ERROR: 'error',
   SWEEP_RESULT: 'sweep_result',
+  WALK_FORWARD_RESULT: 'walk_forward_result',
 };

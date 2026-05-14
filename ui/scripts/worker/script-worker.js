@@ -35,6 +35,9 @@ self.addEventListener('message', (ev) => {
       case MSG.SWEEP:
         handleSweep(msg);
         break;
+      case MSG.WALK_FORWARD:
+        handleWalkForward(msg);
+        break;
       default:
         // Unknown — ignore silently.
         break;
@@ -92,6 +95,21 @@ function handleCompileRun(msg) {
   });
 }
 
+function runVariant(program, candles, inputs, extraCandles) {
+  const ctx = createContext();
+  for (const [name, value] of Object.entries(inputs)) ctx.setInput(name, value);
+  prepare(program, ctx);
+  if (extraCandles && typeof extraCandles === 'object') ctx.loadHtfData(extraCandles);
+  const n = Array.isArray(candles) ? candles.length : 0;
+  ctx.times = new Array(n);
+  for (let i = 0; i < n; i++) ctx.times[i] = candleTime(candles[i]);
+  for (let i = 0; i < n; i++) {
+    ctx.pushBar(candles[i]);
+    runBar(program, ctx, i);
+  }
+  return ctx.meta.kind === 'strategy' && ctx.strategy ? ctx.strategyStats() : null;
+}
+
 function handleSweep(msg) {
   const { sweepId, source, candles, extraCandles, combinations } = msg;
   const tokens = tokenize(String(source ?? ''));
@@ -102,25 +120,69 @@ function handleSweep(msg) {
   for (const inputs of combinations || []) {
     if (perfNow() - startedAt > MAX_MS) break;
     try {
-      const ctx = createContext();
-      for (const [name, value] of Object.entries(inputs)) ctx.setInput(name, value);
-      prepare(program, ctx);
-      if (extraCandles && typeof extraCandles === 'object') ctx.loadHtfData(extraCandles);
-      const n = Array.isArray(candles) ? candles.length : 0;
-      ctx.times = new Array(n);
-      for (let i = 0; i < n; i++) ctx.times[i] = candleTime(candles[i]);
-      for (let i = 0; i < n; i++) {
-        ctx.pushBar(candles[i]);
-        runBar(program, ctx, i);
-      }
-      const stats =
-        ctx.meta.kind === 'strategy' && ctx.strategy ? ctx.strategyStats() : null;
+      const stats = runVariant(program, candles, inputs, extraCandles);
       results.push({ inputs, stats });
     } catch (err) {
       results.push({ inputs, error: (err && err.message) || String(err) });
     }
   }
   self.postMessage({ kind: MSG.SWEEP_RESULT, sweepId, results });
+}
+
+/**
+ * Walk-forward backtest: slide a rolling (trainBars, testBars) window across the
+ * candle history. For each window, sweep `combinations` on the train slice,
+ * pick the input set with the highest total PnL, then evaluate that winner on
+ * the contiguous test slice. Aggregates train + test stats per window so the
+ * editor can show out-of-sample performance vs in-sample.
+ */
+function handleWalkForward(msg) {
+  const { runId, source, candles, extraCandles, combinations, trainBars, testBars, stepBars } = msg;
+  const tokens = tokenize(String(source ?? ''));
+  const program = parse(tokens);
+  const total = Array.isArray(candles) ? candles.length : 0;
+  const train = Math.max(50, Math.floor(trainBars || 500));
+  const test = Math.max(20, Math.floor(testBars || 100));
+  const step = Math.max(10, Math.floor(stepBars || test));
+  const windows = [];
+  const startedAt = perfNow();
+  const MAX_MS = 60_000;
+  for (let start = 0; start + train + test <= total; start += step) {
+    if (perfNow() - startedAt > MAX_MS) break;
+    const trainSlice = candles.slice(start, start + train);
+    const testSlice = candles.slice(start + train, start + train + test);
+    let bestInputs = null;
+    let bestStats = null;
+    for (const inputs of combinations || []) {
+      if (perfNow() - startedAt > MAX_MS) break;
+      try {
+        const stats = runVariant(program, trainSlice, inputs, extraCandles);
+        if (!stats) continue;
+        if (!bestStats || stats.totalPnl > bestStats.totalPnl) {
+          bestStats = stats;
+          bestInputs = inputs;
+        }
+      } catch {
+        /* skip broken variants */
+      }
+    }
+    if (!bestInputs || !bestStats) continue;
+    let testStats = null;
+    try {
+      testStats = runVariant(program, testSlice, bestInputs, extraCandles);
+    } catch {
+      /* leave testStats null */
+    }
+    windows.push({
+      trainStart: start,
+      trainEnd: start + train,
+      testEnd: start + train + test,
+      bestInputs,
+      trainStats: bestStats,
+      testStats,
+    });
+  }
+  self.postMessage({ kind: MSG.WALK_FORWARD_RESULT, runId, windows });
 }
 
 function handleBar(msg) {

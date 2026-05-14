@@ -167,6 +167,14 @@ export class ScriptManager extends EventTarget {
         }
         break;
       }
+      case MSG.WALK_FORWARD_RESULT: {
+        const pending = this._walkForwardPromises?.get(msg.runId);
+        if (pending) {
+          this._walkForwardPromises.delete(msg.runId);
+          pending.resolve(msg.windows || []);
+        }
+        break;
+      }
       case MSG.ERROR: {
         this.overlay.remove(msg.instanceId);
         this.stats.delete(msg.instanceId);
@@ -279,6 +287,56 @@ export class ScriptManager extends EventTarget {
       ranges.push({ name: stmt.name, kind: stmt.kind, default: def.value });
     }
     return ranges;
+  }
+
+  async runWalkForward(id, ranges, opts = {}) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) throw new Error('Script not found');
+    if (!this.worker) throw new Error('Worker unavailable');
+    const tf = this.chartManager?.currentTf;
+    const candles = tf ? this.chartManager?.candleMap?.[tf] : null;
+    if (!candles || !candles.length) throw new Error('No candles loaded — open the chart first');
+    const combinations = expandCombinations(ranges);
+    if (!combinations.length) throw new Error('Range expansion produced zero combinations');
+    if (combinations.length > 200) {
+      throw new Error(
+        `Walk-forward × ${combinations.length} combos is too many. Tighten ranges (cap is 200).`,
+      );
+    }
+    const trainBars = Math.max(50, Math.floor(opts.trainBars || 500));
+    const testBars = Math.max(20, Math.floor(opts.testBars || 100));
+    const stepBars = Math.max(10, Math.floor(opts.stepBars || testBars));
+    if (candles.length < trainBars + testBars) {
+      throw new Error(
+        `Need at least ${trainBars + testBars} bars (have ${candles.length}). Reduce window sizes.`,
+      );
+    }
+    this._walkForwardPromises = this._walkForwardPromises || new Map();
+    const runId = `wf_${Math.random().toString(36).slice(2, 10)}`;
+    const windows = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._walkForwardPromises.delete(runId);
+        reject(new Error('Walk-forward timed out after 90 s'));
+      }, 90_000);
+      this._walkForwardPromises.set(runId, {
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+      });
+      this.worker.postMessage({
+        kind: MSG.WALK_FORWARD,
+        runId,
+        source: sc.source,
+        candles: candles.map(toPlainCandle),
+        extraCandles: this._collectExtraCandles(tf),
+        combinations,
+        trainBars,
+        testBars,
+        stepBars,
+      });
+    });
+    return windows;
   }
 
   async runSweep(id, ranges) {

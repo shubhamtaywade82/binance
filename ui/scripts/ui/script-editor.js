@@ -21,6 +21,7 @@ export class ScriptEditor {
         <button class="nanopine-btn" data-act="ai" data-role="ai-btn" title="Generate a script from a natural-language description" hidden>Ask AI</button>
         <button class="nanopine-btn" data-act="export-ts" data-role="ts-btn" title="Download this strategy as a TypeScript stub for live trading" hidden>Export TS</button>
         <button class="nanopine-btn" data-act="sweep" data-role="sweep-btn" title="Run a parameter sweep over int/float inputs" hidden>Sweep</button>
+        <button class="nanopine-btn" data-act="walk-forward" data-role="wf-btn" title="Rolling train/test backtest: sweep params on a train window, evaluate the winner on the next test window" hidden>Walk-forward</button>
         <button class="nanopine-btn" data-act="export" title="Download all scripts as JSON">Export</button>
         <button class="nanopine-btn" data-act="import" title="Append scripts from a JSON file">Import</button>
         <input type="file" data-role="import-input" accept="application/json,.json" hidden />
@@ -65,6 +66,7 @@ export class ScriptEditor {
     this.elAiBtn = this.root.querySelector('[data-role="ai-btn"]');
     this.elTsBtn = this.root.querySelector('[data-role="ts-btn"]');
     this.elSweepBtn = this.root.querySelector('[data-role="sweep-btn"]');
+    this.elWalkForwardBtn = this.root.querySelector('[data-role="wf-btn"]');
 
     this._bindEvents();
     this._refreshList();
@@ -99,6 +101,7 @@ export class ScriptEditor {
       else if (act === 'ai') this._actAskAi();
       else if (act === 'export-ts') this._actExportTs();
       else if (act === 'sweep') this._actSweep();
+      else if (act === 'walk-forward') this._actWalkForward();
       else if (act === 'toggle') {
         const targetId = target.getAttribute('data-id');
         if (targetId) this.manager.setEnabled(targetId, target.checked);
@@ -181,6 +184,7 @@ export class ScriptEditor {
     const isStrategy = /\bstrategy\s*\(/.test(sc.source || '');
     if (this.elTsBtn) this.elTsBtn.hidden = !isStrategy;
     if (this.elSweepBtn) this.elSweepBtn.hidden = !isStrategy;
+    if (this.elWalkForwardBtn) this.elWalkForwardBtn.hidden = !isStrategy;
   }
 
   _renderInputs(sc) {
@@ -365,6 +369,135 @@ export class ScriptEditor {
     } finally {
       this._setStatus('');
     }
+  }
+
+  async _actWalkForward() {
+    if (!this.activeId) return;
+    const sc = this.manager.list().find((s) => s.id === this.activeId);
+    if (!sc) return;
+    let ranges;
+    try {
+      ranges = await this.manager.collectSweepRanges(sc.id);
+    } catch (err) {
+      this.elError.textContent = `Walk-forward: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+      return;
+    }
+    if (!ranges || !ranges.length) {
+      this.elError.textContent =
+        'Walk-forward needs at least one int/float input. Add `name = input.int(default, title=...)` to your script.';
+      this.elError.classList.add('has-error');
+      return;
+    }
+    const dimsPrompt = ranges
+      .map(
+        (r) =>
+          `${r.name} (${r.kind}, default ${r.default}): start, end, step  e.g.  ${r.default - 5},${r.default + 5},1`,
+      )
+      .join('\n');
+    const dimsInput = window.prompt(`Enter param ranges (one line each):\n\n${dimsPrompt}`, '');
+    if (!dimsInput) return;
+    const lines = dimsInput.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length !== ranges.length) {
+      this.elError.textContent = `Walk-forward: expected ${ranges.length} lines, got ${lines.length}`;
+      this.elError.classList.add('has-error');
+      return;
+    }
+    const parsed = [];
+    for (let i = 0; i < lines.length; i++) {
+      const parts = lines[i].split(',').map((s) => Number(s.trim()));
+      if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+        this.elError.textContent = `Walk-forward: line ${i + 1} must be "start,end,step"`;
+        this.elError.classList.add('has-error');
+        return;
+      }
+      parsed.push({
+        name: ranges[i].name,
+        kind: ranges[i].kind,
+        start: parts[0],
+        end: parts[1],
+        step: parts[2],
+      });
+    }
+    const windowsInput = window.prompt(
+      'Window sizes: trainBars, testBars, stepBars  (e.g.  500,100,100)',
+      '500,100,100',
+    );
+    if (!windowsInput) return;
+    const w = windowsInput.split(',').map((s) => Number(s.trim()));
+    if (w.length !== 3 || w.some((n) => !Number.isFinite(n))) {
+      this.elError.textContent =
+        'Walk-forward: window sizes must be "trainBars, testBars, stepBars"';
+      this.elError.classList.add('has-error');
+      return;
+    }
+    this._setStatus('Walk-forward running…');
+    try {
+      const windows = await this.manager.runWalkForward(sc.id, parsed, {
+        trainBars: w[0],
+        testBars: w[1],
+        stepBars: w[2],
+      });
+      this._renderWalkForward(windows);
+    } catch (err) {
+      this.elError.textContent = `Walk-forward: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+    } finally {
+      this._setStatus('');
+    }
+  }
+
+  _renderWalkForward(windows) {
+    if (!windows || !windows.length) {
+      this.elStats.hidden = false;
+      this.elStats.innerHTML = `
+        <div class="nanopine-stats-head"><strong>Walk-forward</strong><span class="dim">no windows produced</span></div>
+        <div class="dim">Try a longer history, smaller windows, or wider input ranges.</div>
+      `;
+      return;
+    }
+    const inputCols = Object.keys(windows[0].bestInputs);
+    let trainSum = 0;
+    let testSum = 0;
+    const rows = windows
+      .map((w) => {
+        const tr = w.trainStats?.totalPnl ?? 0;
+        const te = w.testStats?.totalPnl ?? 0;
+        trainSum += tr;
+        testSum += te;
+        const inputCells = inputCols
+          .map((c) => `<td>${escapeHtml(w.bestInputs[c])}</td>`)
+          .join('');
+        const trCls = tr >= 0 ? 'pos' : 'neg';
+        const teCls = te >= 0 ? 'pos' : 'neg';
+        return `<tr>
+          <td>${w.trainStart}-${w.trainEnd}</td>
+          <td>${w.trainEnd}-${w.testEnd}</td>
+          ${inputCells}
+          <td class="${trCls}">${tr.toFixed(2)}</td>
+          <td class="${teCls}">${te.toFixed(2)}</td>
+          <td>${((w.testStats?.winRate ?? 0) * 100).toFixed(1)}%</td>
+        </tr>`;
+      })
+      .join('');
+    const inputHeaders = inputCols.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
+    const oosShare = trainSum !== 0 ? (testSum / Math.abs(trainSum)) * 100 : 0;
+    this.elStats.hidden = false;
+    this.elStats.innerHTML = `
+      <div class="nanopine-stats-head"><strong>Walk-forward</strong><span class="dim">${windows.length} window${windows.length === 1 ? '' : 's'}</span></div>
+      <div class="nanopine-stats-grid">
+        <div><span class="lbl">Sum train PnL</span><span class="val ${trainSum >= 0 ? 'pos' : 'neg'}">${trainSum.toFixed(2)}</span></div>
+        <div><span class="lbl">Sum test PnL</span><span class="val ${testSum >= 0 ? 'pos' : 'neg'}">${testSum.toFixed(2)}</span></div>
+        <div><span class="lbl">OOS / IS</span><span class="val">${oosShare.toFixed(1)}%</span></div>
+        <div><span class="lbl">Windows</span><span class="val">${windows.length}</span></div>
+      </div>
+      <table class="nanopine-sweep">
+        <thead>
+          <tr><th>Train</th><th>Test</th>${inputHeaders}<th>Train PnL</th><th>Test PnL</th><th>Win</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
   }
 
   _renderSweep(results) {
