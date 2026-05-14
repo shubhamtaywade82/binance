@@ -35,6 +35,7 @@ export class ScriptEditor {
           <button class="nanopine-btn danger" data-act="delete">Delete</button>
         </div>
         <div class="nanopine-error" data-role="error"></div>
+        <div class="nanopine-stats" data-role="stats" hidden></div>
         <div class="nanopine-alerts" data-role="alerts" hidden>
           <div class="nanopine-alerts-head">
             <strong>Alerts</strong>
@@ -54,14 +55,19 @@ export class ScriptEditor {
     this.elStatus = this.root.querySelector('[data-role="status"]');
     this.elAlerts = this.root.querySelector('[data-role="alerts"]');
     this.elAlertsList = this.root.querySelector('[data-role="alerts-list"]');
+    this.elStats = this.root.querySelector('[data-role="stats"]');
 
     this._bindEvents();
     this._refreshList();
     this._refreshAlerts();
+    this._refreshStats();
 
     manager.addEventListener('change', () => this._refreshList());
     manager.addEventListener('status', (ev) => this._renderStatus(ev.detail));
     manager.addEventListener('alert', () => this._refreshAlerts());
+    manager.addEventListener('stats', (ev) => {
+      if (!this.activeId || ev.detail.id === this.activeId) this._refreshStats();
+    });
 
     const first = manager.list()[0];
     if (first) this._selectScript(first.id);
@@ -142,6 +148,7 @@ export class ScriptEditor {
     this._renderInputs(sc);
     this.elError.textContent = '';
     this._refreshList();
+    this._refreshStats();
     const status = this.manager.getStatus(id);
     this._renderStatus({ id, error: status.error });
   }
@@ -263,6 +270,38 @@ export class ScriptEditor {
     } catch {
       /* ignore */
     }
+  }
+
+  _refreshStats() {
+    if (!this.elStats) return;
+    if (!this.activeId) {
+      this.elStats.hidden = true;
+      return;
+    }
+    const blob = this.manager.getStats(this.activeId);
+    if (!blob || !blob.stats) {
+      this.elStats.hidden = true;
+      this.elStats.innerHTML = '';
+      return;
+    }
+    const s = blob.stats;
+    const pct = (v) => (Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '—');
+    const money = (v) => (Number.isFinite(v) ? v.toFixed(2) : '—');
+    const cellClass = s.totalPnl >= 0 ? 'pos' : 'neg';
+    this.elStats.hidden = false;
+    this.elStats.innerHTML = `
+      <div class="nanopine-stats-head"><strong>Backtest</strong><span class="dim">${s.trades} trade${s.trades === 1 ? '' : 's'}</span></div>
+      <div class="nanopine-stats-grid">
+        <div><span class="lbl">Net PnL</span><span class="val ${cellClass}">${money(s.totalPnl)}</span></div>
+        <div><span class="lbl">Return</span><span class="val ${cellClass}">${pct(s.totalReturn)}</span></div>
+        <div><span class="lbl">Win rate</span><span class="val">${pct(s.winRate)}</span></div>
+        <div><span class="lbl">Max DD</span><span class="val neg">${pct(s.maxDrawdown)}</span></div>
+        <div><span class="lbl">Avg win</span><span class="val pos">${money(s.avgWin)}</span></div>
+        <div><span class="lbl">Avg loss</span><span class="val neg">${money(s.avgLoss)}</span></div>
+        <div><span class="lbl">Final eq</span><span class="val">${money(s.finalEquity)}</span></div>
+        <div><span class="lbl">Open</span><span class="val">${s.openPosition ? `${s.openPosition.side} @ ${s.openPosition.entryPrice.toFixed(2)}` : 'flat'}</span></div>
+      </div>
+    `;
   }
 
   _refreshAlerts() {

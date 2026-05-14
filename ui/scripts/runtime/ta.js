@@ -360,6 +360,35 @@ export const BUILTINS = {
     return price;
   },
 
+  // entry(cond, side, qty=1) — long/short entry at current bar's close.
+  // Calling entry while an opposite-side position is open auto-reverses (closes
+  // the existing position at the same bar's close, then opens the new one).
+  entry(ctx, _node, args, kwargs, evaluator) {
+    if (args.length < 2) {
+      throw new RuntimeError('entry(cond, side, qty?) requires cond and side');
+    }
+    const cond = asBool(args[0]);
+    const side = String(args[1] || '').toLowerCase();
+    if (side !== 'long' && side !== 'short') {
+      throw new RuntimeError(`entry(): side must be "long" or "short" (got ${args[1]})`);
+    }
+    const optsFromKw = kwargsToMap(kwargs, evaluator);
+    const qty = args.length >= 3 && Number.isFinite(args[2]) ? args[2] : optsFromKw.qty ?? 1;
+    ctx.strategyOrder(side, cond, { qty });
+    return cond;
+  },
+
+  // exit(cond) — close any open position at current bar's close.
+  exit(ctx, _node, args, kwargs, evaluator) {
+    if (args.length < 1) {
+      throw new RuntimeError('exit(cond) requires a condition');
+    }
+    const cond = asBool(args[0]);
+    const optsFromKw = kwargsToMap(kwargs, evaluator);
+    ctx.strategyOrder('flat', cond, optsFromKw);
+    return cond;
+  },
+
   // bgcolor(color, opacity?)
   bgcolor(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {

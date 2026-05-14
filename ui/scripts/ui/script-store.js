@@ -20,6 +20,27 @@ plotshape(buy,  location="belowbar", color="lime",    shape="triangleup",   titl
 plotshape(sell, location="abovebar", color="magenta", shape="triangledown", title="sell")
 `;
 
+export const SAMPLE_STRATEGY = `strategy("EMA Cross Strategy", initial_capital=10000)
+fastLen = input.int(9,  title="Fast")
+slowLen = input.int(21, title="Slow")
+fast = ema(close, fastLen)
+slow = ema(close, slowLen)
+plot(fast, color="lime",    title="Fast EMA")
+plot(slow, color="magenta", title="Slow EMA")
+buy  = crossover(fast,  slow)
+sell = crossunder(fast, slow)
+entry(buy,  "long")
+entry(sell, "short")
+`;
+
+export const SAMPLE_RSI_OSC = `indicator("RSI sub-pane", overlay=false)
+len = input.int(14, title="Length")
+r = rsi(close, len)
+plot(r, color="#42a5f5", title="RSI")
+hline(70, color="#ef5350", title="Overbought")
+hline(30, color="#26a69a", title="Oversold")
+`;
+
 export class LocalAdapter {
   list() {
     try {
@@ -60,6 +81,24 @@ function seedDefaults() {
       id: makeId(),
       name: 'EMA Cross (sample)',
       source: SAMPLE_SCRIPT,
+      inputs: {},
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: makeId(),
+      name: 'EMA Cross Strategy (sample)',
+      source: SAMPLE_STRATEGY,
+      inputs: {},
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: makeId(),
+      name: 'RSI sub-pane (sample)',
+      source: SAMPLE_RSI_OSC,
       inputs: {},
       enabled: false,
       createdAt: now,

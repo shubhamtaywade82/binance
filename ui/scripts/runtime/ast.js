@@ -24,6 +24,7 @@
 export const Node = {
   Program: (body) => ({ type: 'Program', body }),
   IndicatorDecl: (name, opts, loc) => ({ type: 'IndicatorDecl', name, opts, ...loc }),
+  StrategyDecl: (name, opts, loc) => ({ type: 'StrategyDecl', name, opts, ...loc }),
   InputDecl: (name, kind, args, kwargs, loc) => ({
     type: 'InputDecl',
     name,

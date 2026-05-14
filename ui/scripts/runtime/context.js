@@ -3,7 +3,7 @@
 // outputs (plots/shapes/hlines/bgcolors).
 
 import { Series, DEFAULT_SERIES_CAPACITY } from './series.js';
-import { QuotaError } from './errors.js';
+import { QuotaError, RuntimeError } from './errors.js';
 
 const BUILTIN_SERIES_NAMES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4'];
 
@@ -41,8 +41,11 @@ export function createContext(opts = {}) {
     // Quota counters.
     nodeBudgetRemaining: 0,
 
-    // Indicator metadata (name + opts).
-    meta: { name: null, opts: {} },
+    // Indicator/strategy metadata (name + opts + kind).
+    meta: { name: null, opts: {}, kind: 'indicator' },
+
+    // Strategy state. Populated only when meta.kind === 'strategy'.
+    strategy: null,
 
     // Emitted outputs accumulated during full-history run.
     outputs: new Map(), // outputName → { kind, opts, values, times }
@@ -144,6 +147,158 @@ export function createContext(opts = {}) {
       out.times.push(t);
     },
 
+    initStrategy(opts) {
+      const initialCapital = Number(opts?.initial_capital);
+      this.strategy = {
+        initialCapital: Number.isFinite(initialCapital) && initialCapital > 0 ? initialCapital : 10_000,
+        position: null, // { side: 'long'|'short', entryPrice, entryBar, qty }
+        trades: [], // closed trades, in order
+        equity: [], // per-bar equity (initial + realized + unrealized) — one entry per bar
+        equityTimes: [], // matching time vector
+        markersBar: [], // pending markers to attach this bar (cleared at end of bar)
+        markersAll: [], // all entry/exit markers (for snapshotOutputs)
+      };
+    },
+
+    // Called by entry() / exit() builtins during runBar.
+    strategyOrder(side, condition, opts) {
+      if (this.meta.kind !== 'strategy' || !this.strategy) {
+        throw new RuntimeError(
+          'entry()/exit() may only be called from a strategy(...) script',
+          { barIndex: this.barIndex },
+        );
+      }
+      if (!condition) return;
+      const close = this.builtins.close.get(0);
+      if (!Number.isFinite(close)) return;
+      const s = this.strategy;
+      const t = this.times ? this.times[this.barIndex] : null;
+      if (side === 'flat') {
+        if (!s.position) return;
+        this._closePosition(close, t, opts);
+        return;
+      }
+      // side is 'long' or 'short'; auto-reverse if a contrary position is open.
+      if (s.position && s.position.side !== side) {
+        this._closePosition(close, t, { reason: 'reverse' });
+      }
+      if (s.position && s.position.side === side) return; // no pyramiding
+      const qty = Math.max(0, Number(opts?.qty) || 1);
+      s.position = { side, entryPrice: close, entryBar: this.barIndex, qty };
+      s.markersBar.push({
+        time: t,
+        position: side === 'long' ? 'belowBar' : 'aboveBar',
+        color: side === 'long' ? '#26a69a' : '#ef5350',
+        shape: side === 'long' ? 'arrowUp' : 'arrowDown',
+        text: side === 'long' ? 'L' : 'S',
+      });
+    },
+
+    _closePosition(price, time, opts) {
+      const s = this.strategy;
+      if (!s.position) return;
+      const pnl =
+        s.position.side === 'long'
+          ? (price - s.position.entryPrice) * s.position.qty
+          : (s.position.entryPrice - price) * s.position.qty;
+      const ret = s.position.entryPrice === 0 ? 0 : pnl / (s.position.entryPrice * s.position.qty);
+      s.trades.push({
+        side: s.position.side,
+        entryPrice: s.position.entryPrice,
+        exitPrice: price,
+        entryBar: s.position.entryBar,
+        exitBar: this.barIndex,
+        qty: s.position.qty,
+        pnl,
+        ret,
+        reason: opts?.reason || 'exit',
+      });
+      s.markersBar.push({
+        time,
+        position: 'aboveBar',
+        color: pnl >= 0 ? '#9ccc65' : '#ef5350',
+        shape: 'circle',
+        text: pnl >= 0 ? 'X+' : 'X-',
+      });
+      s.position = null;
+    },
+
+    // Called once per bar after the script statements run.
+    tickStrategyBar() {
+      const s = this.strategy;
+      if (!s) return;
+      const close = this.builtins.close.get(0);
+      // Equity = initial + realized PnL + unrealized PnL of open position.
+      let realized = 0;
+      for (const t of s.trades) realized += t.pnl;
+      let unrealized = 0;
+      if (s.position && Number.isFinite(close)) {
+        unrealized =
+          s.position.side === 'long'
+            ? (close - s.position.entryPrice) * s.position.qty
+            : (s.position.entryPrice - close) * s.position.qty;
+      }
+      const t = this.times ? this.times[this.barIndex] : null;
+      s.equity.push(s.initialCapital + realized + unrealized);
+      s.equityTimes.push(t);
+      // Flush bar markers.
+      if (s.markersBar.length) {
+        for (const m of s.markersBar) s.markersAll.push(m);
+        s.markersBar = [];
+      }
+    },
+
+    strategyStats() {
+      const s = this.strategy;
+      if (!s) return null;
+      const trades = s.trades.length;
+      let wins = 0;
+      let losses = 0;
+      let winSum = 0;
+      let lossSum = 0;
+      for (const t of s.trades) {
+        if (t.pnl > 0) {
+          wins += 1;
+          winSum += t.pnl;
+        } else if (t.pnl < 0) {
+          losses += 1;
+          lossSum += t.pnl;
+        }
+      }
+      const totalPnl = winSum + lossSum;
+      const finalEquity = s.equity.length ? s.equity[s.equity.length - 1] : s.initialCapital;
+      const totalReturn = (finalEquity - s.initialCapital) / s.initialCapital;
+      let peak = s.initialCapital;
+      let maxDD = 0;
+      for (const eq of s.equity) {
+        if (eq > peak) peak = eq;
+        const dd = peak > 0 ? (peak - eq) / peak : 0;
+        if (dd > maxDD) maxDD = dd;
+      }
+      const openPos = s.position
+        ? {
+            side: s.position.side,
+            entryPrice: s.position.entryPrice,
+            entryBar: s.position.entryBar,
+            qty: s.position.qty,
+          }
+        : null;
+      return {
+        initialCapital: s.initialCapital,
+        finalEquity,
+        totalPnl,
+        totalReturn,
+        trades,
+        wins,
+        losses,
+        winRate: trades > 0 ? wins / trades : 0,
+        avgWin: wins > 0 ? winSum / wins : 0,
+        avgLoss: losses > 0 ? lossSum / losses : 0,
+        maxDrawdown: maxDD,
+        openPosition: openPos,
+      };
+    },
+
     emitAlert(node, message, opts) {
       const outName = `alert_${nodeKey(node)}`;
       let out = this.outputs.get(outName);
@@ -206,6 +361,32 @@ export function createContext(opts = {}) {
           out.push({ name: o.name, kind: 'alert', opts: o.opts, events: o.events });
         }
       }
+      if (this.meta.kind === 'strategy' && this.strategy) {
+        // Equity curve as a line in pane 1 (sub-pane).
+        const eqData = this.strategy.equity.map((v, i) => ({
+          time: this.strategy.equityTimes[i],
+          value: v,
+        }));
+        out.push({
+          name: '__strategy_equity',
+          kind: 'line',
+          opts: { color: '#42a5f5', lineWidth: 1.5, pane: 1, title: 'Equity' },
+          data: eqData,
+        });
+        out.push({
+          name: '__strategy_markers',
+          kind: 'marker',
+          opts: {},
+          markers: this.strategy.markersAll,
+        });
+        out.push({
+          name: '__strategy_stats',
+          kind: 'stats',
+          opts: {},
+          stats: this.strategyStats(),
+          trades: this.strategy.trades,
+        });
+      }
       return out;
     },
 
@@ -214,6 +395,27 @@ export function createContext(opts = {}) {
     snapshotDelta(prevSnapshot) {
       const deltas = [];
       const t = this.times ? this.times[this.barIndex] : null;
+      if (this.meta.kind === 'strategy' && this.strategy) {
+        const lastEq = this.strategy.equity[this.strategy.equity.length - 1];
+        if (Number.isFinite(lastEq)) {
+          deltas.push({ name: '__strategy_equity', kind: 'line', point: { time: t, value: lastEq } });
+        }
+        const prevMarkers = prevSnapshot?.get('__strategy_markers')?.markers ?? 0;
+        const totalMarkers = this.strategy.markersAll.length;
+        if (totalMarkers > prevMarkers) {
+          deltas.push({
+            name: '__strategy_markers',
+            kind: 'marker',
+            markers: this.strategy.markersAll.slice(prevMarkers),
+          });
+        }
+        deltas.push({
+          name: '__strategy_stats',
+          kind: 'stats',
+          stats: this.strategyStats(),
+          trades: this.strategy.trades,
+        });
+      }
       for (const o of this.outputs.values()) {
         if (o.kind === 'line' || o.kind === 'histogram' || o.kind === 'area') {
           const last = o.values[o.values.length - 1];
@@ -253,6 +455,9 @@ export function createContext(opts = {}) {
       for (const o of this.outputs.values()) {
         if (o.kind === 'marker') m.set(o.name, { markers: o.markers.length });
         else if (o.kind === 'alert') m.set(o.name, { events: o.events.length });
+      }
+      if (this.meta.kind === 'strategy' && this.strategy) {
+        m.set('__strategy_markers', { markers: this.strategy.markersAll.length });
       }
       return m;
     },

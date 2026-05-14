@@ -20,12 +20,27 @@ export class ScriptManager extends EventTarget {
     this.activeTf = chartManager?.currentTf || null;
     /** Rolling alert log (newest first) capped at 200 entries. */
     this.alerts = [];
+    /** Latest strategy stats per instanceId. */
+    this.stats = new Map();
     this._notificationsRequested = false;
 
     this.worker = null;
     this._workerErrorBackoff = 0;
     this._initWorker();
     this.overlay.onAlert((ev) => this._onAlert(ev));
+  }
+
+  _setStats(instanceId, out) {
+    this.stats.set(instanceId, {
+      stats: out.stats || null,
+      trades: out.trades || [],
+      updatedAt: Date.now(),
+    });
+    this.dispatchEvent(new CustomEvent('stats', { detail: { id: instanceId } }));
+  }
+
+  getStats(id) {
+    return this.stats.get(id) || null;
   }
 
   _onAlert(ev) {
@@ -87,18 +102,23 @@ export class ScriptManager extends EventTarget {
     if (!msg || !msg.kind) return;
     switch (msg.kind) {
       case MSG.COMPILED: {
-        this.overlay.apply(msg.instanceId, msg.outputs);
+        const { chartOutputs, statsOutput } = splitStats(msg.outputs);
+        this.overlay.apply(msg.instanceId, chartOutputs);
+        if (statsOutput) this._setStats(msg.instanceId, statsOutput);
         this.status.set(msg.instanceId, { state: 'running', meta: msg.meta });
         this.dispatchEvent(new CustomEvent('status', { detail: { id: msg.instanceId } }));
         break;
       }
       case MSG.TICK: {
-        this.overlay.update(msg.instanceId, msg.deltas);
+        const { chartDeltas, statsDelta } = splitStatsDelta(msg.deltas);
+        this.overlay.update(msg.instanceId, chartDeltas);
+        if (statsDelta) this._setStats(msg.instanceId, statsDelta);
         if (msg.warning) console.warn('[nanopine]', msg.instanceId, msg.warning);
         break;
       }
       case MSG.ERROR: {
         this.overlay.remove(msg.instanceId);
+        this.stats.delete(msg.instanceId);
         this.status.set(msg.instanceId, { state: 'error', error: msg.error });
         // Disable the script so it doesn't auto-run again on next snapshot.
         const sc = this.scripts.find((s) => s.id === msg.instanceId);
@@ -236,6 +256,26 @@ export class ScriptManager extends EventTarget {
       this.worker.postMessage({ kind: MSG.BAR, instanceId: sc.id, candle: payload });
     }
   }
+}
+
+function splitStats(outputs) {
+  const chartOutputs = [];
+  let statsOutput = null;
+  for (const o of outputs || []) {
+    if (o.kind === 'stats') statsOutput = o;
+    else chartOutputs.push(o);
+  }
+  return { chartOutputs, statsOutput };
+}
+
+function splitStatsDelta(deltas) {
+  const chartDeltas = [];
+  let statsDelta = null;
+  for (const d of deltas || []) {
+    if (d.kind === 'stats') statsDelta = d;
+    else chartDeltas.push(d);
+  }
+  return { chartDeltas, statsDelta };
 }
 
 function toPlainCandle(c) {

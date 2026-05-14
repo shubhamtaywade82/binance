@@ -46,7 +46,11 @@ function parseStatement(state) {
   const tok = peek(state);
 
   if (tok.type === 'indicator') {
-    return parseIndicatorDecl(state);
+    return parseIndicatorDecl(state, 'IndicatorDecl', 'indicator');
+  }
+
+  if (tok.type === 'strategy') {
+    return parseIndicatorDecl(state, 'StrategyDecl', 'strategy');
   }
 
   // Assignment / input decl: ident '=' ...
@@ -59,8 +63,8 @@ function parseStatement(state) {
   return Node.ExprStmt(expr, locOf(tok));
 }
 
-function parseIndicatorDecl(state) {
-  const tok = expect(state, 'indicator');
+function parseIndicatorDecl(state, nodeName, keyword) {
+  const tok = expect(state, keyword);
   expect(state, '(');
   const nameTok = expect(state, 'string');
   const opts = [];
@@ -69,7 +73,8 @@ function parseIndicatorDecl(state) {
     opts.push(parseKwArg(state));
   }
   expect(state, ')');
-  return Node.IndicatorDecl(nameTok.value, opts, locOf(tok));
+  const factory = nodeName === 'StrategyDecl' ? Node.StrategyDecl : Node.IndicatorDecl;
+  return factory(nameTok.value, opts, locOf(tok));
 }
 
 function parseAssignmentOrInput(state) {

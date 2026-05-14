@@ -14,20 +14,24 @@ import { BUILTINS, isBuiltin } from './ta.js';
 
 // Statements that must run once at script load (before the bar loop).
 export function prepare(program, ctx) {
-  let seenIndicator = false;
+  let seenHeader = false;
   for (const stmt of program.body) {
-    if (stmt.type === 'IndicatorDecl') {
-      if (seenIndicator) {
-        throw new ValidationError("Multiple 'indicator' declarations", {
+    if (stmt.type === 'IndicatorDecl' || stmt.type === 'StrategyDecl') {
+      if (seenHeader) {
+        throw new ValidationError("Multiple 'indicator' or 'strategy' declarations", {
           line: stmt.line,
           col: stmt.col,
         });
       }
-      seenIndicator = true;
+      seenHeader = true;
       ctx.meta.name = stmt.name;
+      ctx.meta.kind = stmt.type === 'StrategyDecl' ? 'strategy' : 'indicator';
       ctx.meta.opts = {};
       for (const kw of stmt.opts) {
         ctx.meta.opts[kw.name] = evalConstExpr(kw.value, ctx);
+      }
+      if (ctx.meta.kind === 'strategy') {
+        ctx.initStrategy(ctx.meta.opts);
       }
     } else if (stmt.type === 'InputDecl') {
       // Default value = first positional arg; an instance-level inputs map can override.
@@ -48,9 +52,15 @@ export function prepare(program, ctx) {
 export function runBar(program, ctx, barIndex) {
   ctx.resetForBar(barIndex);
   for (const stmt of program.body) {
-    if (stmt.type === 'IndicatorDecl' || stmt.type === 'InputDecl') continue;
+    if (
+      stmt.type === 'IndicatorDecl' ||
+      stmt.type === 'StrategyDecl' ||
+      stmt.type === 'InputDecl'
+    )
+      continue;
     execStatement(stmt, ctx);
   }
+  if (ctx.meta.kind === 'strategy') ctx.tickStrategyBar();
 }
 
 function execStatement(stmt, ctx) {

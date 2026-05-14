@@ -1607,6 +1607,25 @@ body::before {
   position: relative;
 }
 
+/* Backtest stats panel inside the Scripts tab. */
+.nanopine-stats {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.nanopine-stats-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.nanopine-stats-head .dim { color: rgba(255, 255, 255, 0.5); }
+.nanopine-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+}
+.nanopine-stats-grid > div { display: flex; justify-content: space-between; gap: 6px; }
+.nanopine-stats-grid .lbl { color: rgba(255, 255, 255, 0.55); }
+.nanopine-stats-grid .val { font-family: ui-monospace, monospace; }
+.nanopine-stats-grid .pos { color: #26a69a; }
+.nanopine-stats-grid .neg { color: #ef5350; }
+
 /* Alerts log panel inside the Scripts tab. */
 .nanopine-alerts {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
