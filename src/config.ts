@@ -1,6 +1,7 @@
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
 import { normalizeTradingAsset, TRADING_ASSET_PRESETS } from './config/asset-presets';
+import { parseCorrelationSymbolGroups } from './strategy/correlation-guard';
 
 loadDotenv();
 
@@ -365,6 +366,17 @@ export const AppConfigSchema = z.object({
 
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
+
+  /**
+   * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
+   * Pipe `|` separates clusters; comma separates symbols that should not share same-direction risk.
+   * Example: `BTCUSDT,ETHUSDT|SOLUSDT,AVAXUSDT` — blocks a new SOLUSDT long while ETHUSDT has an open long in the same cluster.
+   * Empty = disabled.
+   */
+  BINANCE_CORRELATION_SYMBOL_GROUPS: z
+    .string()
+    .default('')
+    .transform((s) => parseCorrelationSymbolGroups(s)),
 
   /** Scale position size inversely with realized volatility. */
   VOL_ADJUSTED_SIZING: boolFromString(false),
