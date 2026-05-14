@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       '@coindcx/indicator-runtime': path.resolve(workspaceRoot, 'packages/indicator-runtime/src/index.ts'),
     },
+    extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
   },
   server: {
     port: 5173,

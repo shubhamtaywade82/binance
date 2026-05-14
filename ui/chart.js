@@ -1481,13 +1481,16 @@ export class ChartManager {
 
   _applyTimeScaleForTf(tf) {
     const dailyLike = tf === '1d';
+    // Preserve current zoom level across timeframe switches. 
+    // If not set (initial boot), default to 4.
+    const currentSpacing = this.chart ? this.chart.timeScale().options().barSpacing : 4;
     const ts = {
       ...CHART_OPTS.timeScale,
       timeVisible: !dailyLike,
       secondsVisible: false,
       /** Extra empty space so the last candle is not drawn under stacked price-scale labels. */
       rightOffset: 22,
-      barSpacing: 4,
+      barSpacing: currentSpacing,
       fixLeftEdge: false,
       fixRightEdge: false,
       rightBarStaysOnScroll: true,
@@ -1501,18 +1504,9 @@ export class ChartManager {
    */
   _fitDefaultVisibleRange(tf, barCount) {
     if (!this.chart || barCount < 1) return;
-    const want = DEFAULT_VISIBLE_BARS[tf] ?? 160;
-    if (barCount <= want) {
-      this.chart.timeScale().fitContent();
-    } else {
-      const from = barCount - want;
-      const to = barCount - 1;
-      try {
-        this.chart.timeScale().setVisibleLogicalRange({ from, to });
-      } catch {
-        this.chart.timeScale().fitContent();
-      }
-    }
+    // Just snap to the latest data respecting the rightOffset gap.
+    // Do not use fitContent() or setVisibleLogicalRange(), as they stretch/shrink the candles.
+    this.chart.timeScale().scrollToRealTime();
   }
 
   /**

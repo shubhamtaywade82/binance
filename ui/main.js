@@ -15,7 +15,7 @@ import { fmtLtpMovement, fmtSpreadMovement } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
-import { SentimentGauge }  from './sentiment.js';
+import { SentimentGauge }  from './market-sentiment.js';
 import { MicrostructurePanel } from './microstructure.js';
 import { Rolling1mTradeStats } from './rolling-1m-stats.js';
 import { ScriptManager } from './scripts/ui/script-manager.js';
