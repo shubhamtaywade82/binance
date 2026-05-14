@@ -21,6 +21,13 @@ const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const log = createAppLogger(cfg);
 
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') {
+    log.warn('binance_testnet_liquidity_notice', {
+      hint:
+        'USD-M futures testnet has thin and unrealistic liquidity. Fills and slippage will not match mainnet; treat paper and testnet results as engineering checks only, not as live performance.',
+    });
+  }
+
   const lifecycle = new Lifecycle({
     defaultTimeoutMs: cfg.SHUTDOWN_TIMEOUT_MS,
     forceExitMs: cfg.SHUTDOWN_FORCE_EXIT_MS,

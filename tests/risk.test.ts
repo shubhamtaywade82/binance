@@ -19,6 +19,7 @@ const cfg = (over: Partial<AppConfig> = {}): AppConfig => {
     LOG_HEARTBEAT_SEC: 60,
     LTP_CONNECT_WARN_SEC: 0,
     LEVERAGE: 10,
+    MAX_NOTIONAL_USDT: 0,
     CAPITAL_PER_TRADE: 20000,
     CAPITAL_PER_TRADE_INR: 20000,
     INR_PER_USDT: 85,
@@ -62,6 +63,20 @@ describe('RiskManager.sizePosition', () => {
   it('returns zero qty for invalid price', () => {
     const rm = new RiskManager(cfg());
     expect(rm.sizePosition(0).quantity).toBe(0);
+  });
+
+  it('caps notional and margin when MAX_NOTIONAL_USDT is set', () => {
+    const rm = new RiskManager(
+      cfg({
+        CAPITAL_PER_TRADE_USDT: 1000,
+        LEVERAGE: 10,
+        MAX_NOTIONAL_USDT: 50,
+      }),
+    );
+    const r = rm.sizePosition(100, 0.001);
+    expect(r.notionalUsdt).toBe(50);
+    expect(r.marginUsdt).toBeCloseTo(5, 6);
+    expect(r.quantity).toBeCloseTo(0.5, 6);
   });
 });
 

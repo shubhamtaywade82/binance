@@ -1269,7 +1269,7 @@ if __name__ == "__main__":
 | ✅ | Private listenKey keep-alive (PUT every 30 min) | `private-ws.ts` — listenKey renewal interval |
 | ✅ | `countdownCancelAll` keepalive to auto-cancel on crash | `BINANCE_DEADMAN_COUNTDOWN_MS` in orchestrator |
 | ✅ | Prometheus metrics endpoint | `src/metrics/prometheus-exporter.ts` — `/metrics` on port 9090 |
-| ✅ | Structured JSON logging | NDJSON app logger + structured heartbeat |
+| ✅ | Structured JSON logging | `LOG_JSON_CONSOLE=true` — NDJSON on stdout/stderr (`app-logger.ts`), same fields as file sink |
 | ✅ | Dockerfile + `systemd` / `supervisor` unit file | `Dockerfile` (multi-stage, node:22-alpine) + `ml_bot/Dockerfile` + `docker-compose.yml` |
 | ☐ | Deploy to AWS `ap-southeast-1` (Singapore) for lowest Binance latency |
 
@@ -1742,7 +1742,7 @@ Phase 3 — Shadow mode on mainnet
 Phase 4 — Live trading (small capital)
   ✔ BINANCE_FUTURES_TESTNET=false
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
-  ✘ MAX_NOTIONAL_USDT cap not built (see §20.2)
+  ✔ MAX_NOTIONAL_USDT cap (`config.ts`, `risk.ts`, `.env.example`)
   ✘ CONFIRMED_LIVE guard not built (see §20.2)  ← ✅ NOW DONE (CONFIRMED_LIVE_TRADING in config.ts)
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```

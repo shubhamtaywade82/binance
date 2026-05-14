@@ -115,6 +115,11 @@ export const AppConfigSchema = z.object({
 
   LEVERAGE: numFromString(10),
   /**
+   * Hard cap on entry **notional** (USDT contract face ≈ price × qty). 0 = disabled.
+   * Applied after margin/leverage sizing; e.g. `50` during first live week (see TODO Phase 4).
+   */
+  MAX_NOTIONAL_USDT: numFromString(0),
+  /**
    * USDT margin per trade for Binance USDT-M Futures (preferred).
    * When set to a positive value, overrides the INR-based sizing path.
    * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
@@ -162,6 +167,11 @@ export const AppConfigSchema = z.object({
 
   /** Append NDJSON log lines (empty = stdout/stderr only). */
   APP_LOG_PATH: z.string().default('./logs/app.ndjson'),
+  /**
+   * When true, emit **info** / **warn** on stdout/stderr as NDJSON (same shape as `APP_LOG_PATH` file lines).
+   * Default keeps human-readable `msg {json}` lines for local dev; enable in Docker / log aggregators.
+   */
+  LOG_JSON_CONSOLE: boolFromString(false),
 
   EXECUTION_MODE: z
     .union([ExecutionModeEnum, z.string()])
@@ -209,6 +219,40 @@ export const AppConfigSchema = z.object({
   /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). Useful for cascade detection. USD-M only. */
   BINANCE_USE_GLOBAL_FORCE_ORDER: boolFromString(false),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
+
+  /**
+   * Binance REST (`BinanceRestClient`): max HTTP attempts per call on 408/429/5xx and transport failures.
+   * 1 = no retries. Capped at 12.
+   */
+  BINANCE_REST_RETRY_MAX_ATTEMPTS: z
+    .string()
+    .optional()
+    .default('4')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return 4;
+      return Math.min(12, n);
+    }),
+  /** Initial backoff cap (ms) before exponential growth; combined with full jitter. */
+  BINANCE_REST_RETRY_BASE_MS: z
+    .string()
+    .optional()
+    .default('400')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 50) return 400;
+      return Math.min(10_000, n);
+    }),
+  /** Upper bound (ms) on each wait, including when honoring `Retry-After`. */
+  BINANCE_REST_RETRY_MAX_MS: z
+    .string()
+    .optional()
+    .default('20000')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 100) return 20_000;
+      return Math.min(120_000, n);
+    }),
 
   /**
    * USD-M Futures **testnet** (derivatives demo): REST `demo-fapi.binance.com`, WS `fstream.binancefuture.com`.
