@@ -3,22 +3,22 @@
 // over the same input candles.
 
 export class EmaState {
-  constructor(period) {
+  readonly period: number;
+  readonly k: number;
+  private n = 0;
+  private seedSum = 0;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`EMA period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.k = 2 / (period + 1);
-    this.n = 0;
-    this.seedSum = 0;
-    this.value = NaN;
   }
 
-  // Returns the current EMA value, or NaN during warmup (n < period).
-  update(x) {
+  update(x: number): number {
     if (!Number.isFinite(x)) {
-      // Treat non-finite inputs as no-op (still advance n? indicators.ts treats every bar
-      // as a sample regardless; here we keep parity and increment).
       this.n += 1;
       return this.value;
     }
@@ -37,28 +37,29 @@ export class EmaState {
   }
 }
 
-// Wilder-smoothed RSI matching src/strategy/indicators.ts exactly.
 export class RsiState {
+  readonly period: number;
+  private n = 0;
+  private prev = NaN;
+  private gainSum = 0;
+  private lossSum = 0;
+  private avgGain = NaN;
+  private avgLoss = NaN;
+  value = NaN;
+
   constructor(period = 14) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`RSI period must be a positive integer (got ${period})`);
     }
     this.period = period;
-    this.n = 0;
-    this.prev = NaN;
-    this.gainSum = 0;
-    this.lossSum = 0;
-    this.avgGain = NaN;
-    this.avgLoss = NaN;
-    this.value = NaN;
   }
 
-  update(x) {
+  update(x: number): number {
     if (!Number.isFinite(x)) {
       this.n += 1;
       return this.value;
     }
-    const idx = this.n; // 0-based index of this sample
+    const idx = this.n;
     this.n += 1;
     if (idx === 0) {
       this.prev = x;
@@ -88,21 +89,23 @@ export class RsiState {
   }
 }
 
-// Simple moving average via rolling sum.
 export class SmaState {
-  constructor(period) {
+  readonly period: number;
+  private readonly window: Float64Array;
+  private idx = 0;
+  private n = 0;
+  private sum = 0;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`SMA period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.window = new Float64Array(period);
-    this.idx = 0;
-    this.n = 0;
-    this.sum = 0;
-    this.value = NaN;
   }
 
-  update(x) {
+  update(x: number): number {
     const v = Number.isFinite(x) ? x : 0;
     if (this.n < this.period) {
       this.window[this.idx] = v;
@@ -115,7 +118,7 @@ export class SmaState {
       }
       return NaN;
     }
-    this.sum += v - this.window[this.idx];
+    this.sum += v - this.window[this.idx]!;
     this.window[this.idx] = v;
     this.idx = (this.idx + 1) % this.period;
     this.value = this.sum / this.period;
@@ -123,26 +126,26 @@ export class SmaState {
   }
 }
 
-// ATR matching src/strategy/indicators.ts exactly: SMA of TR over first `period` bars,
-// then Wilder smoothing.
 export class AtrState {
+  readonly period: number;
+  private n = 0;
+  private prevClose = NaN;
+  private trSum = 0;
+  value = NaN;
+
   constructor(period = 14) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`ATR period must be a positive integer (got ${period})`);
     }
     this.period = period;
-    this.n = 0;
-    this.prevClose = NaN;
-    this.trSum = 0;
-    this.value = NaN;
   }
 
-  update(high, low, close) {
+  update(high: number, low: number, close: number): number {
     if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
       this.n += 1;
       return this.value;
     }
-    let tr;
+    let tr: number;
     if (this.n === 0) {
       tr = high - low;
     } else {
@@ -169,21 +172,22 @@ export class AtrState {
   }
 }
 
-// Rolling-window standard deviation using Welford's algorithm restarted each window.
-// Matches Pine's ta.stdev(): population standard deviation (divide by N, not N-1).
 export class StdevState {
-  constructor(period) {
+  readonly period: number;
+  private readonly window: Float64Array;
+  private idx = 0;
+  private n = 0;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`Stdev period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.window = new Float64Array(period);
-    this.idx = 0;
-    this.n = 0;
-    this.value = NaN;
   }
 
-  update(x) {
+  update(x: number): number {
     const v = Number.isFinite(x) ? x : 0;
     if (this.n < this.period) {
       this.window[this.idx] = v;
@@ -195,11 +199,11 @@ export class StdevState {
       this.idx = (this.idx + 1) % this.period;
     }
     let mean = 0;
-    for (let i = 0; i < this.period; i++) mean += this.window[i];
+    for (let i = 0; i < this.period; i++) mean += this.window[i]!;
     mean /= this.period;
     let sq = 0;
     for (let i = 0; i < this.period; i++) {
-      const d = this.window[i] - mean;
+      const d = this.window[i]! - mean;
       sq += d * d;
     }
     this.value = Math.sqrt(sq / this.period);
@@ -207,21 +211,23 @@ export class StdevState {
   }
 }
 
-// Running window sum.
 export class SumState {
-  constructor(period) {
+  readonly period: number;
+  private readonly window: Float64Array;
+  private idx = 0;
+  private n = 0;
+  private sum = 0;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`Sum period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.window = new Float64Array(period);
-    this.idx = 0;
-    this.n = 0;
-    this.sum = 0;
-    this.value = NaN;
   }
 
-  update(x) {
+  update(x: number): number {
     const v = Number.isFinite(x) ? x : 0;
     if (this.n < this.period) {
       this.window[this.idx] = v;
@@ -234,7 +240,7 @@ export class SumState {
       }
       return NaN;
     }
-    this.sum += v - this.window[this.idx];
+    this.sum += v - this.window[this.idx]!;
     this.window[this.idx] = v;
     this.idx = (this.idx + 1) % this.period;
     this.value = this.sum;
@@ -242,32 +248,34 @@ export class SumState {
   }
 }
 
-// Linearly-weighted moving average: weights 1, 2, ..., N (heaviest on newest).
 export class WmaState {
-  constructor(period) {
+  readonly period: number;
+  private readonly window: Float64Array;
+  private idx = 0;
+  private n = 0;
+  private readonly denom: number;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`WMA period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.window = new Float64Array(period);
-    this.idx = 0;
-    this.n = 0;
     this.denom = (period * (period + 1)) / 2;
-    this.value = NaN;
   }
 
-  update(x) {
+  update(x: number): number {
     const v = Number.isFinite(x) ? x : 0;
     this.window[this.idx] = v;
     this.idx = (this.idx + 1) % this.period;
     if (this.n < this.period) this.n += 1;
     if (this.n < this.period) return NaN;
-    // The window has period values starting from this.idx (oldest) wrapping around.
     let num = 0;
     let weight = 1;
-    let cursor = this.idx; // oldest
+    let cursor = this.idx;
     for (let i = 0; i < this.period; i++) {
-      num += this.window[cursor] * weight;
+      num += this.window[cursor]! * weight;
       weight += 1;
       cursor = (cursor + 1) % this.period;
     }
@@ -276,23 +284,26 @@ export class WmaState {
   }
 }
 
-// Volume-weighted moving average over the last `period` bars.
 export class VwmaState {
-  constructor(period) {
+  readonly period: number;
+  private readonly vals: Float64Array;
+  private readonly vols: Float64Array;
+  private idx = 0;
+  private n = 0;
+  private numSum = 0;
+  private volSum = 0;
+  value = NaN;
+
+  constructor(period: number) {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`VWMA period must be a positive integer (got ${period})`);
     }
     this.period = period;
     this.vals = new Float64Array(period);
     this.vols = new Float64Array(period);
-    this.idx = 0;
-    this.n = 0;
-    this.numSum = 0;
-    this.volSum = 0;
-    this.value = NaN;
   }
 
-  update(price, volume) {
+  update(price: number, volume: number): number {
     const p = Number.isFinite(price) ? price : 0;
     const v = Number.isFinite(volume) ? volume : 0;
     if (this.n < this.period) {
@@ -308,8 +319,8 @@ export class VwmaState {
       }
       return NaN;
     }
-    this.numSum += p * v - this.vals[this.idx] * this.vols[this.idx];
-    this.volSum += v - this.vols[this.idx];
+    this.numSum += p * v - this.vals[this.idx]! * this.vols[this.idx]!;
+    this.volSum += v - this.vols[this.idx]!;
     this.vals[this.idx] = p;
     this.vols[this.idx] = v;
     this.idx = (this.idx + 1) % this.period;
@@ -318,11 +329,14 @@ export class VwmaState {
   }
 }
 
-// "falling/rising over last N bars" — true iff src has been strictly monotonic
-// in that direction over the last `len` samples (most-recent vs each preceding).
-// Uses a small Float64Array history mirroring the call-site Series.
 export class TrendState {
-  constructor(period, mode /* 'falling' | 'rising' */) {
+  readonly period: number;
+  readonly mode: 'falling' | 'rising';
+  private readonly window: Float64Array;
+  private idx = 0;
+  private n = 0;
+
+  constructor(period: number, mode: 'falling' | 'rising') {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`Period must be a positive integer (got ${period})`);
     }
@@ -332,22 +346,19 @@ export class TrendState {
     this.period = period;
     this.mode = mode;
     this.window = new Float64Array(period + 1);
-    this.idx = 0;
-    this.n = 0;
   }
 
-  update(x) {
+  update(x: number): boolean {
     const v = Number.isFinite(x) ? x : NaN;
     this.window[this.idx] = v;
     this.idx = (this.idx + 1) % (this.period + 1);
     if (this.n <= this.period) this.n += 1;
     if (this.n <= this.period) return false;
-    // Walk from oldest → newest and check monotonicity.
-    let cursor = this.idx; // oldest (now points to slot just overwritten + 1)
-    let prev = this.window[cursor];
+    let cursor = this.idx;
+    let prev = this.window[cursor]!;
     cursor = (cursor + 1) % (this.period + 1);
     for (let i = 0; i < this.period; i++) {
-      const cur = this.window[cursor];
+      const cur = this.window[cursor]!;
       if (this.mode === 'falling' && !(cur < prev)) return false;
       if (this.mode === 'rising' && !(cur > prev)) return false;
       prev = cur;
@@ -357,9 +368,18 @@ export class TrendState {
   }
 }
 
-// Monotonic deque for O(1) amortized rolling max/min over the last `period` samples.
+interface DequeEntry {
+  idx: number;
+  value: number;
+}
+
 export class RollingExtreme {
-  constructor(period, mode /* 'max' | 'min' */) {
+  readonly period: number;
+  readonly mode: 'max' | 'min';
+  private n = 0;
+  private readonly deque: DequeEntry[] = [];
+
+  constructor(period: number, mode: 'max' | 'min') {
     if (!Number.isInteger(period) || period <= 0) {
       throw new RangeError(`Period must be a positive integer (got ${period})`);
     }
@@ -368,35 +388,31 @@ export class RollingExtreme {
     }
     this.period = period;
     this.mode = mode;
-    this.n = 0;
-    // deque holds { idx, value }; front is the current extreme.
-    this.deque = [];
   }
 
-  update(x) {
+  update(x: number): number {
     const idx = this.n;
     this.n += 1;
     if (!Number.isFinite(x)) return this.peek();
-    // Drop expired front entries.
-    while (this.deque.length && this.deque[0].idx <= idx - this.period) {
+    while (this.deque.length && this.deque[0]!.idx <= idx - this.period) {
       this.deque.shift();
     }
     if (this.mode === 'max') {
-      while (this.deque.length && this.deque[this.deque.length - 1].value <= x) {
+      while (this.deque.length && this.deque[this.deque.length - 1]!.value <= x) {
         this.deque.pop();
       }
     } else {
-      while (this.deque.length && this.deque[this.deque.length - 1].value >= x) {
+      while (this.deque.length && this.deque[this.deque.length - 1]!.value >= x) {
         this.deque.pop();
       }
     }
     this.deque.push({ idx, value: x });
     if (idx < this.period - 1) return NaN;
-    return this.deque[0].value;
+    return this.deque[0]!.value;
   }
 
-  peek() {
+  peek(): number {
     if (this.n < this.period || this.deque.length === 0) return NaN;
-    return this.deque[0].value;
+    return this.deque[0]!.value;
   }
 }

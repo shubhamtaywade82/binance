@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — JS module, vitest will transpile via esbuild
-import { tokenize } from '../../ui/scripts/runtime/lexer.js';
-// @ts-expect-error — JS module
-import { LexError } from '../../ui/scripts/runtime/errors.js';
+import { LexError, tokenize } from '@coindcx/indicator-runtime';
 
 describe('lexer', () => {
   it('tokenises an EMA assignment', () => {

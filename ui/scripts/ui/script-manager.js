@@ -3,7 +3,7 @@
 
 import { MSG } from '../worker/protocol.js';
 import { ChartOverlayManager } from './script-overlay.js';
-import { LocalAdapter, SAMPLE_SCRIPT, makeId, pickAdapter } from './script-store.js';
+import { SAMPLE_SCRIPT, makeId, pickAdapter } from './script-store.js';
 
 export class ScriptManager extends EventTarget {
   constructor(chartManager, opts = {}) {

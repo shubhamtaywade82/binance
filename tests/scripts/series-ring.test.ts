@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — JS module
-import { Series } from '../../ui/scripts/runtime/series.js';
+import { Series } from '@coindcx/indicator-runtime';
 
 describe('Series ring buffer', () => {
   it('returns NaN for unfilled lookback', () => {

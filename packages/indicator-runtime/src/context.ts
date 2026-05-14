@@ -5,10 +5,9 @@
 import { Series, DEFAULT_SERIES_CAPACITY } from './series.js';
 import { QuotaError, RuntimeError } from './errors.js';
 
-const BUILTIN_SERIES_NAMES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4'];
+const BUILTIN_SERIES_NAMES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4'] as const;
 
-// Timeframe → millisecond duration. Used by security() to detect a closed higher-TF bar.
-const TF_DURATION_MS = {
+const TF_DURATION_MS: Record<string, number> = {
   '1m': 60_000,
   '3m': 180_000,
   '5m': 300_000,
@@ -25,8 +24,132 @@ const TF_DURATION_MS = {
   '1w': 604_800_000,
 };
 
-export function tfDurationMs(tf) {
+export function tfDurationMs(tf: string): number {
   return TF_DURATION_MS[tf] || 0;
+}
+
+export interface CandleLike {
+  openTime?: number;
+  time?: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface StrategyMarker {
+  time: number | null;
+  position?: string;
+  color?: string;
+  shape?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface ClosedTrade {
+  side: string;
+  entryPrice: number;
+  exitPrice: number;
+  entryBar: number;
+  exitBar: number;
+  qty: number;
+  pnl: number;
+  ret: number;
+  reason: string;
+}
+
+export interface StrategyPosition {
+  side: 'long' | 'short';
+  entryPrice: number;
+  entryBar: number;
+  qty: number;
+}
+
+export interface StrategyState {
+  initialCapital: number;
+  position: StrategyPosition | null;
+  trades: ClosedTrade[];
+  equity: number[];
+  equityTimes: (number | null)[];
+  markersBar: StrategyMarker[];
+  markersAll: StrategyMarker[];
+}
+
+export interface PlotSeriesOutput {
+  name: string;
+  kind: 'line' | 'histogram' | 'area';
+  opts: Record<string, unknown>;
+  values: number[];
+  times: (number | null)[];
+}
+
+export interface MarkerSeriesOutput {
+  name: string;
+  kind: 'marker';
+  opts: Record<string, unknown>;
+  markers: StrategyMarker[];
+}
+
+export interface HLineOutput {
+  name: string;
+  kind: 'hline';
+  price: number;
+  opts: Record<string, unknown>;
+}
+
+export interface BgColorSegment {
+  time: number | null;
+  color: string | null;
+  opacity?: number;
+  [key: string]: unknown;
+}
+
+export interface BgColorOutput {
+  name: string;
+  kind: 'bgcolor';
+  opts: Record<string, unknown>;
+  segments: BgColorSegment[];
+}
+
+export interface AlertEvent {
+  time: number | null;
+  message: string;
+  bar: number;
+}
+
+export interface AlertOutput {
+  name: string;
+  kind: 'alert';
+  opts: Record<string, unknown>;
+  events: AlertEvent[];
+}
+
+export type RuntimeOutput =
+  | PlotSeriesOutput
+  | MarkerSeriesOutput
+  | HLineOutput
+  | BgColorOutput
+  | AlertOutput;
+
+export interface StrategyStats {
+  initialCapital: number;
+  finalEquity: number;
+  totalPnl: number;
+  totalReturn: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  maxDrawdown: number;
+  openPosition: {
+    side: string;
+    entryPrice: number;
+    entryBar: number;
+    qty: number;
+  } | null;
 }
 
 const DEFAULTS = {
@@ -36,57 +159,130 @@ const DEFAULTS = {
   seriesCapacity: DEFAULT_SERIES_CAPACITY,
 };
 
-export function createContext(opts = {}) {
-  const capacity = opts.seriesCapacity || DEFAULTS.seriesCapacity;
+export interface CreateContextOptions {
+  nodeBudgetPerBar?: number;
+  liveBarBudgetMs?: number;
+  fullHistoryBudgetMs?: number;
+  seriesCapacity?: number;
+}
+
+export interface HtfSeriesBundle {
+  openTimes: Float64Array;
+  open: Float64Array;
+  high: Float64Array;
+  low: Float64Array;
+  close: Float64Array;
+  volume: Float64Array;
+  hl2: Float64Array;
+  hlc3: Float64Array;
+  ohlc4: Float64Array;
+}
+
+export type BuiltinSeriesKey = (typeof BUILTIN_SERIES_NAMES)[number];
+
+export interface ExecutionContext {
+  capacity: number;
+  nodeBudgetPerBar: number;
+  liveBarBudgetMs: number;
+  fullHistoryBudgetMs: number;
+  builtins: Record<BuiltinSeriesKey, Series>;
+  userSeries: Map<string, Series>;
+  inputs: Map<string, unknown>;
+  callState: WeakMap<object, unknown>;
+  nodeBudgetRemaining: number;
+  meta: { name: string | null; opts: Record<string, unknown>; kind: 'indicator' | 'strategy' };
+  strategy: StrategyState | null;
+  outputs: Map<string, RuntimeOutput>;
+  barEmissions: unknown[];
+  times: (number | null)[] | null;
+  barIndex: number;
+  htfData: Map<string, HtfSeriesBundle>;
+  resetForBar(barIndex: number): void;
+  tickNodeBudget(): void;
+  pushBar(candle: CandleLike): void;
+  resolve(name: string): Series | unknown | undefined;
+  assign(name: string, value: unknown): Series;
+  setInput(name: string, value: unknown): void;
+  emitPlot(
+    node: { line?: number; col?: number },
+    kind: 'line' | 'histogram' | 'area',
+    value: number,
+    opts: Record<string, unknown>,
+  ): void;
+  loadHtfData(byTf: Record<string, CandleLike[] | undefined> | null | undefined): void;
+  lookupHtfValue(tf: string, srcName: string): number;
+  initStrategy(opts: Record<string, unknown>): void;
+  strategyOrder(side: 'long' | 'short' | 'flat', condition: boolean, opts?: Record<string, unknown>): void;
+  _closePosition(price: number, time: number | null, opts?: Record<string, unknown>): void;
+  tickStrategyBar(): void;
+  strategyStats(): StrategyStats | null;
+  emitAlert(node: { line?: number; col?: number }, message: string, opts: Record<string, unknown>): void;
+  emitShape(node: { line?: number; col?: number }, cond: boolean, opts: Record<string, unknown>): void;
+  emitHLine(node: { line?: number; col?: number }, price: number, opts: Record<string, unknown>): void;
+  emitBgColor(
+    node: { line?: number; col?: number },
+    color: string | null,
+    opts: Record<string, unknown>,
+  ): void;
+  snapshotOutputs(): SerializedScriptOutput[];
+  snapshotDelta(prevSnapshot: Map<string, { markers?: number; events?: number }> | undefined): DeltaOutput[];
+  snapshotCounts(): Map<string, { markers?: number; events?: number }>;
+}
+
+export interface SerializedPoint {
+  time: number | null;
+  value: number;
+}
+
+export type SerializedScriptOutput =
+  | {
+      name: string;
+      kind: 'line' | 'histogram' | 'area';
+      opts: Record<string, unknown>;
+      data: SerializedPoint[];
+    }
+  | { name: string; kind: 'marker'; opts: Record<string, unknown>; markers: StrategyMarker[] }
+  | { name: string; kind: 'hline'; opts: Record<string, unknown>; price: number }
+  | { name: string; kind: 'bgcolor'; opts: Record<string, unknown>; segments: BgColorSegment[] }
+  | { name: string; kind: 'alert'; opts: Record<string, unknown>; events: AlertEvent[] }
+  | { name: string; kind: 'stats'; opts: Record<string, unknown>; stats: StrategyStats; trades: ClosedTrade[] };
+
+export type DeltaOutput =
+  | { name: string; kind: 'line' | 'histogram' | 'area'; point: SerializedPoint }
+  | { name: string; kind: 'marker'; markers: StrategyMarker[] }
+  | { name: string; kind: 'hline'; price: number }
+  | { name: string; kind: 'bgcolor'; segment: BgColorSegment }
+  | { name: string; kind: 'alert'; events: AlertEvent[] }
+  | { name: string; kind: 'stats'; stats: StrategyStats | null; trades: ClosedTrade[] };
+
+export function createContext(opts: CreateContextOptions = {}): ExecutionContext {
+  const capacity = opts.seriesCapacity ?? DEFAULTS.seriesCapacity;
   const builtins = Object.fromEntries(
     BUILTIN_SERIES_NAMES.map((name) => [name, new Series(capacity)]),
-  );
+  ) as Record<BuiltinSeriesKey, Series>;
 
-  return {
+  const ctx: ExecutionContext = {
     capacity,
-    nodeBudgetPerBar: opts.nodeBudgetPerBar || DEFAULTS.nodeBudgetPerBar,
-    liveBarBudgetMs: opts.liveBarBudgetMs || DEFAULTS.liveBarBudgetMs,
-    fullHistoryBudgetMs: opts.fullHistoryBudgetMs || DEFAULTS.fullHistoryBudgetMs,
+    nodeBudgetPerBar: opts.nodeBudgetPerBar ?? DEFAULTS.nodeBudgetPerBar,
+    liveBarBudgetMs: opts.liveBarBudgetMs ?? DEFAULTS.liveBarBudgetMs,
+    fullHistoryBudgetMs: opts.fullHistoryBudgetMs ?? DEFAULTS.fullHistoryBudgetMs,
 
-    // Built-in price/volume series — host pushes one value per bar before runBar().
     builtins,
 
-    // User-assigned named series (each binding becomes its own Series so `e9[1]` works).
     userSeries: new Map(),
-
-    // Inputs declared by the script and overridden via instance inputs.
     inputs: new Map(),
-
-    // Per-call-site stateful TA caches — keyed by Call AST node identity.
     callState: new WeakMap(),
-
-    // Quota counters.
     nodeBudgetRemaining: 0,
 
-    // Indicator/strategy metadata (name + opts + kind).
     meta: { name: null, opts: {}, kind: 'indicator' },
-
-    // Strategy state. Populated only when meta.kind === 'strategy'.
     strategy: null,
-
-    // Emitted outputs accumulated during full-history run.
-    outputs: new Map(), // outputName → { kind, opts, values, times }
-
-    // Per-bar emitted markers/hlines/bgcolors during a single bar execution.
+    outputs: new Map(),
     barEmissions: [],
-
-    // Time vector for the current run (host fills before iterating bars). Times are
-    // stored in UNIX seconds (matching the lightweight-charts time axis convention).
     times: null,
-
-    // Active bar index — set by the host before each runBar().
     barIndex: -1,
-
-    // Higher-timeframe data for security() lookups. Map<tf, { times: number[] (sec),
-    // open/high/low/close/volume: Float64Array, hl2/hlc3/ohlc4: Float64Array }>.
     htfData: new Map(),
 
-    resetForBar(barIndex) {
+    resetForBar(barIndex: number) {
       this.barIndex = barIndex;
       this.nodeBudgetRemaining = this.nodeBudgetPerBar;
       this.barEmissions = [];
@@ -95,14 +291,13 @@ export function createContext(opts = {}) {
     tickNodeBudget() {
       this.nodeBudgetRemaining -= 1;
       if (this.nodeBudgetRemaining < 0) {
-        throw new QuotaError(
-          `Per-bar AST node budget exhausted (${this.nodeBudgetPerBar})`,
-          { barIndex: this.barIndex },
-        );
+        throw new QuotaError(`Per-bar AST node budget exhausted (${this.nodeBudgetPerBar})`, {
+          barIndex: this.barIndex,
+        });
       }
     },
 
-    pushBar(candle) {
+    pushBar(candle: CandleLike) {
       const { open, high, low, close, volume } = candle;
       this.builtins.open.push(open);
       this.builtins.high.push(high);
@@ -114,17 +309,14 @@ export function createContext(opts = {}) {
       this.builtins.ohlc4.push((open + high + low + close) / 4);
     },
 
-    // Lookup a name during interpretation. Returns either a Series (built-in or user)
-    // or a primitive (number/string/bool) from inputs. Throws if unknown.
-    resolve(name) {
-      if (name in this.builtins) return this.builtins[name];
+    resolve(name: string) {
+      if (name in this.builtins) return this.builtins[name as BuiltinSeriesKey];
       if (this.userSeries.has(name)) return this.userSeries.get(name);
       if (this.inputs.has(name)) return this.inputs.get(name);
       return undefined;
     },
 
-    assign(name, value) {
-      // Promote any assigned numeric/scalar binding into a Series so `name[k]` works.
+    assign(name: string, value: unknown) {
       let s = this.userSeries.get(name);
       if (!s) {
         s = new Series(this.capacity);
@@ -141,17 +333,16 @@ export function createContext(opts = {}) {
                 ? value.get(0)
                 : NaN;
       s.push(num);
-      // Also expose the raw value of the latest bar through the same Series via get(0).
       return s;
     },
 
-    setInput(name, value) {
+    setInput(name: string, value: unknown) {
       this.inputs.set(name, value);
     },
 
     emitPlot(node, kind, value, opts) {
-      const outName = opts.title || `plot_${nodeKey(node)}`;
-      let out = this.outputs.get(outName);
+      const outName = (opts.title as string | undefined) || `plot_${nodeKey(node)}`;
+      let out = this.outputs.get(outName) as PlotSeriesOutput | undefined;
       if (!out) {
         out = {
           name: outName,
@@ -161,40 +352,32 @@ export function createContext(opts = {}) {
           times: [],
         };
         this.outputs.set(outName, out);
-      } else {
-        // The kind for a given output name is decided on first emission and pinned —
-        // changing it mid-script would invalidate the existing series handle on the
-        // main thread. Honour last-write-wins for styling only.
-        if (!sameOpts(out.opts, opts)) {
-          out.opts = { ...out.opts, ...opts };
-        }
+      } else if (!sameOpts(out.opts, opts)) {
+        out.opts = { ...out.opts, ...opts };
       }
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       out.values.push(value);
       out.times.push(t);
     },
 
-    // Pre-build sorted, deduped HTF series arrays (one entry per higher-TF bar) for
-    // each timeframe in `byTf`. Host supplies plain candle arrays the same shape as
-    // ChartManager.candleMap: { openTime, open, high, low, close, volume }.
     loadHtfData(byTf) {
       this.htfData.clear();
       if (!byTf || typeof byTf !== 'object') return;
       for (const [tf, candles] of Object.entries(byTf)) {
         if (!Array.isArray(candles) || candles.length === 0) continue;
-        // Sort & dedupe by openTime (host should pass clean data but be defensive).
         const sorted = candles
           .filter((c) => c && Number.isFinite(c.openTime))
           .slice()
-          .sort((a, b) => a.openTime - b.openTime);
-        const dedup = [];
+          .sort((a, b) => (a.openTime ?? 0) - (b.openTime ?? 0));
+        const dedup: CandleLike[] = [];
         let lastOt = -1;
         for (const c of sorted) {
-          if (c.openTime === lastOt) {
+          const ot = c.openTime ?? 0;
+          if (ot === lastOt) {
             dedup[dedup.length - 1] = c;
           } else {
             dedup.push(c);
-            lastOt = c.openTime;
+            lastOt = ot;
           }
         }
         const n = dedup.length;
@@ -208,8 +391,8 @@ export function createContext(opts = {}) {
         const hlc3 = new Float64Array(n);
         const ohlc4 = new Float64Array(n);
         for (let i = 0; i < n; i++) {
-          const c = dedup[i];
-          times[i] = c.openTime;
+          const c = dedup[i]!;
+          times[i] = c.openTime ?? 0;
           opens[i] = c.open;
           highs[i] = c.high;
           lows[i] = c.low;
@@ -233,28 +416,23 @@ export function createContext(opts = {}) {
       }
     },
 
-    // Find the most recently CLOSED higher-TF bar at or before the current lower-TF
-    // bar's open-time. Pine's no-lookahead semantic: returns the previous bar's source
-    // value while the higher-TF candle covering current time is still forming.
-    // Returns NaN if no closed bar is available yet.
-    lookupHtfValue(tf, srcName) {
+    lookupHtfValue(tf: string, srcName: string): number {
       const data = this.htfData.get(tf);
       if (!data) return NaN;
-      const arr = data[srcName];
-      if (!arr) return NaN;
+      const arr = data[srcName as keyof HtfSeriesBundle] as Float64Array | undefined;
+      if (!arr || !(arr instanceof Float64Array)) return NaN;
       const currentTimeSec = this.times ? this.times[this.barIndex] : null;
       if (!Number.isFinite(currentTimeSec)) return NaN;
-      const currentTimeMs = currentTimeSec * 1000;
+      const currentTimeMs = Number(currentTimeSec) * 1000;
       const durMs = tfDurationMs(tf);
       if (durMs <= 0) return NaN;
-      // Binary search for the largest openTime H with H + durMs <= currentTimeMs.
       const ot = data.openTimes;
       let lo = 0;
       let hi = ot.length - 1;
       let foundIdx = -1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        if (ot[mid] + durMs <= currentTimeMs) {
+        if (ot[mid]! + durMs <= currentTimeMs) {
           foundIdx = mid;
           lo = mid + 1;
         } else {
@@ -262,45 +440,42 @@ export function createContext(opts = {}) {
         }
       }
       if (foundIdx < 0) return NaN;
-      return arr[foundIdx];
+      return arr[foundIdx]!;
     },
 
     initStrategy(opts) {
       const initialCapital = Number(opts?.initial_capital);
       this.strategy = {
         initialCapital: Number.isFinite(initialCapital) && initialCapital > 0 ? initialCapital : 10_000,
-        position: null, // { side: 'long'|'short', entryPrice, entryBar, qty }
-        trades: [], // closed trades, in order
-        equity: [], // per-bar equity (initial + realized + unrealized) — one entry per bar
-        equityTimes: [], // matching time vector
-        markersBar: [], // pending markers to attach this bar (cleared at end of bar)
-        markersAll: [], // all entry/exit markers (for snapshotOutputs)
+        position: null,
+        trades: [],
+        equity: [],
+        equityTimes: [],
+        markersBar: [],
+        markersAll: [],
       };
     },
 
-    // Called by entry() / exit() builtins during runBar.
     strategyOrder(side, condition, opts) {
       if (this.meta.kind !== 'strategy' || !this.strategy) {
-        throw new RuntimeError(
-          'entry()/exit() may only be called from a strategy(...) script',
-          { barIndex: this.barIndex },
-        );
+        throw new RuntimeError('entry()/exit() may only be called from a strategy(...) script', {
+          barIndex: this.barIndex,
+        });
       }
       if (!condition) return;
       const close = this.builtins.close.get(0);
       if (!Number.isFinite(close)) return;
       const s = this.strategy;
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       if (side === 'flat') {
         if (!s.position) return;
         this._closePosition(close, t, opts);
         return;
       }
-      // side is 'long' or 'short'; auto-reverse if a contrary position is open.
       if (s.position && s.position.side !== side) {
         this._closePosition(close, t, { reason: 'reverse' });
       }
-      if (s.position && s.position.side === side) return; // no pyramiding
+      if (s.position && s.position.side === side) return;
       const qty = Math.max(0, Number(opts?.qty) || 1);
       s.position = { side, entryPrice: close, entryBar: this.barIndex, qty };
       s.markersBar.push({
@@ -312,14 +487,15 @@ export function createContext(opts = {}) {
       });
     },
 
-    _closePosition(price, time, opts) {
-      const s = this.strategy;
+    _closePosition(price: number, time: number | null, opts?: Record<string, unknown>) {
+      const s = this.strategy!;
       if (!s.position) return;
       const pnl =
         s.position.side === 'long'
           ? (price - s.position.entryPrice) * s.position.qty
           : (s.position.entryPrice - price) * s.position.qty;
-      const ret = s.position.entryPrice === 0 ? 0 : pnl / (s.position.entryPrice * s.position.qty);
+      const ret =
+        s.position.entryPrice === 0 ? 0 : pnl / (s.position.entryPrice * s.position.qty);
       s.trades.push({
         side: s.position.side,
         entryPrice: s.position.entryPrice,
@@ -329,7 +505,7 @@ export function createContext(opts = {}) {
         qty: s.position.qty,
         pnl,
         ret,
-        reason: opts?.reason || 'exit',
+        reason: (opts?.reason as string) || 'exit',
       });
       s.markersBar.push({
         time,
@@ -341,12 +517,10 @@ export function createContext(opts = {}) {
       s.position = null;
     },
 
-    // Called once per bar after the script statements run.
     tickStrategyBar() {
       const s = this.strategy;
       if (!s) return;
       const close = this.builtins.close.get(0);
-      // Equity = initial + realized PnL + unrealized PnL of open position.
       let realized = 0;
       for (const t of s.trades) realized += t.pnl;
       let unrealized = 0;
@@ -356,10 +530,9 @@ export function createContext(opts = {}) {
             ? (close - s.position.entryPrice) * s.position.qty
             : (s.position.entryPrice - close) * s.position.qty;
       }
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       s.equity.push(s.initialCapital + realized + unrealized);
       s.equityTimes.push(t);
-      // Flush bar markers.
       if (s.markersBar.length) {
         for (const m of s.markersBar) s.markersAll.push(m);
         s.markersBar = [];
@@ -384,7 +557,7 @@ export function createContext(opts = {}) {
         }
       }
       const totalPnl = winSum + lossSum;
-      const finalEquity = s.equity.length ? s.equity[s.equity.length - 1] : s.initialCapital;
+      const finalEquity = s.equity.length ? s.equity[s.equity.length - 1]! : s.initialCapital;
       const totalReturn = (finalEquity - s.initialCapital) / s.initialCapital;
       let peak = s.initialCapital;
       let maxDD = 0;
@@ -419,70 +592,72 @@ export function createContext(opts = {}) {
 
     emitAlert(node, message, opts) {
       const outName = `alert_${nodeKey(node)}`;
-      let out = this.outputs.get(outName);
+      let out = this.outputs.get(outName) as AlertOutput | undefined;
       if (!out) {
         out = { name: outName, kind: 'alert', opts: { ...opts }, events: [] };
         this.outputs.set(outName, out);
       }
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       out.events.push({ time: t, message, bar: this.barIndex });
     },
 
     emitShape(node, cond, opts) {
       if (!cond) return;
-      const outName = opts.title || `shape_${nodeKey(node)}`;
-      let out = this.outputs.get(outName);
+      const outName = (opts.title as string | undefined) || `shape_${nodeKey(node)}`;
+      let out = this.outputs.get(outName) as MarkerSeriesOutput | undefined;
       if (!out) {
         out = { name: outName, kind: 'marker', opts: { ...opts }, markers: [] };
         this.outputs.set(outName, out);
       }
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       out.markers.push({ time: t, ...opts });
     },
 
     emitHLine(node, price, opts) {
-      const outName = opts.title || `hline_${nodeKey(node)}`;
-      // Last-write-wins so the price reflects the latest bar.
+      const outName = (opts.title as string | undefined) || `hline_${nodeKey(node)}`;
       this.outputs.set(outName, { name: outName, kind: 'hline', price, opts: { ...opts } });
     },
 
     emitBgColor(node, color, opts) {
       const outName = `bgcolor_${nodeKey(node)}`;
-      let out = this.outputs.get(outName);
+      let out = this.outputs.get(outName) as BgColorOutput | undefined;
       if (!out) {
         out = { name: outName, kind: 'bgcolor', opts: { ...opts }, segments: [] };
         this.outputs.set(outName, out);
       }
-      const t = this.times ? this.times[this.barIndex] : null;
+      const t = this.times ? this.times[this.barIndex]! : null;
       out.segments.push({ time: t, color, ...opts });
     },
 
-    // Final output snapshot suitable for postMessage. Series-backed plots are returned
-    // as plain arrays (Float64Array would also work but the renderer expects {time,value}).
-    snapshotOutputs() {
-      const out = [];
+    snapshotOutputs(): SerializedScriptOutput[] {
+      const out: SerializedScriptOutput[] = [];
       for (const o of this.outputs.values()) {
         if (o.kind === 'line' || o.kind === 'histogram' || o.kind === 'area') {
+          const po = o as PlotSeriesOutput;
           out.push({
-            name: o.name,
-            kind: o.kind,
-            opts: o.opts,
-            data: o.values.map((v, i) => ({ time: o.times[i], value: v })),
+            name: po.name,
+            kind: po.kind,
+            opts: po.opts,
+            data: po.values.map((v, i) => ({ time: po.times[i]!, value: v })),
           });
         } else if (o.kind === 'marker') {
-          out.push({ name: o.name, kind: 'marker', opts: o.opts, markers: o.markers });
+          const mo = o as MarkerSeriesOutput;
+          out.push({ name: mo.name, kind: 'marker', opts: mo.opts, markers: mo.markers });
         } else if (o.kind === 'hline') {
-          out.push({ name: o.name, kind: 'hline', opts: o.opts, price: o.price });
+          const ho = o as HLineOutput;
+          out.push({ name: ho.name, kind: 'hline', opts: ho.opts, price: ho.price });
         } else if (o.kind === 'bgcolor') {
-          out.push({ name: o.name, kind: 'bgcolor', opts: o.opts, segments: o.segments });
+          const bo = o as BgColorOutput;
+          out.push({ name: bo.name, kind: 'bgcolor', opts: bo.opts, segments: bo.segments });
         } else if (o.kind === 'alert') {
-          out.push({ name: o.name, kind: 'alert', opts: o.opts, events: o.events });
+          const ao = o as AlertOutput;
+          out.push({ name: ao.name, kind: 'alert', opts: ao.opts, events: ao.events });
         }
       }
       if (this.meta.kind === 'strategy' && this.strategy) {
-        // Equity curve as a line in pane 1 (sub-pane).
-        const eqData = this.strategy.equity.map((v, i) => ({
-          time: this.strategy.equityTimes[i],
+        const strat = this.strategy;
+        const eqData = strat.equity.map((v, i) => ({
+          time: strat.equityTimes[i]!,
           value: v,
         }));
         out.push({
@@ -501,22 +676,20 @@ export function createContext(opts = {}) {
           name: '__strategy_stats',
           kind: 'stats',
           opts: {},
-          stats: this.strategyStats(),
+          stats: this.strategyStats()!,
           trades: this.strategy.trades,
         });
       }
       return out;
     },
 
-    // Per-bar delta after the host has called runBar(): which outputs gained a new sample,
-    // which markers were added. Used for live-bar updates.
-    snapshotDelta(prevSnapshot) {
-      const deltas = [];
-      const t = this.times ? this.times[this.barIndex] : null;
+    snapshotDelta(prevSnapshot): DeltaOutput[] {
+      const deltas: DeltaOutput[] = [];
+      const t = this.times ? this.times[this.barIndex]! : null;
       if (this.meta.kind === 'strategy' && this.strategy) {
         const lastEq = this.strategy.equity[this.strategy.equity.length - 1];
         if (Number.isFinite(lastEq)) {
-          deltas.push({ name: '__strategy_equity', kind: 'line', point: { time: t, value: lastEq } });
+          deltas.push({ name: '__strategy_equity', kind: 'line', point: { time: t, value: lastEq! } });
         }
         const prevMarkers = prevSnapshot?.get('__strategy_markers')?.markers ?? 0;
         const totalMarkers = this.strategy.markersAll.length;
@@ -536,31 +709,36 @@ export function createContext(opts = {}) {
       }
       for (const o of this.outputs.values()) {
         if (o.kind === 'line' || o.kind === 'histogram' || o.kind === 'area') {
-          const last = o.values[o.values.length - 1];
-          deltas.push({ name: o.name, kind: o.kind, point: { time: t, value: last } });
+          const po = o as PlotSeriesOutput;
+          const last = po.values[po.values.length - 1];
+          deltas.push({ name: po.name, kind: po.kind, point: { time: t, value: last! } });
         } else if (o.kind === 'marker') {
-          const prev = prevSnapshot?.get(o.name)?.markers ?? 0;
-          const next = o.markers.length;
+          const mo = o as MarkerSeriesOutput;
+          const prev = prevSnapshot?.get(mo.name)?.markers ?? 0;
+          const next = mo.markers.length;
           if (next > prev) {
             deltas.push({
-              name: o.name,
+              name: mo.name,
               kind: 'marker',
-              markers: o.markers.slice(prev),
+              markers: mo.markers.slice(prev),
             });
           }
         } else if (o.kind === 'hline') {
-          deltas.push({ name: o.name, kind: 'hline', price: o.price });
+          const ho = o as HLineOutput;
+          deltas.push({ name: ho.name, kind: 'hline', price: ho.price });
         } else if (o.kind === 'bgcolor') {
-          const lastSeg = o.segments[o.segments.length - 1];
-          deltas.push({ name: o.name, kind: 'bgcolor', segment: lastSeg });
+          const bo = o as BgColorOutput;
+          const lastSeg = bo.segments[bo.segments.length - 1];
+          deltas.push({ name: bo.name, kind: 'bgcolor', segment: lastSeg! });
         } else if (o.kind === 'alert') {
-          const prev = prevSnapshot?.get(o.name)?.events ?? 0;
-          const next = o.events.length;
+          const ao = o as AlertOutput;
+          const prev = prevSnapshot?.get(ao.name)?.events ?? 0;
+          const next = ao.events.length;
           if (next > prev) {
             deltas.push({
-              name: o.name,
+              name: ao.name,
               kind: 'alert',
-              events: o.events.slice(prev),
+              events: ao.events.slice(prev),
             });
           }
         }
@@ -569,10 +747,10 @@ export function createContext(opts = {}) {
     },
 
     snapshotCounts() {
-      const m = new Map();
+      const m = new Map<string, { markers?: number; events?: number }>();
       for (const o of this.outputs.values()) {
-        if (o.kind === 'marker') m.set(o.name, { markers: o.markers.length });
-        else if (o.kind === 'alert') m.set(o.name, { events: o.events.length });
+        if (o.kind === 'marker') m.set(o.name, { markers: (o as MarkerSeriesOutput).markers.length });
+        else if (o.kind === 'alert') m.set(o.name, { events: (o as AlertOutput).events.length });
       }
       if (this.meta.kind === 'strategy' && this.strategy) {
         m.set('__strategy_markers', { markers: this.strategy.markersAll.length });
@@ -580,14 +758,15 @@ export function createContext(opts = {}) {
       return m;
     },
   };
+
+  return ctx;
 }
 
-function nodeKey(node) {
-  // Use line/col as a stable identity for a call site within a single AST.
+function nodeKey(node: { line?: number; col?: number }): string {
   return `${node.line ?? 0}_${node.col ?? 0}`;
 }
 
-function sameOpts(a, b) {
+function sameOpts(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const ka = Object.keys(a);
   const kb = Object.keys(b);
   if (ka.length !== kb.length) return false;

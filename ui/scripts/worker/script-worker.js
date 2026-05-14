@@ -13,10 +13,7 @@
 //
 // Any thrown error during compile/run is posted as { kind:'error', instanceId, error }.
 
-import { tokenize } from '../runtime/lexer.js';
-import { parse } from '../runtime/parser.js';
-import { prepare, runBar } from '../runtime/interpreter.js';
-import { createContext } from '../runtime/context.js';
+import { tokenize, parse, prepare, runBar, createContext } from '@coindcx/indicator-runtime';
 import { MSG } from './protocol.js';
 
 const runtimes = new Map();

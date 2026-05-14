@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — JS module
-import { tokenize } from '../../ui/scripts/runtime/lexer.js';
-// @ts-expect-error — JS module
-import { parse } from '../../ui/scripts/runtime/parser.js';
-// @ts-expect-error — JS module
-import { ParseError } from '../../ui/scripts/runtime/errors.js';
+import { ParseError, parse, tokenize } from '@coindcx/indicator-runtime';
 
 const ast = (src: string) => parse(tokenize(src));
 

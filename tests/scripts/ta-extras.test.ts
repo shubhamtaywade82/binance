@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — JS module
-import { tokenize } from '../../ui/scripts/runtime/lexer.js';
-// @ts-expect-error — JS module
-import { parse } from '../../ui/scripts/runtime/parser.js';
-// @ts-expect-error — JS module
-import { prepare, runBar } from '../../ui/scripts/runtime/interpreter.js';
-// @ts-expect-error — JS module
-import { createContext } from '../../ui/scripts/runtime/context.js';
+import { createContext, parse, prepare, runBar, tokenize } from '@coindcx/indicator-runtime';
 import type { Candle } from '../../src/types';
 
 const mkCandles = (closes: number[], vols?: number[]): Candle[] =>
