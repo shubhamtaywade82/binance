@@ -132,6 +132,11 @@ const LIQUIDATION_MARKERS_STORAGE_KEY = 'qt_chart_liquidations';
 const OI_REGIME_STORAGE_KEY = 'qt_chart_oi_regime';
 const VWAP_STORAGE_KEY = 'qt_chart_vwap';
 const RSI_STORAGE_KEY = 'qt_chart_rsi';
+const SPREAD_HEATMAP_STORAGE_KEY = 'qt_chart_spread_heatmap';
+const TFI_STORAGE_KEY = 'qt_chart_tfi';
+const DEPTH_PRESSURE_STORAGE_KEY = 'qt_chart_depth_pressure';
+const OBI_TINT_STORAGE_KEY = 'qt_chart_obi_tint';
+const MICRO_CHART_STORAGE_KEY = 'qt_chart_micro';
 
 /** Persisted chart timeframe (must match `.tf-btn` data-tf). */
 const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
@@ -265,6 +270,23 @@ export class ChartManager {
     /** Funding rate axis label. */
     this._fundingPriceLine = null;
     this._lastFunding = null;
+    /** Spread heatmap on forming volume bar. */
+    this._currentSpreadBps = null;
+    this._spreadHeatmapEnabled = readStoredIndicatorOn(SPREAD_HEATMAP_STORAGE_KEY, false);
+    /** TFI histogram lane. */
+    this._tfiSeries = null;
+    this._tfiEnabled = readStoredIndicatorOn(TFI_STORAGE_KEY, false);
+    this._tfiBarMap = new Map();
+    /** Depth pressure zone line. */
+    this._depthPressureEnabled = readStoredIndicatorOn(DEPTH_PRESSURE_STORAGE_KEY, false);
+    this._lastDepthPressure = null;
+    /** OBI-tinted candle wick/border. */
+    this._obiTintEnabled = readStoredIndicatorOn(OBI_TINT_STORAGE_KEY, false);
+    this._currentObi = null;
+    /** Micro-candle sub-chart. */
+    this._microChart = null;
+    this._microCandleSeries = null;
+    this._microEnabled = readStoredIndicatorOn(MICRO_CHART_STORAGE_KEY, false);
   }
 
   _readSmcOverlayEnabled() {
@@ -649,8 +671,14 @@ export class ChartManager {
   _volumeBarColor(candleRow) {
     const up = this._volumeColorUp;
     const down = this._volumeColorDown;
-    if (!up || !down) return candleRow.close >= candleRow.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)';
-    return candleRow.close >= candleRow.open ? up : down;
+    const base = (!up || !down)
+      ? (candleRow.close >= candleRow.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)')
+      : (candleRow.close >= candleRow.open ? up : down);
+    if (this._spreadHeatmapEnabled && this._currentSpreadBps != null && this._currentSpreadBps > 0.5) {
+      if (this._currentSpreadBps > 2) return 'rgba(255,152,0,0.7)';
+      return 'rgba(255,235,59,0.5)';
+    }
+    return base;
   }
 
   /**
@@ -1163,6 +1191,166 @@ export class ChartManager {
     });
   }
 
+  // ── Feature 22.5: Spread Heatmap ────────────────────────────────────
+
+  setCurrentSpread(spreadBps) {
+    this._currentSpreadBps = Number.isFinite(spreadBps) ? spreadBps : null;
+  }
+
+  // ── Feature 22.6: TFI Lane ─────────────────────────────────────────
+
+  setTfiSnapshot(tfi5s) {
+    if (!this._tfiEnabled || !this._tfiSeries || !tfi5s) return;
+    const t = this._latestCandleTimeSec();
+    if (!t) return;
+    const tfi = Number(tfi5s.tfi);
+    if (!Number.isFinite(tfi)) return;
+    let color = 'rgba(128,128,128,0.3)';
+    if (tfi > 0.3) color = 'rgba(0,200,220,0.6)';
+    else if (tfi < -0.3) color = 'rgba(255,160,0,0.6)';
+    this._tfiBarMap.set(t, { time: t, value: tfi, color });
+    try { this._tfiSeries.update({ time: t, value: tfi, color }); } catch { /* ignore */ }
+  }
+
+  // ── Feature 22.7: Depth Pressure Zones ─────────────────────────────
+
+  setDepthPressure(dp) {
+    this._lastDepthPressure = dp ?? null;
+    this._syncDepthPressureZones();
+  }
+
+  _syncDepthPressureZones() {
+    if (!this._partialLinesPrimitive || !this._depthPressureEnabled || !this._lastDepthPressure) {
+      return;
+    }
+    const dp = this._lastDepthPressure.depthPressure;
+    if (!Number.isFinite(dp) || Math.abs(dp) < 0.1) {
+      this._partialLinesPrimitive.removeLine('dp-zone');
+      return;
+    }
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) {
+      this._partialLinesPrimitive.removeLine('dp-zone');
+      return;
+    }
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    const alpha = Math.min(0.6, Math.abs(dp) * 0.5);
+    const isBidDominant = dp > 0;
+    const offset = anchorPrice * 0.002 * (isBidDominant ? -1 : 1);
+    const color = isBidDominant
+      ? `rgba(0,200,220,${alpha.toFixed(2)})`
+      : `rgba(255,160,0,${alpha.toFixed(2)})`;
+    const label = isBidDominant
+      ? `▲BID ${(dp * 100).toFixed(0)}%`
+      : `▼ASK ${(Math.abs(dp) * 100).toFixed(0)}%`;
+    this._partialLinesPrimitive.setLine('dp-zone', {
+      startTimeSec: startTime,
+      price: anchorPrice + offset,
+      color,
+      dash: [1, 4],
+      title: label,
+      axisLabelColor: color,
+    });
+  }
+
+  // ── Feature 22.8: OBI-Tinted Candle Borders ────────────────────────
+
+  setObi(obi) {
+    this._currentObi = Number.isFinite(obi) ? obi : null;
+    this._syncObiTint();
+  }
+
+  _syncObiTint() {
+    if (!this.candleSeries) return;
+    if (!this._obiTintEnabled || this._currentObi == null || Math.abs(this._currentObi) < 0.15) {
+      this._restoreDefaultWickColors();
+      return;
+    }
+    const intensity = Math.min(1, Math.abs(this._currentObi));
+    const alpha = (0.3 + intensity * 0.5).toFixed(2);
+    if (this._currentObi > 0) {
+      this.candleSeries.applyOptions({
+        wickUpColor: `rgba(0,200,220,${alpha})`,
+        wickDownColor: `rgba(0,200,220,${alpha})`,
+        borderUpColor: `rgba(0,200,220,${alpha})`,
+        borderDownColor: `rgba(0,200,220,${alpha})`,
+      });
+    } else {
+      this.candleSeries.applyOptions({
+        wickUpColor: `rgba(255,160,0,${alpha})`,
+        wickDownColor: `rgba(255,160,0,${alpha})`,
+        borderUpColor: `rgba(255,160,0,${alpha})`,
+        borderDownColor: `rgba(255,160,0,${alpha})`,
+      });
+    }
+  }
+
+  _restoreDefaultWickColors() {
+    if (!this.candleSeries) return;
+    const themeId = readStoredCandleThemeId();
+    const theme = getCandleTheme(themeId);
+    if (theme?.candle) {
+      this.candleSeries.applyOptions({
+        wickUpColor: theme.candle.wickUpColor,
+        wickDownColor: theme.candle.wickDownColor,
+        borderUpColor: theme.candle.borderUpColor,
+        borderDownColor: theme.candle.borderDownColor,
+      });
+    }
+  }
+
+  // ── Feature 22.12: Micro-Candle Sub-Chart ──────────────────────────
+
+  _initMicroChart() {
+    const container = document.getElementById('micro-chart-container');
+    if (!container) return;
+    container.style.display = this._microEnabled ? '' : 'none';
+    if (this._microChart) return;
+    this._microChart = createChart(container, {
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: COLORS.text, fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
+      grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5 },
+      crosshair: { mode: 0 },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      handleScale: { mouseWheel: true, pinch: true },
+      height: 100,
+      width: container.clientWidth,
+    });
+    this._microCandleSeries = this._microChart.addCandlestickSeries({
+      upColor: 'rgba(0,200,220,0.6)',
+      downColor: 'rgba(255,160,0,0.6)',
+      wickUpColor: 'rgba(0,200,220,0.4)',
+      wickDownColor: 'rgba(255,160,0,0.4)',
+      borderUpColor: 'rgba(0,200,220,0.6)',
+      borderDownColor: 'rgba(255,160,0,0.6)',
+      lastValueVisible: true,
+      priceLineVisible: false,
+    });
+    if (this._resizeObs) this._resizeObs.observe(container);
+  }
+
+  setMicroBars(bars) {
+    if (!this._microEnabled || !this._microCandleSeries || !Array.isArray(bars) || bars.length === 0) return;
+    const data = bars
+      .filter(b => Number.isFinite(b.openTime) && Number.isFinite(b.open))
+      .map(b => ({
+        time: Math.floor(b.openTime / 1000),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      }))
+      .sort((a, b) => a.time - b.time);
+    const deduped = [];
+    let prevT = -Infinity;
+    for (const d of data) {
+      if (d.time === prevT) deduped[deduped.length - 1] = d;
+      else { deduped.push(d); prevT = d.time; }
+    }
+    try { this._microCandleSeries.setData(deduped); } catch (e) { console.warn('[chart] micro setData', e); }
+  }
+
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
@@ -1459,6 +1647,21 @@ export class ChartManager {
     this._rsiSeries.createPriceLine({ price: 30, color: 'rgba(0,200,220,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
     this._rsiSeries.createPriceLine({ price: 50, color: 'rgba(255,255,255,0.08)', lineWidth: 1, lineStyle: LineStyle.Dotted, lineVisible: true, axisLabelVisible: false });
 
+    this._tfiSeries = this.chart.addHistogramSeries({
+      priceScaleId: 'tfi',
+      base: 0,
+      priceFormat: { type: 'custom', formatter: (v) => v.toFixed(2) },
+      lastValueVisible: false,
+      visible: this._tfiEnabled,
+    });
+    this.chart.priceScale('tfi').applyOptions({
+      scaleMargins: { top: 0.72, bottom: 0.26 },
+      borderVisible: false,
+      visible: false,
+    });
+
+    this._initMicroChart();
+
     this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
     this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
 
@@ -1591,6 +1794,60 @@ export class ChartManager {
       });
     }
 
+    const spreadToggle = document.getElementById('toggle-spread-heatmap');
+    if (spreadToggle instanceof HTMLInputElement) {
+      spreadToggle.checked = this._spreadHeatmapEnabled;
+      spreadToggle.addEventListener('change', () => {
+        this._spreadHeatmapEnabled = spreadToggle.checked;
+        storeIndicatorOn(SPREAD_HEATMAP_STORAGE_KEY, this._spreadHeatmapEnabled);
+      });
+    }
+
+    const tfiToggle = document.getElementById('toggle-tfi');
+    if (tfiToggle instanceof HTMLInputElement) {
+      tfiToggle.checked = this._tfiEnabled;
+      tfiToggle.addEventListener('change', () => {
+        this._tfiEnabled = tfiToggle.checked;
+        storeIndicatorOn(TFI_STORAGE_KEY, this._tfiEnabled);
+        this._tfiSeries.applyOptions({ visible: this._tfiEnabled });
+      });
+    }
+
+    const dpToggle = document.getElementById('toggle-depth-pressure');
+    if (dpToggle instanceof HTMLInputElement) {
+      dpToggle.checked = this._depthPressureEnabled;
+      dpToggle.addEventListener('change', () => {
+        this._depthPressureEnabled = dpToggle.checked;
+        storeIndicatorOn(DEPTH_PRESSURE_STORAGE_KEY, this._depthPressureEnabled);
+        if (!this._depthPressureEnabled) this._partialLinesPrimitive?.removeLine('dp-zone');
+        else this._syncDepthPressureZones();
+      });
+    }
+
+    const obiToggle = document.getElementById('toggle-obi-tint');
+    if (obiToggle instanceof HTMLInputElement) {
+      obiToggle.checked = this._obiTintEnabled;
+      obiToggle.addEventListener('change', () => {
+        this._obiTintEnabled = obiToggle.checked;
+        storeIndicatorOn(OBI_TINT_STORAGE_KEY, this._obiTintEnabled);
+        if (!this._obiTintEnabled) this._restoreDefaultWickColors();
+        else this._syncObiTint();
+      });
+    }
+
+    const microToggle = document.getElementById('toggle-micro');
+    if (microToggle instanceof HTMLInputElement) {
+      microToggle.checked = this._microEnabled;
+      microToggle.addEventListener('change', () => {
+        this._microEnabled = microToggle.checked;
+        storeIndicatorOn(MICRO_CHART_STORAGE_KEY, this._microEnabled);
+        const mc = document.getElementById('micro-chart-container');
+        if (mc) mc.style.display = this._microEnabled ? '' : 'none';
+        if (this._microEnabled) this._initMicroChart();
+        if (this._microChart) this._microChart.applyOptions({ width: mc?.clientWidth ?? 0 });
+      });
+    }
+
     const signalHudEl = document.getElementById('chart-signal-hud');
     if (signalHudEl) {
       signalHudEl.addEventListener('toggle', (e) => {
@@ -1671,6 +1928,7 @@ export class ChartManager {
     this.stSeries.setData([]);
     this._vwapSeries?.setData([]);
     this._rsiSeries?.setData([]);
+    this._tfiSeries?.setData([]);
   }
 
   _maybeRequestHistory(logicalRange) {
@@ -1771,6 +2029,8 @@ export class ChartManager {
   _handleResize() {
     const c = document.getElementById(this.containerId);
     if (c) this.chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
+    const mc = document.getElementById('micro-chart-container');
+    if (mc && this._microChart) this._microChart.applyOptions({ width: mc.clientWidth });
   }
 
   /**
@@ -1913,6 +2173,10 @@ export class ChartManager {
     this._lastMarkPrice = null;
     this._lastFunding = null;
     this._oiRegime = null;
+    this._tfiBarMap?.clear();
+    this._lastDepthPressure = null;
+    this._currentObi = null;
+    this._microCandleSeries?.setData([]);
     if (this._oiRegimePriceLine && this.candleSeries) {
       try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
       this._oiRegimePriceLine = null;
@@ -2117,6 +2381,9 @@ export class ChartManager {
     this._syncMarkLine();
     this._syncOiRegimeOverlay();
     this._syncFundingOverlay();
+    this._tfiBarMap.clear();
+    this._tfiSeries?.setData([]);
+    this._syncDepthPressureZones();
   }
 
   _computeSessionVwap(candles) {

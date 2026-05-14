@@ -2171,7 +2171,7 @@ is forwarding specific fields from `ui/main.js` to `ui/chart.js` and rendering t
 | | |
 |---|---|
 | **What** | Tint volume histogram bars by bid-ask spread width. Tight spread = normal bar color. Wide spread = yellow/orange tint. Highlights bars where liquidity was thin — slippage risk zones. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2206,7 +2206,7 @@ is forwarding specific fields from `ui/main.js` to `ui/chart.js` and rendering t
 | | |
 |---|---|
 | **What** | A thin horizontal color strip between the candles and volume histogram, showing real-time trade flow imbalance. Cyan = strong buying, orange = strong selling, gray = neutral. Like a condensed footprint chart. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2249,7 +2249,7 @@ is forwarding specific fields from `ui/main.js` to `ui/chart.js` and rendering t
 | | |
 |---|---|
 | **What** | Faint shaded rectangles above and/or below the current price showing directional book pressure. When ask-side depth dominates, shade above price (resistance pressure). When bid-side dominates, shade below (support pressure). Opacity scales with pressure magnitude. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2283,7 +2283,7 @@ is forwarding specific fields from `ui/main.js` to `ui/chart.js` and rendering t
 | | |
 |---|---|
 | **What** | Tint the forming candle's border/wick color based on order book imbalance (OBI). When the book is bid-heavy, candle border becomes slightly cyan. When ask-heavy, slightly orange. Provides at-a-glance context about book state during each bar. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2461,7 +2461,7 @@ exists only in server-side trackers.
 | | |
 |---|---|
 | **What** | A small candlestick sub-panel below the main chart showing 1-second or 5-second micro-candles. Gives a scalper's view of price action within each larger timeframe bar. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2517,9 +2517,9 @@ Recommended implementation order based on value-to-effort ratio:
 | 4 | ~~22.4 RSI Sub-Panel~~ | 1 | Medium | High |
 | 5 | ~~22.10 OI Divergence Overlay~~ | 3 | Medium | Very High |
 | 6 | ~~22.9 Funding Rate Gauge~~ | 3 | Medium | High |
-| 7 | 22.6 TFI Lane | 2 | Medium | Medium |
-| 8 | 22.5 Spread Heatmap | 2 | Low | Medium |
+| 7 | ~~22.6 TFI Lane~~ | 2 | Medium | Medium |
+| 8 | ~~22.5 Spread Heatmap~~ | 2 | Low | Medium |
 | 9 | ~~22.11 Volume Profile (VPVR)~~ | 3 | High | High |
-| 10 | 22.7 Depth Pressure Zones | 2 | Medium | Medium |
-| 11 | 22.8 OBI-Tinted Candles | 2 | Medium | Low |
-| 12 | 22.12 Micro-Candle Sub-Chart | 3 | High | Medium |
+| 10 | ~~22.7 Depth Pressure Zones~~ | 2 | Medium | Medium |
+| 11 | ~~22.8 OBI-Tinted Candles~~ | 2 | Medium | Low |
+| 12 | ~~22.12 Micro-Candle Sub-Chart~~ | 3 | High | Medium |

@@ -423,6 +423,11 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       msPanel.update(msg);
       gauge.update(msPanel.getObiRatio());
+      chart.setCurrentSpread(msg.spreadBps);
+      chart.setTfiSnapshot(msg.tfi5s);
+      chart.setDepthPressure(msg.depthPressure10);
+      chart.setObi(msg.weightedObi5?.weightedObi);
+      chart.setMicroBars(msg.microBars5s);
       break;
     }
 
