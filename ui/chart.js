@@ -128,6 +128,8 @@ const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
 const KNN_ARCHITECTURE_STORAGE_KEY = 'qt_knn_chart_overlay';
+const LIQUIDATION_MARKERS_STORAGE_KEY = 'qt_chart_liquidations';
+const OI_REGIME_STORAGE_KEY = 'qt_chart_oi_regime';
 
 /** Persisted chart timeframe (must match `.tf-btn` data-tf). */
 const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
@@ -232,6 +234,8 @@ export class ChartManager {
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
     this._smcSignalPriceLines = [];
+    /** SMC markers (separate from liquidation markers, merged via _paintAllMarkers). */
+    this._lastSmcMarkers = [];
     /** Shaded OB / FVG zones (LWC series primitive). */
     this._smcZonePrimitive = null;
     this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
@@ -241,6 +245,15 @@ export class ChartManager {
     this._signalHudEnabled = readSignalHudEnabled();
     this.showEma = readStoredIndicatorOn(CHART_SHOW_EMA_STORAGE_KEY, true);
     this.showSupertrend = readStoredIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, true);
+    /** Liquidation markers collected from `force_order` messages. */
+    this._liquidationMarkers = [];
+    this._liquidationsEnabled = readStoredIndicatorOn(LIQUIDATION_MARKERS_STORAGE_KEY, true);
+    /** Last mark price for the chart mark-price partial line. */
+    this._lastMarkPrice = null;
+    /** OI regime overlay state. */
+    this._oiRegime = null;
+    this._oiRegimeEnabled = readStoredIndicatorOn(OI_REGIME_STORAGE_KEY, true);
+    this._oiRegimePriceLine = null;
   }
 
   _readSmcOverlayEnabled() {
@@ -286,11 +299,8 @@ export class ChartManager {
       }
     }
     this._smcSignalPriceLines = [];
-    try {
-      this.candleSeries?.setMarkers([]);
-    } catch {
-      /* ignore */
-    }
+    this._lastSmcMarkers = [];
+    this._paintAllMarkers();
     this._smcZonePrimitive?.setZones([]);
     this._smcZonePrimitive?.setLines([]);
   }
@@ -590,10 +600,8 @@ export class ChartManager {
     if (Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
     this._smcZonePrimitive?.setZones(smcZones);
     this._smcZonePrimitive?.setLines(smcStructLines);
-    if (markers.length) {
-      markers.sort((a, b) => a.time - b.time);
-      try { this.candleSeries.setMarkers(markers); } catch (e) { console.warn('[chart] SMC markers', e); }
-    }
+    this._lastSmcMarkers = markers;
+    this._paintAllMarkers();
   }
 
   /**
@@ -993,6 +1001,118 @@ export class ChartManager {
     this._sync24hLines();
   }
 
+  // ── Liquidation Cascade Markers ─────────────────────────────────────
+
+  addLiquidationMarker(msg) {
+    if (!this._liquidationsEnabled) return;
+    const price = Number(msg.price);
+    const qty = Number(msg.qty);
+    const time = Math.floor(Number(msg.tradeTime) / 1000);
+    if (!Number.isFinite(price) || !Number.isFinite(time)) return;
+    const isLongLiq = msg.side === 'SELL';
+    this._liquidationMarkers.push({
+      time,
+      position: isLongLiq ? 'aboveBar' : 'belowBar',
+      shape: isLongLiq ? 'arrowDown' : 'arrowUp',
+      color: isLongLiq ? COLORS.bear : COLORS.ltpBull,
+      text: `LIQ ${Number.isFinite(qty) ? qty.toFixed(1) : ''}`,
+      size: 1,
+      id: `liq-${time}-${msg.side}`,
+    });
+    if (this._liquidationMarkers.length > 200) {
+      this._liquidationMarkers = this._liquidationMarkers.slice(-200);
+    }
+    this._paintAllMarkers();
+  }
+
+  _paintAllMarkers() {
+    if (!this.candleSeries) return;
+    const smcMarkers = this._lastSmcMarkers ?? [];
+    const liqMarkers = this._liquidationsEnabled ? this._liquidationMarkers : [];
+    const all = [...smcMarkers, ...liqMarkers].sort((a, b) => a.time - b.time);
+    try {
+      this.candleSeries.setMarkers(all);
+    } catch (e) {
+      console.warn('[chart] setMarkers failed', e);
+    }
+  }
+
+  // ── Mark Price Line ─────────────────────────────────────────────────
+
+  setMarkPrice(price) {
+    const p = Number.isFinite(price) ? price : null;
+    this._lastMarkPrice = p;
+    this._syncMarkLine();
+  }
+
+  _syncMarkLine() {
+    if (!this._partialLinesPrimitive) return;
+    if (this._lastMarkPrice == null) {
+      this._partialLinesPrimitive.removeLine('mark');
+      return;
+    }
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('mark', {
+      startTimeSec: startTime,
+      price: this._lastMarkPrice,
+      color: 'rgba(255,255,255,0.15)',
+      dash: [2, 3],
+      title: 'MARK',
+      axisLabelColor: 'rgba(255,255,255,0.25)',
+      axisLabelTextColor: '#b0bec5',
+    });
+  }
+
+  // ── OI Regime Overlay ───────────────────────────────────────────────
+
+  setOiRegime(msg) {
+    if (!msg || !msg.regime) {
+      this._oiRegime = null;
+      this._syncOiRegimeOverlay();
+      return;
+    }
+    this._oiRegime = msg;
+    this._syncOiRegimeOverlay();
+  }
+
+  _syncOiRegimeOverlay() {
+    if (!this.candleSeries) return;
+    if (this._oiRegimePriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+      this._oiRegimePriceLine = null;
+    }
+    if (!this._oiRegimeEnabled || !this._oiRegime || this._oiRegime.regime === 'neutral') return;
+
+    const regime = this._oiRegime.regime;
+    const OI_COLORS = {
+      price_up_oi_up: '#00c8dc',
+      price_up_oi_down: 'rgba(0,200,220,0.45)',
+      price_down_oi_up: '#ffa000',
+      price_down_oi_down: 'rgba(255,160,0,0.45)',
+    };
+    const OI_LABELS = {
+      price_up_oi_up: '▲P ▲OI  New Longs',
+      price_up_oi_down: '▲P ▼OI  Short Squeeze',
+      price_down_oi_up: '▼P ▲OI  New Shorts',
+      price_down_oi_down: '▼P ▼OI  Long Squeeze',
+    };
+    const color = OI_COLORS[regime] ?? 'rgba(255,255,255,0.15)';
+    const label = OI_LABELS[regime] ?? 'OI';
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) return;
+
+    this._oiRegimePriceLine = this.candleSeries.createPriceLine({
+      price: anchorPrice,
+      color: 'transparent',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      lineVisible: false,
+      axisLabelVisible: true,
+      axisLabelColor: color,
+      title: label,
+    });
+  }
+
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
@@ -1351,6 +1471,26 @@ export class ChartManager {
       });
     }
 
+    const liqToggle = document.getElementById('toggle-liquidations');
+    if (liqToggle instanceof HTMLInputElement) {
+      liqToggle.checked = this._liquidationsEnabled;
+      liqToggle.addEventListener('change', () => {
+        this._liquidationsEnabled = liqToggle.checked;
+        storeIndicatorOn(LIQUIDATION_MARKERS_STORAGE_KEY, this._liquidationsEnabled);
+        this._paintAllMarkers();
+      });
+    }
+
+    const oiToggle = document.getElementById('toggle-oi-regime');
+    if (oiToggle instanceof HTMLInputElement) {
+      oiToggle.checked = this._oiRegimeEnabled;
+      oiToggle.addEventListener('change', () => {
+        this._oiRegimeEnabled = oiToggle.checked;
+        storeIndicatorOn(OI_REGIME_STORAGE_KEY, this._oiRegimeEnabled);
+        this._syncOiRegimeOverlay();
+      });
+    }
+
     const signalHudEl = document.getElementById('chart-signal-hud');
     if (signalHudEl) {
       signalHudEl.addEventListener('toggle', (e) => {
@@ -1667,6 +1807,13 @@ export class ChartManager {
     this._historyExhausted = {};
     this._historyLoading = {};
     this.set24hHighLow(null, null);
+    this._liquidationMarkers = [];
+    this._lastMarkPrice = null;
+    this._oiRegime = null;
+    if (this._oiRegimePriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+      this._oiRegimePriceLine = null;
+    }
     this._applyAvailableTimeframes(availableTimeframes ?? null);
 
     const raw = candles ?? {};
@@ -1791,6 +1938,10 @@ export class ChartManager {
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
       this._partialLinesPrimitive?.clear();
+      if (this._oiRegimePriceLine && this.candleSeries) {
+        try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+        this._oiRegimePriceLine = null;
+      }
       this.chart.timeScale().fitContent();
       this._hideLtpPriceLine();
       this._emitLtpDisplay(null);
@@ -1856,6 +2007,8 @@ export class ChartManager {
     this._paintSmcFromStoredSignals();
     this._sync24hLines();
     this._syncBookTopLines();
+    this._syncMarkLine();
+    this._syncOiRegimeOverlay();
   }
 
   _paintIndicators(tf) {

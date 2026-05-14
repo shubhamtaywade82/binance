@@ -346,6 +346,21 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ mark: msg.price });
       if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
+      chart.setMarkPrice(msg.price);
+      break;
+    }
+
+    /* ── Forced Liquidation Orders ─ */
+    case 'force_order': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.addLiquidationMarker(msg);
+      break;
+    }
+
+    /* ── OI Regime ─ */
+    case 'oi_regime': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.setOiRegime(msg);
       break;
     }
 

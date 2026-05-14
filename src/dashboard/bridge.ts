@@ -29,6 +29,9 @@ import {
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
+import { OiPoller } from '../signals/oi-poller';
+import { BinanceRestClient } from '../binance/rest-client';
+import { binanceRestBase } from '../config';
 import { snapshotMicrostructure } from '../binance/microstructure';
 import { createScriptsApi } from './scripts-api';
 import { createScriptsAi } from './scripts-ai';
@@ -319,6 +322,47 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let signalsTimer: ReturnType<typeof setInterval> | null = null;
   let validationTimer: ReturnType<typeof setInterval> | null = null;
+  let oiPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const oiRestClient = new BinanceRestClient({
+    apiKey: cfg.BINANCE_API_KEY ?? '',
+    apiSecret: cfg.BINANCE_API_SECRET ?? '',
+    baseUrl: binanceRestBase(cfg),
+  });
+  const oiPollers = new Map<string, OiPoller>();
+  const OI_POLL_INTERVAL_SEC = 10;
+
+  const ensureOiPoller = (sym: string): OiPoller => {
+    let poller = oiPollers.get(sym);
+    if (!poller) {
+      poller = new OiPoller(oiRestClient, sym, OI_POLL_INTERVAL_SEC, 60);
+      oiPollers.set(sym, poller);
+      poller.start();
+    }
+    return poller;
+  };
+
+  const broadcastOiRegime = (): void => {
+    for (const sym of watchlistSymbols) {
+      const poller = oiPollers.get(sym);
+      if (!poller) continue;
+      const mark = lastMarkBySym.get(sym);
+      if (Number.isFinite(mark)) poller.updatePrice(mark!);
+      const snap = poller.snapshot();
+      if (snap.regime === 'neutral' && snap.oi === 0) continue;
+      broadcast({
+        type: 'oi_regime',
+        symbol: sym,
+        oi: snap.oi,
+        delta1m: snap.oiDelta1m,
+        delta5m: snap.oiDelta5m,
+        zscore: snap.oiZscore,
+        divergence: snap.oiDivergence,
+        spike: snap.oiSpike,
+        regime: snap.regime,
+      });
+    }
+  };
 
   const VALIDATION_INTERVAL_MS = 5 * 60_000;
   const VALIDATION_DEPTH = 60;
@@ -1108,6 +1152,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             'Vite: npm run ui:dev or npm run dashboard:ui (bot+Vite). Open http://127.0.0.1:5173 in a normal browser; embedded previews can show chrome-error frame blocks.',
         });
 
+        for (const sym of watchlistSymbols) ensureOiPoller(sym);
+
+        oiPollTimer = setInterval(broadcastOiRegime, OI_POLL_INTERVAL_SEC * 1000);
+
         heartbeatTimer = setInterval(() => {
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
         }, 10_000);
@@ -1151,6 +1199,12 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           clearInterval(validationTimer);
           validationTimer = null;
         }
+        if (oiPollTimer) {
+          clearInterval(oiPollTimer);
+          oiPollTimer = null;
+        }
+        for (const p of oiPollers.values()) p.stop();
+        oiPollers.clear();
         for (const c of wss.clients) {
           try {
             c.terminate();

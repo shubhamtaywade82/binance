@@ -1995,7 +1995,7 @@ or can be computed from loaded candle data on the client.
 | | |
 |---|---|
 | **What** | Triangle markers on candles where forced liquidations occurred. Red down-triangle for long liquidations (longs got wiped), cyan up-triangle for short liquidations. Marker size scales with liquidation quantity. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2037,7 +2037,7 @@ or can be computed from loaded candle data on the client.
 | | |
 |---|---|
 | **What** | Faint dotted horizontal line showing the mark price (used for liquidation calculations). Starts from the last candle and extends to the right axis with a titled label. Visually distinct from the LTP line (lighter, dotted). |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2376,7 +2376,7 @@ exists only in server-side trackers.
 | | |
 |---|---|
 | **What** | Background color band on candles showing the OI regime. The regime combines price direction with OI direction to classify market behavior. This is one of the most powerful signals for futures trading. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Regimes:**
 
@@ -2511,11 +2511,11 @@ Recommended implementation order based on value-to-effort ratio:
 
 | Order | Item | Tier | Effort | Value |
 |---|---|---|---|---|
-| 1 | 22.1 Liquidation Cascade Markers | 1 | Low | Very High |
-| 2 | 22.2 Mark Price Line | 1 | Very Low | High |
+| 1 | ~~22.1 Liquidation Cascade Markers~~ | 1 | Low | Very High |
+| 2 | ~~22.2 Mark Price Line~~ | 1 | Very Low | High |
 | 3 | 22.3 Session VWAP Line | 1 | Low | High |
 | 4 | 22.4 RSI Sub-Panel | 1 | Medium | High |
-| 5 | 22.10 OI Divergence Overlay | 3 | Medium | Very High |
+| 5 | ~~22.10 OI Divergence Overlay~~ | 3 | Medium | Very High |
 | 6 | 22.9 Funding Rate Gauge | 3 | Medium | High |
 | 7 | 22.6 TFI Lane | 2 | Medium | Medium |
 | 8 | 22.5 Spread Heatmap | 2 | Low | Medium |
