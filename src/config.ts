@@ -115,6 +115,11 @@ export const AppConfigSchema = z.object({
 
   LEVERAGE: numFromString(10),
   /**
+   * Hard cap on entry **notional** (USDT contract face ≈ price × qty). 0 = disabled.
+   * Applied after margin/leverage sizing; e.g. `50` during first live week (TODO Phase 4).
+   */
+  MAX_NOTIONAL_USDT: numFromString(0),
+  /**
    * USDT margin per trade for Binance USDT-M Futures (preferred).
    * When set to a positive value, overrides the INR-based sizing path.
    * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
