@@ -25,7 +25,7 @@
     "futures:ltp:rest": "ts-node scripts/futures-ltp-rest.ts",
     "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts",
     "dashboard": "DASHBOARD_ENABLED=true ts-node src/index.ts",
-    "dashboard:ui": "concurrently -n bot,vite -c blue,green \"DASHBOARD_ENABLED=true ts-node src/index.ts\" \"vite\"",
+    "dashboard:ui": "concurrently -n bot,vite -c blue,green \"DASHBOARD_ENABLED=true nodemon --watch src --watch config --ext ts,json --exec ts-node src/index.ts\" \"vite\"",
     "ui:dev": "vite",
     "readiness:binance": "ts-node scripts/binance-live-readiness.ts",
     "gateway": "ts-node gateway/ws-server.ts",

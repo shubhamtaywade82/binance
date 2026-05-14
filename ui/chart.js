@@ -17,9 +17,11 @@ import {
 } from './candle-themes.js';
 import {
   fmtLtpDisplay,
+  getMinTickDecimalPlaces,
   ltpPriceFromTicks,
   ltpTicksFromPrice,
   setLtpDecimalPlacesFromServer,
+  setMinTickDecimalPlacesFromServer,
 } from './ltp-precision.js';
 import {
   readSignalHudEnabled,
@@ -96,6 +98,9 @@ const CHART_OPTS = {
 
 /** Match `DASHBOARD_STORE_MAX_BARS` / `src/dashboard/bridge.ts` — trim client cache same as server. */
 const MAX_STORE_BARS = 100_000;
+
+/** Proportional smoothing for current price line (0.01 = extremely slow/smooth, 1.0 = instant snap). */
+const LTP_SMOOTHING = Number.parseFloat(import.meta.env?.VITE_CHART_LTP_SMOOTHING ?? '0.1');
 /** When the left edge of the visible window is within this many bars of the oldest loaded bar, request older history. */
 const LAZY_HISTORY_EDGE_BARS = 24;
 const LAZY_HISTORY_DEBOUNCE_MS = 400;
@@ -1002,7 +1007,18 @@ export class ChartManager {
       this._refreshFormingCandleFromCtx();
       return;
     }
-    this._ltpDisplayTicks += this._ltpDisplayTicks < this._ltpTargetTicks ? 1 : -1;
+
+    const dist = this._ltpTargetTicks - this._ltpDisplayTicks;
+    if (Math.abs(dist) < 1) {
+      this._ltpDisplayTicks = this._ltpTargetTicks;
+    } else {
+      // Proportional step: LTP_SMOOTHING of distance per frame (min 1 tick).
+      // This makes it extremely responsive while still smooth.
+      const step = Math.sign(dist) * Math.max(1, Math.floor(Math.abs(dist) * LTP_SMOOTHING));
+
+      this._ltpDisplayTicks += step;
+    }
+
     const p = ltpPriceFromTicks(this._ltpDisplayTicks);
     this._ltpPriceLine.applyOptions({ price: p });
     this._emitLtpDisplay(p);
@@ -1036,12 +1052,24 @@ export class ChartManager {
   }
 
   /**
-   * Apply display LTP decimals from dashboard (`ltpDecimalPlaces` = tick fractional digits). Chart LTP motion
+   * Apply display LTP decimals from dashboard (`ltpDecimalPlaces` = tick fractional digits + display offset). Chart LTP motion
    * uses one extra sub-tick decimal internally; axis labels use display precision via `fmtLtpDisplay`.
-   * @param {{ ltpDecimalPlaces?: number | null }} msg
+   * The price *scale* always uses the raw tick dp (min tick) so axis grid labels never show sub-tick padding.
+   * @param {{ ltpDecimalPlaces?: number | null; instrumentPrecision?: { tickSize?: number } | null }} msg
    */
   applyDashboardLtpPrecision(msg) {
     const n = msg?.ltpDecimalPlaces;
+    // Compute raw tick dp from tickSize (e.g. 0.01 → 2) for the price scale formatter.
+    const tickSize = msg?.instrumentPrecision?.tickSize;
+    if (typeof tickSize === 'number' && Number.isFinite(tickSize) && tickSize > 0) {
+      const trimmed = tickSize.toFixed(12).replace(/\.?0+$/, '');
+      const dot = trimmed.indexOf('.');
+      const tickDp = dot < 0 ? 0 : trimmed.slice(dot + 1).length;
+      setMinTickDecimalPlacesFromServer(tickDp);
+    } else if (n != null && Number.isFinite(n)) {
+      // Fallback: use ltpDecimalPlaces as-is (no offset correction available).
+      setMinTickDecimalPlacesFromServer(n);
+    }
     let anchor = null;
     if (this._ltpTargetTicks != null && Number.isFinite(this._ltpTargetTicks)) {
       anchor = ltpPriceFromTicks(this._ltpTargetTicks);
@@ -1056,7 +1084,8 @@ export class ChartManager {
     this.chart.applyOptions({
       localization: {
         locale: typeof navigator !== 'undefined' ? navigator.language : 'en-US',
-        priceFormatter: (priceValue) => fmtLtpDisplay(Number(priceValue)),
+        // Price scale axis always uses min-tick precision (exchange tick size dp, no display offset).
+        priceFormatter: (priceValue) => Number(priceValue).toFixed(getMinTickDecimalPlaces()),
       },
     });
   }

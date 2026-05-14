@@ -6,7 +6,7 @@ loadDotenv();
 
 export type { TradingAsset } from './config/asset-presets';
 
-const BinanceProduct = z.enum(['usdm', 'spot']);
+const BinanceProduct = z.enum(['usdm', 'usdm_demo', 'spot']);
 const ExecutionModeEnum = z.enum(['paper', 'live']);
 
 const numFromString = (def: number) =>
@@ -115,6 +115,11 @@ export const AppConfigSchema = z.object({
 
   LEVERAGE: numFromString(10),
   /**
+   * Hard cap on entry **notional** (USDT contract face ≈ price × qty). 0 = disabled.
+   * Applied after margin/leverage sizing; e.g. `50` during first live week (see TODO Phase 4).
+   */
+  MAX_NOTIONAL_USDT: numFromString(0),
+  /**
    * USDT margin per trade for Binance USDT-M Futures (preferred).
    * When set to a positive value, overrides the INR-based sizing path.
    * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
@@ -162,6 +167,11 @@ export const AppConfigSchema = z.object({
 
   /** Append NDJSON log lines (empty = stdout/stderr only). */
   APP_LOG_PATH: z.string().default('./logs/app.ndjson'),
+  /**
+   * When true, emit **info** / **warn** on stdout/stderr as NDJSON (same shape as `APP_LOG_PATH` file lines).
+   * Default keeps human-readable `msg {json}` lines for local dev; enable in Docker / log aggregators.
+   */
+  LOG_JSON_CONSOLE: boolFromString(false),
 
   EXECUTION_MODE: z
     .union([ExecutionModeEnum, z.string()])
@@ -209,6 +219,40 @@ export const AppConfigSchema = z.object({
   /** Stream ALL-symbol liquidation events (`!forceOrder@arr`). Useful for cascade detection. USD-M only. */
   BINANCE_USE_GLOBAL_FORCE_ORDER: boolFromString(false),
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
+
+  /**
+   * Binance REST (`BinanceRestClient`): max HTTP attempts per call on 408/429/5xx and transport failures.
+   * 1 = no retries. Capped at 12.
+   */
+  BINANCE_REST_RETRY_MAX_ATTEMPTS: z
+    .string()
+    .optional()
+    .default('4')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return 4;
+      return Math.min(12, n);
+    }),
+  /** Initial backoff cap (ms) before exponential growth; combined with full jitter. */
+  BINANCE_REST_RETRY_BASE_MS: z
+    .string()
+    .optional()
+    .default('400')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 50) return 400;
+      return Math.min(10_000, n);
+    }),
+  /** Upper bound (ms) on each wait, including when honoring `Retry-After`. */
+  BINANCE_REST_RETRY_MAX_MS: z
+    .string()
+    .optional()
+    .default('20000')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 100) return 20_000;
+      return Math.min(120_000, n);
+    }),
 
   /**
    * USD-M Futures **testnet** (derivatives demo): REST `demo-fapi.binance.com`, WS `fstream.binancefuture.com`.
@@ -383,6 +427,40 @@ export const AppConfigSchema = z.object({
   /** Trailing stop callback rate (%). 0 = use fixed SL instead. */
   TRAILING_STOP_CALLBACK_RATE: numFromString(0),
 
+  /** Enable ML inference pipeline (feature collection, inference client, ML gate). */
+  ML_ENABLED: boolFromString(false),
+  /** ML inference server URL (Python FastAPI). */
+  ML_INFERENCE_URL: z.string().default('http://localhost:8000/infer'),
+  /** Minimum model probability to act on a signal. */
+  ML_MIN_PROBABILITY: numFromString(0.65),
+  /** Minimum edge in bps after fees for ML to allow entry. */
+  ML_MIN_EDGE_BPS: numFromString(8),
+  /** When true, ML logs predictions but does not override SMC entry decisions. */
+  ML_SHADOW_MODE: boolFromString(true),
+  /** Inference timeout in ms. */
+  ML_INFERENCE_TIMEOUT_MS: numFromString(2000),
+  /** Directory for recorded feature vectors (training data). */
+  ML_FEATURE_DIR: z.string().default('./data/features'),
+  /** Directory for prediction logs. */
+  ML_PREDICTION_DIR: z.string().default('./data/predictions'),
+
+  /**
+   * Global shadow mode: connect to live data but suppress all order placement at the adapter level.
+   * Unlike `READ_ONLY`, shadow mode still runs the full signal/strategy pipeline and logs what
+   * would have been sent — useful for pre-deployment validation against real market conditions.
+   */
+  SHADOW_MODE: boolFromString(false),
+
+  /** HTTP port for the Prometheus /metrics + /health endpoint (0 = disabled). */
+  PROMETHEUS_PORT: z
+    .string()
+    .default('9090')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0 || n > 65535) return 9090;
+      return n;
+    }),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 
@@ -465,6 +543,7 @@ export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecr
 export const binanceRestBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'https://demo-fapi.binance.com';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
@@ -472,6 +551,7 @@ export const binanceRestBase = (cfg: AppConfig): string => {
 export const binanceWsBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'wss://demo-fstream.binance.com';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';
   return 'wss://fstream.binance.com';
 }

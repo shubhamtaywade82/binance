@@ -151,6 +151,75 @@
                 <span id="vol-val" class="stat-value mono-sm">—</span>
               </div>
             </div>
+            <!-- ── Microstructure Panel ─────────────────────────────────────────────── -->
+            <div class="panel sidebar-inner-panel ms-panel" id="microstructure-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Microstructure</h2>
+                <span id="ms-verdict-badge" class="ms-obi-badge neutral">NEUTRAL</span>
+              </div>
+              <div class="ms-body">
+
+                <!-- TFI 30s -->
+                <div class="ms-row ms-row-tfi">
+                  <div class="ms-row-label">TFI 30s</div>
+                  <div class="ms-row-content" id="ms-tfi-30">
+                    <div class="ms-tfi-bar-wrap"><div class="ms-tfi-bar-fill buy" style="width:50%"></div></div>
+                    <div class="ms-tfi-labels"><span class="ms-tfi-buy mono-sm">—</span><span class="ms-tfi-net mono-sm">—</span><span class="ms-tfi-sell mono-sm">—</span></div>
+                  </div>
+                </div>
+
+                <!-- TFI 5s -->
+                <div class="ms-row ms-row-tfi">
+                  <div class="ms-row-label">TFI 5s</div>
+                  <div class="ms-row-content" id="ms-tfi-5">
+                    <div class="ms-tfi-bar-wrap"></div>
+                  </div>
+                </div>
+
+                <!-- OBI weighted -->
+                <div class="ms-row">
+                  <div class="ms-row-label">Wt. OBI</div>
+                  <div class="ms-row-content" id="ms-obi"></div>
+                </div>
+
+                <!-- Depth Pressure -->
+                <div class="ms-row">
+                  <div class="ms-row-label">Pressure</div>
+                  <div class="ms-row-content" id="ms-pressure"></div>
+                </div>
+
+                <!-- Spread -->
+                <div class="ms-row">
+                  <div class="ms-row-label">Spread</div>
+                  <div class="ms-row-content ms-spread-row" id="ms-spread"></div>
+                </div>
+
+                <!-- Realized Vol -->
+                <div class="ms-row ms-row-rv">
+                  <div class="ms-row-label">RV</div>
+                  <div class="ms-row-content ms-rv-row" id="ms-rv"></div>
+                </div>
+
+                <!-- Cancel -->
+                <div class="ms-row">
+                  <div class="ms-row-label">Cancel/s</div>
+                  <div class="ms-row-content" id="ms-cancel"></div>
+                </div>
+
+                <!-- Book Thinning -->
+                <div class="ms-row">
+                  <div class="ms-row-label">Bk Δ</div>
+                  <div class="ms-row-content" id="ms-thinning"></div>
+                </div>
+
+                <!-- Microprice -->
+                <div class="ms-row">
+                  <div class="ms-row-label">μPrice</div>
+                  <div class="ms-row-content" id="ms-microprice"></div>
+                </div>
+
+              </div>
+            </div>
             <div class="panel sidebar-inner-panel" id="book-panel">
               <div class="panel-header">
                 <h2 class="panel-title">Order Book</h2>
@@ -185,10 +254,8 @@
               <div id="orderbook-scroll" class="orderbook-scroll">
                 <div class="book-grid-head" aria-hidden="true">
                   <span class="gh-amt">Amt</span>
-                  <span class="gh-bar"></span>
                   <span class="gh-price bid">Bid</span>
                   <span class="gh-price ask">Ask</span>
-                  <span class="gh-bar"></span>
                   <span class="gh-amt">Amt</span>
                 </div>
                 <div id="orderbook-mirrored" class="orderbook-mirrored"></div>

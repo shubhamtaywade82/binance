@@ -1,71 +1,92 @@
+version: "3.8"
+
 services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-bot
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      ML_INFERENCE_URL: http://ml-inference:8000/infer
+      DASHBOARD_BIND: "0.0.0.0"
+    ports:
+      - "9090:9090"
+      - "4001:4001"
+      - "4002:4002"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - trading-net
+    restart: unless-stopped
+
+  ml-inference:
+    build:
+      context: ./ml_bot
+      dockerfile: Dockerfile
+    container_name: ml-inference
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml_bot/models:/app/models:ro
+    networks:
+      - trading-net
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    container_name: trading-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
-    command: redis-server --save 60 1 --loglevel warning
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 3
-
-  bot:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.bot
+      retries: 5
+    networks:
+      - trading-net
     restart: unless-stopped
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
 
-  ws-gateway:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.ws
-    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: trading-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     ports:
-      - "4000:4000"
-    environment:
-      REDIS_URL: redis://redis:6379
-      GATEWAY_PORT: "4000"
+      - "9091:9090"
     depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('net').connect(4000,'localhost').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+      - bot
+      - ml-inference
+    networks:
+      - trading-net
+    restart: unless-stopped
 
-  # Uncomment to add Prometheus + Grafana monitoring:
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   volumes:
-  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
-  #   ports:
-  #     - "9090:9090"
-  #
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   ports:
-  #     - "3001:3000"
-  #   environment:
-  #     GF_SECURITY_ADMIN_PASSWORD: admin
-  #   volumes:
-  #     - grafana_data:/var/lib/grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trading-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - trading-net
+    restart: unless-stopped
 
 volumes:
-  redis_data:
-  # grafana_data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  trading-net:
+    driver: bridge

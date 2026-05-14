@@ -63,7 +63,7 @@ export class SentimentGauge {
   _draw() {
     const { ctx, canvas } = this;
     if (!ctx || !canvas) return;
-    // Use the canvas layout box (CSS width: 100%), not the parent's clientWidth —
+<    // Use the canvas layout box (CSS width: 100%), not the parent's clientWidth —
     // Size from the canvas layout box (not the padded wrap’s clientWidth), and use
     // the laid-out rect so the bar center matches centered DOM labels (subpixel-safe).
     const rect = canvas.getBoundingClientRect();

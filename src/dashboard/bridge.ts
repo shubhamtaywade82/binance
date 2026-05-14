@@ -27,6 +27,7 @@ import {
 } from '../ai/supertrend-tune';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
+import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
 import { snapshotMicrostructure } from '../binance/microstructure';
 import { createScriptsApi } from './scripts-api';
 
@@ -614,18 +615,30 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         >;
       } => {
         const instrumentPrecision = precisionBySymbol.get(sym) ?? null;
+        const mark = lastMarkBySym.get(sym);
         const ltpDecimalPlaces = instrumentPrecision
-          ? ltpDisplayDecimalPlaces(instrumentPrecision.tickSize)
+          ? assetPrecisionMapper.getDecimalPlaces(
+              sym,
+              mark ?? 0,
+              ltpDisplayDecimalPlaces(instrumentPrecision.tickSize),
+            )
           : null;
+
         const instrumentPrecisionBySymbol: Record<string, InstrumentPrecision & { ltpDecimalPlaces: number }> =
           {};
         for (const s of watchlistSymbols) {
           const p = precisionBySymbol.get(s);
-          if (p)
+          if (p) {
+            const m = lastMarkBySym.get(s);
             instrumentPrecisionBySymbol[s] = {
               ...p,
-              ltpDecimalPlaces: ltpDisplayDecimalPlaces(p.tickSize),
+              ltpDecimalPlaces: assetPrecisionMapper.getDecimalPlaces(
+                s,
+                m ?? 0,
+                ltpDisplayDecimalPlaces(p.tickSize),
+              ),
             };
+          }
         }
         return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
       }

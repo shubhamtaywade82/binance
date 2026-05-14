@@ -16,6 +16,7 @@ import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
 import { SentimentGauge }  from './sentiment.js';
+import { MicrostructurePanel } from './microstructure.js';
 import { Rolling1mTradeStats } from './rolling-1m-stats.js';
 import { ScriptManager } from './scripts/ui/script-manager.js';
 import { ScriptEditor } from './scripts/ui/script-editor.js';
@@ -26,6 +27,7 @@ const obMgr    = new OrderBookManager();
 const tape     = new TradeTapeManager();
 const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
+const msPanel  = new MicrostructurePanel();
 const rolling1m = new Rolling1mTradeStats();
 /** User-script runtime (NanoPine). Mounted after chart.init() so the worker has chart data to read. */
 let scripts = null;
@@ -269,8 +271,11 @@ const dispatch = (msg) => {
         chart.applySignalOverlays(msg.signals);
       }
 
-      // Gauge from initial depth
-      if (msg.depth) {
+      // Microstructure initial state + gauge
+      if (msg.microstructure) {
+        msPanel.update(msg.microstructure);
+        gauge.update(msPanel.getObiRatio());
+      } else if (msg.depth) {
         const ratio = imbalanceRatio(msg.depth.bids, msg.depth.asks);
         gauge.update(ratio);
       }
@@ -386,8 +391,14 @@ const dispatch = (msg) => {
       obMgr.update({ bids: msg.bids, asks: msg.asks });
       const top = topOfBookFromDepth({ bids: msg.bids, asks: msg.asks });
       if (top) chart.setBookTopLevels(top.bid, top.ask);
-      const ratio = imbalanceRatio(msg.bids, msg.asks);
-      gauge.update(ratio);
+      break;
+    }
+
+    /* ── Microstructure ─ */
+    case 'microstructure': {
+      if (!appliesToActiveWatch(msg)) break;
+      msPanel.update(msg);
+      gauge.update(msPanel.getObiRatio());
       break;
     }
 
