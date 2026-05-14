@@ -19,6 +19,9 @@ export class ScriptEditor {
     this.root.innerHTML = `
       <div class="nanopine-toolbar">
         <button class="nanopine-btn" data-act="new">+ New</button>
+        <button class="nanopine-btn" data-act="export" title="Download all scripts as JSON">Export</button>
+        <button class="nanopine-btn" data-act="import" title="Append scripts from a JSON file">Import</button>
+        <input type="file" data-role="import-input" accept="application/json,.json" hidden />
         <span class="nanopine-status" data-role="status"></span>
       </div>
       <div class="nanopine-list" data-role="list"></div>
@@ -84,6 +87,8 @@ export class ScriptEditor {
       else if (act === 'apply') this._actApply();
       else if (act === 'duplicate') this._actDuplicate();
       else if (act === 'delete') this._actDelete();
+      else if (act === 'export') this._actExport();
+      else if (act === 'import') this._actImport();
       else if (act === 'toggle') {
         const targetId = target.getAttribute('data-id');
         if (targetId) this.manager.setEnabled(targetId, target.checked);
@@ -217,6 +222,42 @@ export class ScriptEditor {
     if (!this.activeId) return;
     const sc = this.manager.duplicate(this.activeId);
     if (sc) this._selectScript(sc.id);
+  }
+
+  _actExport() {
+    const payload = this.manager.exportAll();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nanopine-scripts-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  _actImport() {
+    const input = this.root.querySelector('[data-role="import-input"]');
+    if (!input) return;
+    input.value = '';
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(String(reader.result || ''));
+          const imported = this.manager.importMany(parsed);
+          if (imported.length) this._selectScript(imported[0].id);
+        } catch (err) {
+          this.elError.textContent = `Import failed: ${(err instanceof Error ? err.message : String(err))}`;
+          this.elError.classList.add('has-error');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
   }
 
   _actDelete() {

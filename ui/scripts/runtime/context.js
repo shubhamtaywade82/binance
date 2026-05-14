@@ -7,6 +7,28 @@ import { QuotaError, RuntimeError } from './errors.js';
 
 const BUILTIN_SERIES_NAMES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4'];
 
+// Timeframe → millisecond duration. Used by security() to detect a closed higher-TF bar.
+const TF_DURATION_MS = {
+  '1m': 60_000,
+  '3m': 180_000,
+  '5m': 300_000,
+  '15m': 900_000,
+  '30m': 1_800_000,
+  '1h': 3_600_000,
+  '2h': 7_200_000,
+  '4h': 14_400_000,
+  '6h': 21_600_000,
+  '8h': 28_800_000,
+  '12h': 43_200_000,
+  '1d': 86_400_000,
+  '3d': 259_200_000,
+  '1w': 604_800_000,
+};
+
+export function tfDurationMs(tf) {
+  return TF_DURATION_MS[tf] || 0;
+}
+
 const DEFAULTS = {
   nodeBudgetPerBar: 10_000,
   liveBarBudgetMs: 5,
@@ -53,11 +75,16 @@ export function createContext(opts = {}) {
     // Per-bar emitted markers/hlines/bgcolors during a single bar execution.
     barEmissions: [],
 
-    // Time vector for the current run (host fills before iterating bars).
+    // Time vector for the current run (host fills before iterating bars). Times are
+    // stored in UNIX seconds (matching the lightweight-charts time axis convention).
     times: null,
 
     // Active bar index — set by the host before each runBar().
     barIndex: -1,
+
+    // Higher-timeframe data for security() lookups. Map<tf, { times: number[] (sec),
+    // open/high/low/close/volume: Float64Array, hl2/hlc3/ohlc4: Float64Array }>.
+    htfData: new Map(),
 
     resetForBar(barIndex) {
       this.barIndex = barIndex;
@@ -145,6 +172,97 @@ export function createContext(opts = {}) {
       const t = this.times ? this.times[this.barIndex] : null;
       out.values.push(value);
       out.times.push(t);
+    },
+
+    // Pre-build sorted, deduped HTF series arrays (one entry per higher-TF bar) for
+    // each timeframe in `byTf`. Host supplies plain candle arrays the same shape as
+    // ChartManager.candleMap: { openTime, open, high, low, close, volume }.
+    loadHtfData(byTf) {
+      this.htfData.clear();
+      if (!byTf || typeof byTf !== 'object') return;
+      for (const [tf, candles] of Object.entries(byTf)) {
+        if (!Array.isArray(candles) || candles.length === 0) continue;
+        // Sort & dedupe by openTime (host should pass clean data but be defensive).
+        const sorted = candles
+          .filter((c) => c && Number.isFinite(c.openTime))
+          .slice()
+          .sort((a, b) => a.openTime - b.openTime);
+        const dedup = [];
+        let lastOt = -1;
+        for (const c of sorted) {
+          if (c.openTime === lastOt) {
+            dedup[dedup.length - 1] = c;
+          } else {
+            dedup.push(c);
+            lastOt = c.openTime;
+          }
+        }
+        const n = dedup.length;
+        const times = new Float64Array(n);
+        const opens = new Float64Array(n);
+        const highs = new Float64Array(n);
+        const lows = new Float64Array(n);
+        const closes = new Float64Array(n);
+        const volumes = new Float64Array(n);
+        const hl2 = new Float64Array(n);
+        const hlc3 = new Float64Array(n);
+        const ohlc4 = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+          const c = dedup[i];
+          times[i] = c.openTime;
+          opens[i] = c.open;
+          highs[i] = c.high;
+          lows[i] = c.low;
+          closes[i] = c.close;
+          volumes[i] = c.volume;
+          hl2[i] = (c.high + c.low) / 2;
+          hlc3[i] = (c.high + c.low + c.close) / 3;
+          ohlc4[i] = (c.open + c.high + c.low + c.close) / 4;
+        }
+        this.htfData.set(tf, {
+          openTimes: times,
+          open: opens,
+          high: highs,
+          low: lows,
+          close: closes,
+          volume: volumes,
+          hl2,
+          hlc3,
+          ohlc4,
+        });
+      }
+    },
+
+    // Find the most recently CLOSED higher-TF bar at or before the current lower-TF
+    // bar's open-time. Pine's no-lookahead semantic: returns the previous bar's source
+    // value while the higher-TF candle covering current time is still forming.
+    // Returns NaN if no closed bar is available yet.
+    lookupHtfValue(tf, srcName) {
+      const data = this.htfData.get(tf);
+      if (!data) return NaN;
+      const arr = data[srcName];
+      if (!arr) return NaN;
+      const currentTimeSec = this.times ? this.times[this.barIndex] : null;
+      if (!Number.isFinite(currentTimeSec)) return NaN;
+      const currentTimeMs = currentTimeSec * 1000;
+      const durMs = tfDurationMs(tf);
+      if (durMs <= 0) return NaN;
+      // Binary search for the largest openTime H with H + durMs <= currentTimeMs.
+      const ot = data.openTimes;
+      let lo = 0;
+      let hi = ot.length - 1;
+      let foundIdx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (ot[mid] + durMs <= currentTimeMs) {
+          foundIdx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (foundIdx < 0) return NaN;
+      return arr[foundIdx];
     },
 
     initStrategy(opts) {

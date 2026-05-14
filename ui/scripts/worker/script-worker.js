@@ -45,7 +45,7 @@ self.addEventListener('message', (ev) => {
 });
 
 function handleCompileRun(msg) {
-  const { instanceId, source, inputs, candles } = msg;
+  const { instanceId, source, inputs, candles, extraCandles } = msg;
   const tokens = tokenize(String(source ?? ''));
   const program = parse(tokens);
 
@@ -58,6 +58,11 @@ function handleCompileRun(msg) {
     }
   }
   prepare(program, ctx);
+  // Higher-TF data for security() lookups (Phase 4). Optional — scripts that don't
+  // call security() simply ignore this map.
+  if (extraCandles && typeof extraCandles === 'object') {
+    ctx.loadHtfData(extraCandles);
+  }
 
   const n = Array.isArray(candles) ? candles.length : 0;
   ctx.times = new Array(n);

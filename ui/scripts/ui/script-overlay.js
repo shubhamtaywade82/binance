@@ -8,6 +8,7 @@
 // All pane >= 1 currently routes to the same sub-pane; Phase 3 can split into N panes.
 
 import { createChart } from 'lightweight-charts';
+import { BgColorPrimitive } from './bgcolor-primitive.js';
 
 const DEFAULT_COLORS = ['#26a69a', '#ef5350', '#ffb300', '#42a5f5', '#ab47bc', '#9ccc65', '#ec407a', '#26c6da'];
 const SUB_PANE_HEIGHT_PX = 160;
@@ -25,6 +26,10 @@ export class ChartOverlayManager {
     this._subPane = null; // { container, chart, resizeObs, syncing, anchor }
     this._subPaneRefCount = 0;
     this._timeScaleSyncBound = false;
+
+    // Lazily-attached background-color primitive on the price pane.
+    this._bgPrimitive = null;
+    this._bgSegmentsByInstance = new Map();
   }
 
   onAlert(fn) {
@@ -95,7 +100,7 @@ export class ChartOverlayManager {
       } else if (out.kind === 'alert') {
         for (const ev of out.events || []) this._emitAlert(instanceId, ev);
       } else if (out.kind === 'bgcolor') {
-        // bgcolor still unrendered (Phase 3 — needs a custom canvas primitive).
+        this._setBgSegments(instanceId, out.segments || []);
       }
     }
 
@@ -120,6 +125,8 @@ export class ChartOverlayManager {
         bucket.markersByOwner.set(d.name, prev.concat(d.markers || []));
       } else if (d.kind === 'alert') {
         for (const ev of d.events || []) this._emitAlert(instanceId, ev);
+      } else if (d.kind === 'bgcolor') {
+        this._appendBgSegment(instanceId, d.segment);
       }
     }
     this._reapplyMarkers();
@@ -145,11 +152,57 @@ export class ChartOverlayManager {
     }
     if (bucket.usesSubPane) this._releaseSubPane();
     this.overlays.delete(instanceId);
+    this._bgSegmentsByInstance.delete(instanceId);
+    this._reapplyBg();
     this._reapplyMarkers();
   }
 
   removeAll() {
     for (const id of Array.from(this.overlays.keys())) this.remove(id);
+  }
+
+  _ensureBgPrimitive() {
+    if (this._bgPrimitive) return this._bgPrimitive;
+    const candleSeries = this.chartManager?.candleSeries;
+    if (!candleSeries || typeof candleSeries.attachPrimitive !== 'function') return null;
+    this._bgPrimitive = new BgColorPrimitive();
+    try {
+      candleSeries.attachPrimitive(this._bgPrimitive);
+    } catch {
+      this._bgPrimitive = null;
+    }
+    return this._bgPrimitive;
+  }
+
+  _setBgSegments(instanceId, segments) {
+    if (!segments.length) {
+      this._bgSegmentsByInstance.delete(instanceId);
+    } else {
+      this._bgSegmentsByInstance.set(instanceId, segments.slice());
+    }
+    this._reapplyBg();
+  }
+
+  _appendBgSegment(instanceId, segment) {
+    if (!segment) return;
+    const arr = this._bgSegmentsByInstance.get(instanceId) || [];
+    arr.push(segment);
+    this._bgSegmentsByInstance.set(instanceId, arr);
+    this._reapplyBg();
+  }
+
+  _reapplyBg() {
+    if (!this._bgSegmentsByInstance.size) {
+      if (this._bgPrimitive) this._bgPrimitive.clear();
+      return;
+    }
+    const primitive = this._ensureBgPrimitive();
+    if (!primitive) return;
+    const merged = [];
+    for (const arr of this._bgSegmentsByInstance.values()) {
+      for (const seg of arr) merged.push(seg);
+    }
+    primitive.setSegments(merged);
   }
 
   _emitAlert(instanceId, event) {

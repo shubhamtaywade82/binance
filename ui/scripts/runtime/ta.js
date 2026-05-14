@@ -360,6 +360,38 @@ export const BUILTINS = {
     return price;
   },
 
+  // security(tf, srcName) — fetch a builtin source value (close/open/high/low/volume/
+  // hl2/hlc3/ohlc4) from a higher timeframe at the most recently closed bar (no
+  // lookahead). Returns NaN until at least one higher-TF bar has fully closed within
+  // the script's history window.
+  security(ctx, node, args) {
+    if (args.length < 2) {
+      throw new RuntimeError('security(tf, srcName) requires both arguments');
+    }
+    const tf = String(args[0]);
+    const srcName = String(args[1]);
+    const allowed = new Set(['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4']);
+    if (!allowed.has(srcName)) {
+      throw new RuntimeError(
+        `security(): srcName must be one of open/high/low/close/volume/hl2/hlc3/ohlc4 (got "${srcName}")`,
+      );
+    }
+    // Cache a per-call-site Series so `security("1h","close")[k]` works for k bars ago.
+    let state = ctx.callState.get(node);
+    if (!state) {
+      state = { tf, srcName, series: new Series(ctx.capacity) };
+      ctx.callState.set(node, state);
+    }
+    if (state.tf !== tf || state.srcName !== srcName) {
+      throw new ValidationError(
+        `security(): tf and srcName must be constant per call site (was ${state.tf}/${state.srcName}, got ${tf}/${srcName})`,
+      );
+    }
+    const v = ctx.lookupHtfValue(tf, srcName);
+    state.series.push(v);
+    return state.series;
+  },
+
   // entry(cond, side, qty=1) — long/short entry at current bar's close.
   // Calling entry while an opposite-side position is open auto-reverses (closes
   // the existing position at the same bar's close, then opens the new one).

@@ -7,3 +7,5 @@ logs/
 coverage/
 # Runtime / ledger data at repo root only — do not match `src/execution/paper/` sources.
 /paper/
+# NanoPine server-side script store (populated by /api/scripts at runtime).
+/data/nanopine-scripts.json

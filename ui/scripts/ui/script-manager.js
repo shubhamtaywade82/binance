@@ -3,14 +3,31 @@
 
 import { MSG } from '../worker/protocol.js';
 import { ChartOverlayManager } from './script-overlay.js';
-import { LocalAdapter, SAMPLE_SCRIPT, makeId } from './script-store.js';
+import { LocalAdapter, SAMPLE_SCRIPT, makeId, pickAdapter } from './script-store.js';
 
 export class ScriptManager extends EventTarget {
   constructor(chartManager, opts = {}) {
     super();
     this.chartManager = chartManager;
     this.overlay = new ChartOverlayManager(chartManager);
-    this.store = opts.store || new LocalAdapter();
+    if (opts.store) {
+      this.store = opts.store;
+    } else {
+      const remote =
+        opts.remote === true ||
+        (typeof import.meta !== 'undefined' &&
+          import.meta.env &&
+          (import.meta.env.VITE_NANOPINE_REMOTE === 'true' ||
+            import.meta.env.VITE_NANOPINE_REMOTE === '1'));
+      this.store = pickAdapter({
+        remote,
+        onChange: (remoteScripts) => {
+          this.scripts = remoteScripts;
+          this.dispatchEvent(new CustomEvent('change'));
+          this.applyAllEnabled();
+        },
+      });
+    }
 
     /** @type {Array<{id:string,name:string,source:string,inputs:object,enabled:boolean,createdAt:number,updatedAt:number}>} */
     this.scripts = this.store.list();
@@ -83,6 +100,12 @@ export class ScriptManager extends EventTarget {
   }
 
   _initWorker() {
+    if (typeof Worker === 'undefined') {
+      // Non-browser environment (e.g. unit tests). Skip silently — the data-management
+      // surface (create/update/import/export) still works.
+      this.worker = null;
+      return;
+    }
     try {
       this.worker = new Worker(new URL('../worker/script-worker.js', import.meta.url), {
         type: 'module',
@@ -173,6 +196,41 @@ export class ScriptManager extends EventTarget {
     return sc;
   }
 
+  exportAll() {
+    return {
+      version: 1,
+      exportedAt: Date.now(),
+      scripts: this.scripts.map((s) => ({
+        name: s.name,
+        source: s.source,
+        inputs: s.inputs || {},
+        enabled: false,
+      })),
+    };
+  }
+
+  importMany(payload, { replace = false } = {}) {
+    const list = Array.isArray(payload) ? payload : Array.isArray(payload?.scripts) ? payload.scripts : null;
+    if (!list) throw new Error('Invalid import payload — expected an array or { scripts: [] }');
+    const now = Date.now();
+    const incoming = list
+      .filter((s) => s && typeof s.source === 'string')
+      .map((s) => ({
+        id: makeId(),
+        name: typeof s.name === 'string' && s.name ? s.name : 'Imported script',
+        source: s.source,
+        inputs: s.inputs && typeof s.inputs === 'object' ? { ...s.inputs } : {},
+        enabled: false,
+        createdAt: now,
+        updatedAt: now,
+      }));
+    if (replace) this.scripts = incoming;
+    else this.scripts.push(...incoming);
+    this.store.saveAll(this.scripts);
+    this.dispatchEvent(new CustomEvent('change'));
+    return incoming;
+  }
+
   duplicate(id) {
     const sc = this.scripts.find((s) => s.id === id);
     if (!sc) return null;
@@ -229,7 +287,19 @@ export class ScriptManager extends EventTarget {
       source: sc.source,
       inputs: sc.inputs,
       candles: candles.map(toPlainCandle),
+      extraCandles: this._collectExtraCandles(tf),
     });
+  }
+
+  _collectExtraCandles(activeTf) {
+    const map = this.chartManager?.candleMap || {};
+    const out = {};
+    for (const [tf, arr] of Object.entries(map)) {
+      if (tf === activeTf) continue;
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      out[tf] = arr.map(toPlainCandle);
+    }
+    return out;
   }
 
   applyAllEnabled() {

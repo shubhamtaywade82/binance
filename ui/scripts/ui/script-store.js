@@ -63,15 +63,88 @@ export class LocalAdapter {
   }
 }
 
+/**
+ * Server-backed adapter — writes to /api/scripts and mirrors to localStorage so the
+ * synchronous list() works during boot. On construction, kicks off a background hydrate
+ * that replaces the local cache once the server responds. Subsequent saveAll() calls
+ * write through to both localStorage (immediate) and the server (best-effort PUT).
+ */
 export class RemoteAdapter {
-  // Phase-5 placeholder. Same signatures as LocalAdapter.
-  list() {
-    return [];
+  constructor(opts = {}) {
+    this.endpoint = (opts.endpoint || '/api/scripts').replace(/\/+$/, '');
+    this._local = new LocalAdapter();
+    this._onChange = opts.onChange || null;
+    this._hydrating = false;
+    this._lastPut = 0;
+    this._putTimer = null;
+    this._fetchImpl = opts.fetch || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    this._hydrate();
   }
 
-  saveAll(_scripts) {
-    /* TODO: PUT /api/scripts */
+  list() {
+    return this._local.list();
   }
+
+  saveAll(scripts) {
+    this._local.saveAll(scripts);
+    this._schedulePut(scripts);
+  }
+
+  async _hydrate() {
+    if (!this._fetchImpl) return;
+    this._hydrating = true;
+    try {
+      const r = await this._fetchImpl(this.endpoint, { method: 'GET' });
+      if (!r.ok) throw new Error(`GET ${this.endpoint} → ${r.status}`);
+      const body = await r.json();
+      const remote = Array.isArray(body?.scripts) ? body.scripts : [];
+      if (remote.length) {
+        this._local.saveAll(remote);
+        if (this._onChange) this._onChange(remote);
+      } else {
+        // Empty server → push whatever's in localStorage so other devices see it.
+        const local = this._local.list();
+        if (local.length) await this._putAll(local);
+      }
+    } catch (e) {
+      // Network / 5xx — keep the local cache. Silent: console.warn would spam the dev console.
+      void e;
+    } finally {
+      this._hydrating = false;
+    }
+  }
+
+  _schedulePut(scripts) {
+    if (!this._fetchImpl || this._hydrating) return;
+    // Debounce — multiple edits in quick succession collapse into one PUT.
+    if (this._putTimer) clearTimeout(this._putTimer);
+    this._putTimer = setTimeout(() => {
+      this._putTimer = null;
+      this._putAll(scripts).catch(() => {
+        /* best-effort */
+      });
+    }, 400);
+  }
+
+  async _putAll(scripts) {
+    if (!this._fetchImpl) return;
+    await this._fetchImpl(this.endpoint, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scripts),
+    });
+    this._lastPut = Date.now();
+  }
+}
+
+/**
+ * Pick an adapter at boot. Defaults to LocalAdapter; passing a truthy {remote: true}
+ * (typically driven by an env flag the host app reads from import.meta.env) switches
+ * to the server-backed adapter.
+ */
+export function pickAdapter(opts = {}) {
+  if (opts.remote) return new RemoteAdapter(opts);
+  return new LocalAdapter();
 }
 
 function seedDefaults() {
