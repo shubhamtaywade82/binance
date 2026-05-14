@@ -33,6 +33,7 @@ import { snapshotMicrostructure } from '../binance/microstructure';
 import { createScriptsApi } from './scripts-api';
 import { createScriptsAi } from './scripts-ai';
 import { createScriptAlertRunner } from './script-alert-runner';
+import { Ollama } from 'ollama';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -180,6 +181,105 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     });
   };
 
+  const chatModel = (cfg.OLLAMA_MODEL || '').trim();
+  const chatOllamaHost = cfg.OLLAMA_TARGET === 'cloud' ? ollamaApiUrl('cloud') : ollamaApiUrl('local');
+  const chatApiKey = (cfg.OLLAMA_API_KEY || '').trim();
+
+  const buildMarketContext = (): string => {
+    const s = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+    const parts: string[] = [
+      `Symbol: ${symbolUpper}`,
+      `Price: ${s.refPrice}`,
+      `HTF Bias: ${s.htfBias}`,
+      `LTF: direction=${s.ltfDirection}, confidence=${s.ltfConfidence}, score=${s.ltfScore}`,
+    ];
+
+    const smc = s.smc;
+    parts.push(`SMC: score=${smc.score}, bos=${smc.bos}, choch=${smc.choch}, blocks=${smc.blocks?.length ?? 0}, fvgs=${smc.fvgs?.length ?? 0}, sweep=${smc.liquiditySweep}`);
+
+    if (s.knnArchitecture) {
+      const k = s.knnArchitecture;
+      parts.push(`kNN: bias=${k.bias}, confidence=${k.confidence?.toFixed(2)}, stH=${k.stLines?.high}, stL=${k.stLines?.low}, ltH=${k.ltLines?.high}, ltL=${k.ltLines?.low}, deltaTanks=${k.deltaTanks?.length ?? 0}`);
+    }
+    if (s.solMtf) {
+      parts.push(`SOL MTF: pass=${s.solMtf.pass}, direction=${s.solMtf.direction}`);
+    }
+    parts.push(`Timeframe: ${s.signalMeta?.trendSeriesTf ?? 'unknown'}, HTF: ${s.signalMeta?.htf ?? 'unknown'}`);
+    return parts.join('\n');
+  };
+
+  const handleChatRequest = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    if (!chatModel) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OLLAMA_MODEL not configured in .env' }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += (chunk as Buffer).length;
+      if (total > 32 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Request too large' }));
+        return;
+      }
+      chunks.push(chunk as Buffer);
+    }
+    let body: { messages?: { role: string; content: string }[]; context?: boolean };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const userMessages = Array.isArray(body.messages) ? body.messages : [];
+    if (!userMessages.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No messages provided' }));
+      return;
+    }
+
+    const includeContext = body.context !== false;
+    const systemMsg = includeContext
+      ? `You are QuantumTrade AI, an expert crypto trading assistant. You have real-time market data:\n\n${buildMarketContext()}\n\nUse this data to give specific, actionable trading analysis. Be concise and precise.`
+      : 'You are QuantumTrade AI, an expert crypto trading assistant. Be concise and precise.';
+
+    const messages = [
+      { role: 'system' as const, content: systemMsg },
+      ...userMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ];
+
+    try {
+      const headers: Record<string, string> | undefined = chatApiKey ? { Authorization: `Bearer ${chatApiKey}` } : undefined;
+      const ollama = new Ollama({ host: chatOllamaHost, headers });
+      const stream = await ollama.chat({ model: chatModel, messages, stream: true });
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      for await (const chunk of stream) {
+        if (res.destroyed) break;
+        const token = chunk.message?.content ?? '';
+        if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+        if (chunk.done) res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      }
+      res.end();
+    } catch (err) {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (err as Error).message }));
+      } else {
+        res.write(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`);
+        res.end();
+      }
+    }
+  };
+
   const httpServer = http.createServer((req, res) => {
     // CORS allows the dev UI on a different port to talk to /api directly when not proxied.
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -194,6 +294,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (req.url === '/api/scripts/capabilities') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ai: scriptsAi.enabled }));
+        return;
+      }
+      if (req.url === '/api/chat' && (req.method ?? '').toUpperCase() === 'POST') {
+        await handleChatRequest(req, res);
         return;
       }
       if (await scriptsAi.handle(req, res)) return;

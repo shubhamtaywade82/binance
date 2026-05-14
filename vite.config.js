@@ -40,5 +40,11 @@ export default defineConfig({
   build: {
     outDir: '../dist-ui',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(workspaceRoot, 'ui/index.html'),
+        ai: path.resolve(workspaceRoot, 'ui/ai.html'),
+      },
+    },
   },
 });

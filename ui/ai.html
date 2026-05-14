@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuantumTrade — AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./ai-chat.css" />
+</head>
+<body class="ai-page">
+  <header id="topbar">
+    <div class="topbar-left">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <polygon points="14,2 26,8 26,20 14,26 2,20 2,8" fill="none" stroke="#7c4dff" stroke-width="1.5"/>
+          <polygon points="14,6 22,10 22,18 14,22 6,18 6,10" fill="#7c4dff" opacity="0.2"/>
+          <circle cx="14" cy="14" r="3" fill="#7c4dff"/>
+        </svg>
+        <span class="logo-text">QuantumTrade</span>
+      </div>
+      <div class="pair-badge" id="pair-badge">
+        <span id="hdr-symbol">—</span>
+        <span class="badge-tag">PERP</span>
+      </div>
+      <a href="/" class="ai-nav-link">← Dashboard</a>
+    </div>
+    <div class="topbar-right">
+      <span class="ai-page-title">AI Assistant</span>
+      <div class="ws-status disconnected" id="ws-status">
+        <span class="ws-dot"></span>
+        <span id="ws-status-text">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="ai-main">
+    <div id="ai-scripts-panel" class="ai-panel">
+      <div class="ai-panel-header">
+        <span class="ai-panel-label">NanoPine Scripts</span>
+      </div>
+      <div id="nanopine-host" class="ai-panel-body"></div>
+    </div>
+    <div class="ai-panel-divider"></div>
+    <div id="ai-chat-panel" class="ai-panel">
+      <div class="ai-panel-header">
+        <span class="ai-panel-label">Market Chat</span>
+        <div class="ai-panel-actions">
+          <label class="ai-context-toggle">
+            <input type="checkbox" id="chat-context-toggle" checked />
+            <span>Market context</span>
+          </label>
+          <button id="chat-clear-btn" class="ai-btn-sm" title="Clear chat history">Clear</button>
+        </div>
+      </div>
+      <div id="chat-messages" class="ai-panel-body ai-chat-messages"></div>
+      <div class="ai-chat-input-bar">
+        <textarea id="chat-input" placeholder="Ask about market structure, strategy, signals…" rows="1"></textarea>
+        <button id="chat-send-btn" class="ai-btn-send" title="Send (Enter)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="./ai-main.js"></script>
+</body>
+</html>
