@@ -7,8 +7,10 @@ export const MSG = {
   COMPILE_RUN: 'compile_run',
   BAR: 'bar',
   REMOVE: 'remove',
+  SWEEP: 'sweep',
   // Worker → Main
   COMPILED: 'compiled',
   TICK: 'tick',
   ERROR: 'error',
+  SWEEP_RESULT: 'sweep_result',
 };

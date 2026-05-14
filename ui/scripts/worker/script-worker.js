@@ -32,6 +32,9 @@ self.addEventListener('message', (ev) => {
       case MSG.REMOVE:
         runtimes.delete(msg.instanceId);
         break;
+      case MSG.SWEEP:
+        handleSweep(msg);
+        break;
       default:
         // Unknown — ignore silently.
         break;
@@ -87,6 +90,37 @@ function handleCompileRun(msg) {
     outputs,
     bars: n,
   });
+}
+
+function handleSweep(msg) {
+  const { sweepId, source, candles, extraCandles, combinations } = msg;
+  const tokens = tokenize(String(source ?? ''));
+  const program = parse(tokens);
+  const results = [];
+  const startedAt = perfNow();
+  const MAX_MS = 30_000;
+  for (const inputs of combinations || []) {
+    if (perfNow() - startedAt > MAX_MS) break;
+    try {
+      const ctx = createContext();
+      for (const [name, value] of Object.entries(inputs)) ctx.setInput(name, value);
+      prepare(program, ctx);
+      if (extraCandles && typeof extraCandles === 'object') ctx.loadHtfData(extraCandles);
+      const n = Array.isArray(candles) ? candles.length : 0;
+      ctx.times = new Array(n);
+      for (let i = 0; i < n; i++) ctx.times[i] = candleTime(candles[i]);
+      for (let i = 0; i < n; i++) {
+        ctx.pushBar(candles[i]);
+        runBar(program, ctx, i);
+      }
+      const stats =
+        ctx.meta.kind === 'strategy' && ctx.strategy ? ctx.strategyStats() : null;
+      results.push({ inputs, stats });
+    } catch (err) {
+      results.push({ inputs, error: (err && err.message) || String(err) });
+    }
+  }
+  self.postMessage({ kind: MSG.SWEEP_RESULT, sweepId, results });
 }
 
 function handleBar(msg) {

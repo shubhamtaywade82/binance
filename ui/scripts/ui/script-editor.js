@@ -18,6 +18,9 @@ export class ScriptEditor {
     this.root.innerHTML = `
       <div class="nanopine-toolbar">
         <button class="nanopine-btn" data-act="new">+ New</button>
+        <button class="nanopine-btn" data-act="ai" data-role="ai-btn" title="Generate a script from a natural-language description" hidden>Ask AI</button>
+        <button class="nanopine-btn" data-act="export-ts" data-role="ts-btn" title="Download this strategy as a TypeScript stub for live trading" hidden>Export TS</button>
+        <button class="nanopine-btn" data-act="sweep" data-role="sweep-btn" title="Run a parameter sweep over int/float inputs" hidden>Sweep</button>
         <button class="nanopine-btn" data-act="export" title="Download all scripts as JSON">Export</button>
         <button class="nanopine-btn" data-act="import" title="Append scripts from a JSON file">Import</button>
         <input type="file" data-role="import-input" accept="application/json,.json" hidden />
@@ -59,10 +62,15 @@ export class ScriptEditor {
     this.elAlertsList = this.root.querySelector('[data-role="alerts-list"]');
     this.elStats = this.root.querySelector('[data-role="stats"]');
 
+    this.elAiBtn = this.root.querySelector('[data-role="ai-btn"]');
+    this.elTsBtn = this.root.querySelector('[data-role="ts-btn"]');
+    this.elSweepBtn = this.root.querySelector('[data-role="sweep-btn"]');
+
     this._bindEvents();
     this._refreshList();
     this._refreshAlerts();
     this._refreshStats();
+    this._probeCapabilities();
 
     manager.addEventListener('change', () => this._refreshList());
     manager.addEventListener('status', (ev) => this._renderStatus(ev.detail));
@@ -88,9 +96,15 @@ export class ScriptEditor {
       else if (act === 'delete') this._actDelete();
       else if (act === 'export') this._actExport();
       else if (act === 'import') this._actImport();
+      else if (act === 'ai') this._actAskAi();
+      else if (act === 'export-ts') this._actExportTs();
+      else if (act === 'sweep') this._actSweep();
       else if (act === 'toggle') {
         const targetId = target.getAttribute('data-id');
         if (targetId) this.manager.setEnabled(targetId, target.checked);
+      } else if (act === 'toggle-srv') {
+        const targetId = target.getAttribute('data-id');
+        if (targetId) this.manager.setServerSide(targetId, target.checked);
       } else if (act === 'clear-alerts') {
         this.manager.alerts.length = 0;
         this._refreshAlerts();
@@ -126,12 +140,17 @@ export class ScriptEditor {
         const status = this.manager.getStatus(s.id);
         const cls = status.state === 'error' ? 'err' : status.state === 'running' ? 'ok' : '';
         const active = s.id === this.activeId ? 'active' : '';
+        const serverChecked = s.runServerSide ? 'checked' : '';
         return `
           <div class="nanopine-row ${active} ${cls}" data-script-id="${s.id}">
-            <label class="nanopine-toggle">
+            <label class="nanopine-toggle" title="Enable on the chart">
               <input type="checkbox" data-act="toggle" data-id="${s.id}" ${s.enabled ? 'checked' : ''} />
             </label>
             <span class="nanopine-row-name">${escapeHtml(s.name)}</span>
+            <label class="nanopine-toggle nanopine-toggle-srv" title="Also run server-side for alerts (browser does not need to be open)">
+              <input type="checkbox" data-act="toggle-srv" data-id="${s.id}" ${serverChecked} />
+              <span class="nanopine-toggle-label">srv</span>
+            </label>
             <span class="nanopine-row-state">${escapeHtml(status.state)}</span>
           </div>
         `;
@@ -153,8 +172,15 @@ export class ScriptEditor {
     this.elError.textContent = '';
     this._refreshList();
     this._refreshStats();
+    this._refreshContextButtons(sc);
     const status = this.manager.getStatus(id);
     this._renderStatus({ id, error: status.error });
+  }
+
+  _refreshContextButtons(sc) {
+    const isStrategy = /\bstrategy\s*\(/.test(sc.source || '');
+    if (this.elTsBtn) this.elTsBtn.hidden = !isStrategy;
+    if (this.elSweepBtn) this.elSweepBtn.hidden = !isStrategy;
   }
 
   _renderInputs(sc) {
@@ -221,6 +247,158 @@ export class ScriptEditor {
     if (!this.activeId) return;
     const sc = this.manager.duplicate(this.activeId);
     if (sc) this._selectScript(sc.id);
+  }
+
+  async _probeCapabilities() {
+    try {
+      const r = await fetch('/api/scripts/capabilities');
+      if (!r.ok) return;
+      const caps = await r.json();
+      if (caps?.ai && this.elAiBtn) this.elAiBtn.hidden = false;
+    } catch {
+      /* offline or backend not running — buttons stay hidden */
+    }
+  }
+
+  async _actAskAi() {
+    const prompt = window.prompt(
+      'Describe the script you want (e.g. "RSI 14 with overbought/oversold bgcolor and alerts")',
+    );
+    if (!prompt) return;
+    this._setStatus('Generating…');
+    try {
+      const r = await fetch('/api/scripts/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        this.elError.textContent = `AI: ${body.error || 'failed'}`;
+        this.elError.classList.add('has-error');
+        return;
+      }
+      const sc = this.manager.create({
+        name: prompt.slice(0, 40),
+        source: body.source,
+      });
+      this._selectScript(sc.id);
+    } catch (err) {
+      this.elError.textContent = `AI: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+    } finally {
+      this._setStatus('');
+    }
+  }
+
+  _actExportTs() {
+    if (!this.activeId) return;
+    const sc = this.manager.list().find((s) => s.id === this.activeId);
+    if (!sc) return;
+    try {
+      const ts = this.manager.exportAsTypescript(sc.id);
+      if (!ts) return;
+      const blob = new Blob([ts.source], { type: 'text/typescript' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = ts.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      this.elError.textContent = `Export TS: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+    }
+  }
+
+  async _actSweep() {
+    if (!this.activeId) return;
+    const sc = this.manager.list().find((s) => s.id === this.activeId);
+    if (!sc) return;
+    let ranges;
+    try {
+      ranges = await this.manager.collectSweepRanges(sc.id);
+    } catch (err) {
+      this.elError.textContent = `Sweep: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+      return;
+    }
+    if (!ranges || !ranges.length) {
+      this.elError.textContent =
+        'Sweep needs at least one int/float input. Add `name = input.int(default, title=...)` to your script.';
+      this.elError.classList.add('has-error');
+      return;
+    }
+    const promptText = ranges
+      .map(
+        (r) =>
+          `${r.name} (${r.kind}, default ${r.default}): start, end, step  e.g.  ${r.default - 5},${r.default + 5},1`,
+      )
+      .join('\n');
+    const input = window.prompt(`Enter ranges (one line each):\n\n${promptText}`, '');
+    if (!input) return;
+    const lines = input.split('\n').map((l) => l.trim()).filter((l) => l);
+    if (lines.length !== ranges.length) {
+      this.elError.textContent = `Sweep: expected ${ranges.length} lines, got ${lines.length}`;
+      this.elError.classList.add('has-error');
+      return;
+    }
+    const parsed = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].split(',').map((s) => Number(s.trim()));
+      if (m.length !== 3 || m.some((n) => !Number.isFinite(n))) {
+        this.elError.textContent = `Sweep: line ${i + 1} must be "start,end,step"`;
+        this.elError.classList.add('has-error');
+        return;
+      }
+      parsed.push({ name: ranges[i].name, kind: ranges[i].kind, start: m[0], end: m[1], step: m[2] });
+    }
+    this._setStatus('Sweeping…');
+    try {
+      const results = await this.manager.runSweep(sc.id, parsed);
+      this._renderSweep(results);
+    } catch (err) {
+      this.elError.textContent = `Sweep: ${err instanceof Error ? err.message : String(err)}`;
+      this.elError.classList.add('has-error');
+    } finally {
+      this._setStatus('');
+    }
+  }
+
+  _renderSweep(results) {
+    if (!results || !results.length) return;
+    // Use the stats panel slot.
+    const top = results.slice(0, 30);
+    const cols = Object.keys(top[0].inputs);
+    const rows = top
+      .map((r) => {
+        const inputCells = cols.map((c) => `<td>${escapeHtml(r.inputs[c])}</td>`).join('');
+        const cls = (r.stats?.totalPnl ?? 0) >= 0 ? 'pos' : 'neg';
+        return `<tr>
+          ${inputCells}
+          <td class="${cls}">${(r.stats?.totalPnl ?? 0).toFixed(2)}</td>
+          <td>${((r.stats?.winRate ?? 0) * 100).toFixed(1)}%</td>
+          <td>${r.stats?.trades ?? 0}</td>
+          <td class="neg">${((r.stats?.maxDrawdown ?? 0) * 100).toFixed(1)}%</td>
+        </tr>`;
+      })
+      .join('');
+    this.elStats.hidden = false;
+    this.elStats.innerHTML = `
+      <div class="nanopine-stats-head"><strong>Sweep — top ${top.length}</strong><span class="dim">${results.length} runs</span></div>
+      <table class="nanopine-sweep">
+        <thead>
+          <tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}<th>PnL</th><th>Win</th><th>Trades</th><th>MaxDD</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  _setStatus(text) {
+    if (this.elStatus) this.elStatus.textContent = text || '';
   }
 
   _actExport() {

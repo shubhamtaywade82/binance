@@ -19,6 +19,8 @@ export interface ScriptRecord {
   source: string;
   inputs: Record<string, unknown>;
   enabled: boolean;
+  /** When true, the dashboard evaluates this script server-side for alerts. */
+  runServerSide?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -32,6 +34,8 @@ export interface ScriptsApi {
   handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean>;
   /** Test hook — read the current in-memory cache. */
   list(): ScriptRecord[];
+  /** Assignable callback fired whenever the cache changes (POST/PUT/DELETE). */
+  onChange?: (scripts: ScriptRecord[]) => void;
 }
 
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB per request — scripts shouldn't be larger.
@@ -95,7 +99,15 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
       req.on('error', reject);
     });
 
-  return {
+  const notifyChange = (api: ScriptsApi): void => {
+    try {
+      api.onChange?.(cache.slice());
+    } catch (e) {
+      opts.log?.warn?.('nanopine_scripts_on_change_threw', { err: (e as Error).message });
+    }
+  };
+
+  const api: ScriptsApi = {
     list: () => cache.slice(),
     handle: async (req, res) => {
       const url = req.url ?? '';
@@ -122,6 +134,7 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
           if (idx >= 0) cache[idx] = sc;
           else cache.push(sc);
           await persist();
+          notifyChange(api);
           sendJson(res, idx >= 0 ? 200 : 201, sc);
         } catch (e) {
           sendError(res, 400, (e as Error).message);
@@ -146,6 +159,7 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
           }
           cache = next;
           await persist();
+          notifyChange(api);
           sendJson(res, 200, { scripts: cache });
         } catch (e) {
           sendError(res, 400, (e as Error).message);
@@ -172,6 +186,7 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
             if (idx >= 0) cache[idx] = sc;
             else cache.push(sc);
             await persist();
+            notifyChange(api);
             sendJson(res, 200, sc);
           } catch (e) {
             sendError(res, 400, (e as Error).message);
@@ -184,6 +199,7 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
             cache.splice(idx, 1);
             try {
               await persist();
+              notifyChange(api);
             } catch (e) {
               sendError(res, 500, (e as Error).message);
               return true;
@@ -199,6 +215,8 @@ export function createScriptsApi(opts: ScriptsApiOptions): ScriptsApi {
       return true;
     },
   };
+
+  return api;
 }
 
 function coerceRecord(raw: unknown): ScriptRecord | null {
@@ -212,10 +230,11 @@ function coerceRecord(raw: unknown): ScriptRecord | null {
     ? (r.inputs as Record<string, unknown>)
     : {};
   const enabled = r.enabled === true;
+  const runServerSide = r.runServerSide === true;
   const createdAt = typeof r.createdAt === 'number' ? r.createdAt : now;
   const updatedAt = typeof r.updatedAt === 'number' ? r.updatedAt : now;
   if (source.length > MAX_BODY_BYTES) return null;
-  return { id, name, source, inputs, enabled, createdAt, updatedAt };
+  return { id, name, source, inputs, enabled, runServerSide, createdAt, updatedAt };
 }
 
 function isValidRecord(raw: unknown): raw is ScriptRecord {

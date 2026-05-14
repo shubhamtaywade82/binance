@@ -473,6 +473,12 @@ const dispatch = (msg) => {
       break;
     }
 
+    /* ── Server-side NanoPine alerts ─ */
+    case 'script_alert': {
+      scripts?.ingestServerAlert?.(msg);
+      break;
+    }
+
     /* ── Heartbeat ─ */
     case 'heartbeat': {
       console.debug(`[hb] ${new Date(msg.ts).toISOString()} — clients: ${msg.clients}`);

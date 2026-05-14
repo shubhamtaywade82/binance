@@ -31,6 +31,8 @@ import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/pr
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
 import { snapshotMicrostructure } from '../binance/microstructure';
 import { createScriptsApi } from './scripts-api';
+import { createScriptsAi } from './scripts-ai';
+import { createScriptAlertRunner } from './script-alert-runner';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -161,6 +163,22 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     filePath: process.env.NANOPINE_SCRIPTS_PATH || 'data/nanopine-scripts.json',
     log: { info: (m, c) => log.info(m, c as never), warn: (m, c) => log.warn(m, c as never) },
   });
+  const scriptsAi = createScriptsAi({ cfg });
+  const scriptAlertRunner = createScriptAlertRunner({
+    evaluationTf: ltfTf,
+    log: { info: (m, c) => log.info(m, c as never), warn: (m, c) => log.warn(m, c as never) },
+    onAlert: (event) => {
+      broadcast({ type: 'script_alert', ...event });
+    },
+  });
+  scriptAlertRunner.setScripts(scriptsApi.list()).catch((err: Error) => {
+    log.warn('script_alert_initial_load_failed', { err: err.message });
+  });
+  scriptsApi.onChange = (scripts) => {
+    scriptAlertRunner.setScripts(scripts).catch((err: Error) => {
+      log.warn('script_alert_reload_failed', { err: err.message });
+    });
+  };
 
   const httpServer = http.createServer((req, res) => {
     // CORS allows the dev UI on a different port to talk to /api directly when not proxied.
@@ -172,10 +190,22 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       res.end();
       return;
     }
-    scriptsApi.handle(req, res).then((handled) => {
-      if (handled) return;
+    (async () => {
+      if (await scriptsAi.handle(req, res)) return;
+      if (await scriptsApi.handle(req, res)) return;
+      if (req.url === '/api/scripts/capabilities') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ai: scriptsAi.enabled }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('Trading bot — dashboard WebSocket (same process as orchestrator)\n');
+    })().catch((err: Error) => {
+      log.warn('dashboard_http_handler_error', { err: err.message });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     });
   });
 
@@ -864,6 +894,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       broadcast({ type: 'kline', symbol: symU, tf, candle, isFinal });
       if (chartTfBroadcastSet.has(tf)) {
         scheduleIndicatorBroadcastForSymbol(symU, isFinal);
+      }
+      if (isFinal) {
+        void scriptAlertRunner.onClosedBar(symU, tf, candle);
       }
       if (isFinal && tf === ltfTf) {
         maybePeriodicSupertrendTune(symU);
