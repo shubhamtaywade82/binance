@@ -62,6 +62,11 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         apiKey,
         apiSecret,
         baseUrl: binanceRestBase(cfg),
+        retry: {
+          maxAttempts: cfg.BINANCE_REST_RETRY_MAX_ATTEMPTS,
+          baseDelayMs: cfg.BINANCE_REST_RETRY_BASE_MS,
+          maxDelayMs: cfg.BINANCE_REST_RETRY_MAX_MS,
+        },
       });
       const liveAdapter = new BinanceLiveExecutionAdapter({
         client: binanceRestClient,
