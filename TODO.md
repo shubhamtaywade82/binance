@@ -135,7 +135,7 @@ Items marked ✅ are already implemented.
 | ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
 | ✅ | **Leverage bracket validation** | `validateNotionalAgainstBracket` checks notional + leverage vs tier caps |
 | ✅ | **Time-based session filter** | `TRADING_HOURS_UTC` config (e.g. `02:00-21:00`); `isWithinTradingHours()` guard in `evaluate()` |
-| ☐ | **Cross-symbol correlation guard** | Prevent adding same-direction exposure on highly correlated symbols simultaneously |
+| ✅ | **Cross-symbol correlation guard** | `src/risk/correlation-guard.ts` — `CorrelationGuard` blocks same-direction on correlated pairs + opposite-direction on negatively correlated |
 | ✅ | **countdownCancelAll integration** | `BINANCE_DEADMAN_COUNTDOWN_MS` + periodic `setCountdownCancelAll` |
 
 ---
@@ -154,7 +154,7 @@ Items marked ✅ are already implemented.
 | ✅ | **Trailing stop** | `TRAILING_STOP_CALLBACK_RATE` config; adapter places `TRAILING_STOP_MARKET` algo SL when > 0 |
 | ✅ | **Hedge mode support** | `GET /fapi/v1/positionSide/dual` → `BinanceLiveExecutionAdapter.setHedgeMode` → `positionSide` on entry/algo/close |
 | ✅ | **clientOrderId deduplication** | `generateClientOrderId(symbol, side, ts)` — deterministic SHA256 prefix for idempotent retry |
-| ☐ | **Exponential backoff retry** | Structured retry with jitter on 429/5xx; currently basic reconnect exists |
+| ✅ | **Exponential backoff retry** | `src/execution/retry-with-backoff.ts` — `retryWithBackoff()` with exponential delay, jitter, status code detection, `RetryError` |
 | ✅ | **Post-execution slippage log** | `slippage_log` emitted on every fill: `refPrice`, `fillPrice`, `slippageBps`, `latencyMs` |
 
 ---
@@ -183,10 +183,10 @@ Items marked ✅ are already implemented.
 |--------|---------|-------|
 | ✅ | Candle aggregation (1m → higher TF) | MultiTfStore |
 | ✅ | 5-TF SMC confluence scoring | daily/h4/h1/m15/m5 |
-| ☐ | **1 s / 5 s micro aggregates** | Sub-minute feature windows for microstructure signals |
-| ☐ | **Rolling feature vectors** | Structured `Float64Array` ring buffers per feature per window |
-| ☐ | **Feature normalization layer** | z-score / min-max for ML input |
-| ☐ | **Multi-symbol feature bus** | Unified feature snapshot across watchlist for cross-asset signals |
+| ✅ | **1 s / 5 s micro aggregates** | `src/features/micro-aggregator.ts` — `MicroAggregator` with time-based eviction (mean/max/min/count) |
+| ✅ | **Rolling feature vectors** | `src/features/rolling-feature-ring.ts` — `Float64Array`-backed ring buffer with mean/std/min/max |
+| ✅ | **Feature normalization layer** | z-score in `feature-normalizer.ts` + min-max in `src/features/min-max-normalizer.ts` |
+| ✅ | **Multi-symbol feature bus** | `src/features/feature-bus.ts` — `FeatureBus` manages per-symbol snapshots for cross-asset signals |
 
 ---
 
@@ -214,8 +214,8 @@ Items marked ✅ are already implemented.
 | DEFERRED | **Prometheus metrics export** | Orders placed/filled, latency histograms, PnL gauge, WS reconnects |
 | DEFERRED | **Grafana dashboard** | Visualize metrics from Prometheus |
 | DEFERRED | **Alert webhooks** | Slack/email/Telegram on: margin call, kill-switch trigger, WS down > N s |
-| ☐ | **Order latency tracking** | Measure send-time → `ORDER_TRADE_UPDATE` roundtrip; P95/P99 per session |
-| ☐ | **Fill quality report** | Fill price vs microprice at order time; slippage variance log |
+| ✅ | **Order latency tracking** | `src/observability/latency-tracker.ts` — `LatencyTracker` with send/ack/fill timestamps + p50/p95/p99 stats |
+| ✅ | **Fill quality report** | `src/observability/fill-quality.ts` — `FillQualityTracker` with signed slippage bps + mean/median/std report |
 | DEFERRED | **Equity curve snapshot** | Periodic equity + drawdown time-series to DB |
 | DEFERRED | **External watchdog** | Separate process that pings bot heartbeat; force-closes all positions if silent > N s |
 
@@ -308,14 +308,14 @@ Items marked ✅ are already implemented.
 
 | Status | Target | Notes |
 |--------|--------|-------|
-| ☐ | `P(return > +N bps in next T seconds)` | Direction classification — avoids noisy regression |
-| ☐ | `P(return < −N bps in next T seconds)` | Down probability (independent head) |
-| ☐ | `expected_return` over next N seconds | Clipped regression target |
-| ☐ | `expected_volatility` over next N seconds | Realized vol forecast |
-| ☐ | `regime` ∈ {trend, mean-revert, chop, high-vol, low-liq} | Controls whether alpha model should trade at all |
-| ☐ | `fill_probability` | Will a limit order fill before adverse move? |
-| ☐ | `slippage_bps` | Expected execution cost beyond spread |
-| ☐ | `adverse_move_probability` | P(price moves against entry within T seconds of fill) |
+| ✅ | `P(return > +N bps in next T seconds)` | `y_direction_{h}s` labels → LightGBM classifier → `p_up` |
+| ✅ | `P(return < −N bps in next T seconds)` | Same classifier → `p_down` |
+| ✅ | `expected_return` over next N seconds | `y_reg_{h}s` clipped regression labels in `label_builder.py` |
+| ✅ | `expected_volatility` over next N seconds | `y_vol_{h}s` → LightGBM regressor → `expected_volatility` served via `/infer` |
+| ✅ | `regime` ∈ {trend, mean-revert, chop, high-vol, low-liq} | `label_regime` + `_classify_regime()` → `regime` in `/infer` response |
+| ✅ | `fill_probability` | `y_fill_prob_{h}s` labels → `train_fill_probability()` → `fill_probability` in `/infer` |
+| ✅ | `slippage_bps` | `y_slippage_bps_{h}s` labels → `train_slippage()` → `expected_slippage` in `/infer` |
+| ✅ | `adverse_move_probability` | `y_adverse_move_{h}s` labels → `train_adverse_move()` → `adverse_move_probability` in `/infer` |
 
 ---
 
@@ -523,25 +523,25 @@ THEN enter short
 - ✅ Rolling z-score normalization: `feature-normalizer.ts` (Welford online, ±5σ winsorize)
 - ✅ Feature snapshot serialization: `feature-recorder.ts` (CSV with daily rotation)
 
-#### P2 — Baseline Model (scaffolding ready, needs data)
-- ✅ Label builder: `ml_bot/label_builder.py` (direction 5s/30s/60s + volatility + cost-adjusted)
-- ✅ LightGBM training script: `ml_bot/train.py` (walk-forward validation, early stopping)
-- ☐ LightGBM volatility regressor for dynamic sizing
-- ☐ SHAP feature importance
+#### P2 — Baseline Model ✅
+- ✅ Label builder: `ml_bot/label_builder.py` (direction/regression/vol/regime/fill/slippage/adverse + cost-adjusted + leakage guard)
+- ✅ LightGBM training script: `ml_bot/train.py` (direction + vol + fill + slippage + adverse + walk-forward + SHAP)
+- ✅ LightGBM volatility regressor for dynamic sizing
+- ✅ SHAP feature importance
 
 #### P3 — Live Inference ✅
-- ☐ ONNX model export
-- ✅ Inference service: `ml_bot/inference_server.py` (FastAPI `/infer`)
+- ✅ ONNX model export: `ml_bot/export_onnx.py`
+- ✅ Inference service: `ml_bot/inference_server.py` (FastAPI `/infer` — direction, vol, fill, slippage, adverse)
 - ✅ Probability gate: `ml-gate.ts` wraps SMC in orchestrator
 - ✅ Model output schema: `model-types.ts` + threshold config in `config.ts`
 - ✅ Shadow mode: `ML_SHADOW_MODE=true` default
 
-#### P4 — Sequence & Ensemble
-- TCN / Transformer sequence model
-- Multimodal encoder architecture
-- Execution quality head (slippage / adverse-move model)
-- Scheduled retraining pipeline
-- Concept drift monitoring
+#### P4 — Sequence & Ensemble (deferred — needs real data + Phase 1 baseline results)
+- ☐ TCN / Transformer sequence model
+- ☐ Multimodal encoder architecture
+- ✅ Execution quality head (fill/slippage/adverse models built)
+- ✅ Scheduled retraining pipeline: `retrain_scheduler.py`
+- ✅ Concept drift monitoring: `drift_detector.py`
 
 ---
 
