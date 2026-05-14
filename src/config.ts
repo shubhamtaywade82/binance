@@ -77,6 +77,14 @@ export const AppConfigSchema = z.object({
     return 'true';
   }, boolFromString(true)),
 
+  /**
+   * When true, `PositionManager` records open/close **intent** but never calls the execution
+   * adapter for `placeOrder` / `closePosition` (no exchange REST orders). Feeds, strategy, and
+   * paper wallet logic still run — for Phase 3 rehearsal on real market data. Do not enable
+   * on an account with unmanaged live positions (closes would not hit the exchange).
+   */
+  SHADOW_MODE: boolFromString(false),
+
   /** Seconds between heartbeat logs (mark + biases). 0 = disable. */
   LOG_HEARTBEAT_SEC: z
     .string()

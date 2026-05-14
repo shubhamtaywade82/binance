@@ -63,6 +63,22 @@ export class PositionManager {
     }
     const { takeProfit, stopLoss } = this.risk.targets(price, side);
 
+    if (this.cfg.SHADOW_MODE) {
+      this.log.info('shadow_would_place_order', {
+        pair,
+        side,
+        referencePrice: price,
+        quantity: sized.quantity,
+        takeProfit,
+        stopLoss,
+        leverage: this.cfg.LEVERAGE,
+        marginCurrency: this.cfg.MARGIN_CURRENCY,
+        notionalUsdt: sized.notionalUsdt,
+        hint: 'SHADOW_MODE=true: order not sent to the adapter.',
+      });
+      return null;
+    }
+
     const result = await this.adapter.placeOrder({
       pair,
       side,
@@ -130,7 +146,18 @@ export class PositionManager {
     this.current = null;
 
     try {
-      await this.adapter.closePosition(pos.orderId, reason);
+      if (this.cfg.SHADOW_MODE) {
+        this.log.info('shadow_would_close_position', {
+          orderId: pos.orderId,
+          reason,
+          side: pos.side,
+          quantity: pos.quantity,
+          entryPrice: pos.entryPrice,
+          hint: 'SHADOW_MODE=true: adapter.closePosition not called.',
+        });
+      } else {
+        await this.adapter.closePosition(pos.orderId, reason);
+      }
     } catch (e) {
       this.log.warn('exit_order_failed', { err: (e as Error).message });
     } finally {
