@@ -16,6 +16,11 @@ import {
   SmaState,
   AtrState,
   RollingExtreme,
+  StdevState,
+  SumState,
+  WmaState,
+  VwmaState,
+  TrendState,
 } from './ta-core.js';
 
 const MAX_LEN = DEFAULT_SERIES_CAPACITY;
@@ -59,7 +64,13 @@ function asSeries(v, name) {
 }
 
 function asBool(v) {
-  return v === true || (typeof v === 'number' && v !== 0 && !Number.isNaN(v));
+  if (v === true) return true;
+  if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
+  if (v instanceof Series) {
+    const x = v.get(0);
+    return Number.isFinite(x) && x !== 0;
+  }
+  return false;
 }
 
 // Per-call-site cache lookup. `ctx.callState` is a WeakMap keyed by AST Call nodes.
@@ -150,6 +161,78 @@ export const BUILTINS = {
     return state.update(src.get(0));
   },
 
+  stdev(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new StdevState(len));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `stdev(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0));
+  },
+
+  sum(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new SumState(len));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `sum(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0));
+  },
+
+  wma(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new WmaState(len));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `wma(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0));
+  },
+
+  vwma(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new VwmaState(len));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `vwma(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0), ctx.builtins.volume.get(0));
+  },
+
+  falling(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new TrendState(len, 'falling'));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `falling(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0));
+  },
+
+  rising(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => new TrendState(len, 'rising'));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `rising(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    return state.update(src.get(0));
+  },
+
   // -- Cross detection ---------------------------------------------------------
   crossover(_ctx, _node, args) {
     const [a, b] = args;
@@ -206,7 +289,7 @@ export const BUILTINS = {
   },
 
   // -- Output emitters ---------------------------------------------------------
-  // plot(value, color?, lineWidth?, title?, style?)
+  // plot(value, color?, lineWidth?, title?, style="line"|"histogram"|"area", pane=0)
   plot(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('plot() requires at least one argument');
@@ -219,8 +302,30 @@ export const BUILTINS = {
     if (args.length >= 3 && typeof args[2] === 'number') positional.lineWidth = args[2];
     if (args.length >= 4 && typeof args[3] === 'string') positional.title = args[3];
     const opts = { ...positional, ...optsFromKw };
-    ctx.emitPlot(node, 'line', num, opts);
+    const style = typeof opts.style === 'string' ? opts.style : 'line';
+    const kind =
+      style === 'histogram' ? 'histogram' : style === 'area' ? 'area' : 'line';
+    if (!('pane' in opts) && ctx.meta?.opts?.overlay === false) opts.pane = 1;
+    ctx.emitPlot(node, kind, num, opts);
     return num;
+  },
+
+  // alert(cond, message?) — emits an alert event whenever cond is truthy.
+  // Browser-side notifications are surfaced by the main thread.
+  alert(ctx, node, args, kwargs, evaluator) {
+    if (args.length < 1) {
+      throw new RuntimeError('alert() requires at least one argument');
+    }
+    const cond = asBool(args[0]);
+    if (!cond) return false;
+    const optsFromKw = kwargsToMap(kwargs, evaluator);
+    const message =
+      (args.length >= 2 && typeof args[1] === 'string' && args[1]) ||
+      optsFromKw.message ||
+      optsFromKw.title ||
+      `Alert at bar ${ctx.barIndex}`;
+    ctx.emitAlert(node, String(message), optsFromKw);
+    return true;
   },
 
   // plotshape(cond, location?, color?, shape?, title?)

@@ -1596,4 +1596,28 @@ body::before {
 .nanopine-btn.primary:hover { background: #1e88e5; }
 .nanopine-btn.danger { color: #ef5350; }
 .nanopine-error { color: #ef5350; font-size: 11px; min-height: 14px; white-space: pre-wrap; }
+.nanopine-error.has-error { padding: 4px 6px; background: rgba(239, 83, 80, 0.08); border: 1px solid rgba(239, 83, 80, 0.35); border-radius: 3px; }
+
+/* Sub-pane (RSI / MACD / etc.) below the main lightweight-charts canvas. */
+.nanopine-sub-pane {
+  flex: 0 0 auto;
+  width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(0, 0, 0, 0.15);
+  position: relative;
+}
+
+/* Alerts log panel inside the Scripts tab. */
+.nanopine-alerts {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 4px 8px;
+  max-height: 80px;
+  overflow: auto;
+  font-size: 11px;
+}
+.nanopine-alerts-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+.nanopine-alerts-head .dim { color: rgba(255, 255, 255, 0.5); }
+.nanopine-alerts-list { display: flex; flex-direction: column; gap: 2px; }
+.nanopine-alert-row { display: grid; grid-template-columns: auto 1fr; gap: 6px; }
+.nanopine-alert-row .when { color: rgba(255, 255, 255, 0.45); font-family: ui-monospace, monospace; }
 

@@ -131,13 +131,28 @@ export function createContext(opts = {}) {
           times: [],
         };
         this.outputs.set(outName, out);
-      } else if (!sameOpts(out.opts, opts)) {
-        // Update opts on every call to honour last-write-wins styling.
-        out.opts = { ...out.opts, ...opts };
+      } else {
+        // The kind for a given output name is decided on first emission and pinned —
+        // changing it mid-script would invalidate the existing series handle on the
+        // main thread. Honour last-write-wins for styling only.
+        if (!sameOpts(out.opts, opts)) {
+          out.opts = { ...out.opts, ...opts };
+        }
       }
       const t = this.times ? this.times[this.barIndex] : null;
       out.values.push(value);
       out.times.push(t);
+    },
+
+    emitAlert(node, message, opts) {
+      const outName = `alert_${nodeKey(node)}`;
+      let out = this.outputs.get(outName);
+      if (!out) {
+        out = { name: outName, kind: 'alert', opts: { ...opts }, events: [] };
+        this.outputs.set(outName, out);
+      }
+      const t = this.times ? this.times[this.barIndex] : null;
+      out.events.push({ time: t, message, bar: this.barIndex });
     },
 
     emitShape(node, cond, opts) {
@@ -174,10 +189,10 @@ export function createContext(opts = {}) {
     snapshotOutputs() {
       const out = [];
       for (const o of this.outputs.values()) {
-        if (o.kind === 'line') {
+        if (o.kind === 'line' || o.kind === 'histogram' || o.kind === 'area') {
           out.push({
             name: o.name,
-            kind: 'line',
+            kind: o.kind,
             opts: o.opts,
             data: o.values.map((v, i) => ({ time: o.times[i], value: v })),
           });
@@ -187,6 +202,8 @@ export function createContext(opts = {}) {
           out.push({ name: o.name, kind: 'hline', opts: o.opts, price: o.price });
         } else if (o.kind === 'bgcolor') {
           out.push({ name: o.name, kind: 'bgcolor', opts: o.opts, segments: o.segments });
+        } else if (o.kind === 'alert') {
+          out.push({ name: o.name, kind: 'alert', opts: o.opts, events: o.events });
         }
       }
       return out;
@@ -198,12 +215,11 @@ export function createContext(opts = {}) {
       const deltas = [];
       const t = this.times ? this.times[this.barIndex] : null;
       for (const o of this.outputs.values()) {
-        if (o.kind === 'line') {
+        if (o.kind === 'line' || o.kind === 'histogram' || o.kind === 'area') {
           const last = o.values[o.values.length - 1];
-          deltas.push({ name: o.name, kind: 'line', point: { time: t, value: last } });
+          deltas.push({ name: o.name, kind: o.kind, point: { time: t, value: last } });
         } else if (o.kind === 'marker') {
-          // Compare prev marker count to detect new markers.
-          const prev = prevSnapshot?.get(o.name)?.count ?? 0;
+          const prev = prevSnapshot?.get(o.name)?.markers ?? 0;
           const next = o.markers.length;
           if (next > prev) {
             deltas.push({
@@ -217,6 +233,16 @@ export function createContext(opts = {}) {
         } else if (o.kind === 'bgcolor') {
           const lastSeg = o.segments[o.segments.length - 1];
           deltas.push({ name: o.name, kind: 'bgcolor', segment: lastSeg });
+        } else if (o.kind === 'alert') {
+          const prev = prevSnapshot?.get(o.name)?.events ?? 0;
+          const next = o.events.length;
+          if (next > prev) {
+            deltas.push({
+              name: o.name,
+              kind: 'alert',
+              events: o.events.slice(prev),
+            });
+          }
         }
       }
       return deltas;
@@ -225,7 +251,8 @@ export function createContext(opts = {}) {
     snapshotCounts() {
       const m = new Map();
       for (const o of this.outputs.values()) {
-        if (o.kind === 'marker') m.set(o.name, { count: o.markers.length });
+        if (o.kind === 'marker') m.set(o.name, { markers: o.markers.length });
+        else if (o.kind === 'alert') m.set(o.name, { events: o.events.length });
       }
       return m;
     },

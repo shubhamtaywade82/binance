@@ -18,10 +18,53 @@ export class ScriptManager extends EventTarget {
     this.status = new Map();
     /** @type {string|null} active timeframe */
     this.activeTf = chartManager?.currentTf || null;
+    /** Rolling alert log (newest first) capped at 200 entries. */
+    this.alerts = [];
+    this._notificationsRequested = false;
 
     this.worker = null;
     this._workerErrorBackoff = 0;
     this._initWorker();
+    this.overlay.onAlert((ev) => this._onAlert(ev));
+  }
+
+  _onAlert(ev) {
+    const sc = this.scripts.find((s) => s.id === ev.instanceId);
+    const scriptName = sc?.name || 'Script';
+    const entry = {
+      id: `${ev.instanceId}_${this.alerts.length}_${Date.now()}`,
+      instanceId: ev.instanceId,
+      scriptName,
+      message: ev.message,
+      time: ev.time,
+      bar: ev.bar,
+      at: Date.now(),
+    };
+    this.alerts.unshift(entry);
+    if (this.alerts.length > 200) this.alerts.length = 200;
+    this.dispatchEvent(new CustomEvent('alert', { detail: entry }));
+    this._maybeNotify(entry);
+  }
+
+  _maybeNotify(entry) {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission === 'granted') {
+      try {
+        const n = new Notification(entry.scriptName, { body: entry.message });
+        setTimeout(() => n.close(), 5000);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (Notification.permission === 'default' && !this._notificationsRequested) {
+      this._notificationsRequested = true;
+      try {
+        Notification.requestPermission().catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   _initWorker() {

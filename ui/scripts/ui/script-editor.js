@@ -35,6 +35,13 @@ export class ScriptEditor {
           <button class="nanopine-btn danger" data-act="delete">Delete</button>
         </div>
         <div class="nanopine-error" data-role="error"></div>
+        <div class="nanopine-alerts" data-role="alerts" hidden>
+          <div class="nanopine-alerts-head">
+            <strong>Alerts</strong>
+            <button class="nanopine-btn" data-act="clear-alerts" title="Clear alert log">Clear</button>
+          </div>
+          <div class="nanopine-alerts-list" data-role="alerts-list"></div>
+        </div>
       </div>
     `;
 
@@ -45,12 +52,16 @@ export class ScriptEditor {
     this.elInputs = this.root.querySelector('[data-role="inputs"]');
     this.elError = this.root.querySelector('[data-role="error"]');
     this.elStatus = this.root.querySelector('[data-role="status"]');
+    this.elAlerts = this.root.querySelector('[data-role="alerts"]');
+    this.elAlertsList = this.root.querySelector('[data-role="alerts-list"]');
 
     this._bindEvents();
     this._refreshList();
+    this._refreshAlerts();
 
     manager.addEventListener('change', () => this._refreshList());
     manager.addEventListener('status', (ev) => this._renderStatus(ev.detail));
+    manager.addEventListener('alert', () => this._refreshAlerts());
 
     const first = manager.list()[0];
     if (first) this._selectScript(first.id);
@@ -70,6 +81,9 @@ export class ScriptEditor {
       else if (act === 'toggle') {
         const targetId = target.getAttribute('data-id');
         if (targetId) this.manager.setEnabled(targetId, target.checked);
+      } else if (act === 'clear-alerts') {
+        this.manager.alerts.length = 0;
+        this._refreshAlerts();
       }
     });
 
@@ -226,10 +240,48 @@ export class ScriptEditor {
           ? ` (line ${detail.error.line}${detail.error.col != null ? ', col ' + detail.error.col : ''})`
           : '';
       this.elError.textContent = `${detail.error.name || 'Error'}: ${detail.error.message}${loc}`;
+      this.elError.classList.add('has-error');
+      if (detail.error.line != null) this._highlightLine(detail.error.line, detail.error.col);
     } else {
       this.elError.textContent = '';
+      this.elError.classList.remove('has-error');
     }
     this._refreshList();
+  }
+
+  _highlightLine(line, col) {
+    const lines = this.elTextarea.value.split('\n');
+    if (line < 1 || line > lines.length) return;
+    let pos = 0;
+    for (let i = 0; i < line - 1; i++) pos += lines[i].length + 1;
+    const colOffset = Math.max(0, (col || 1) - 1);
+    const start = pos + Math.min(colOffset, lines[line - 1].length);
+    const end = pos + lines[line - 1].length;
+    try {
+      this.elTextarea.focus();
+      this.elTextarea.setSelectionRange(start, end);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _refreshAlerts() {
+    if (!this.elAlerts) return;
+    const alerts = this.manager.alerts || [];
+    if (!alerts.length) {
+      this.elAlerts.hidden = true;
+      this.elAlertsList.innerHTML = '';
+      return;
+    }
+    this.elAlerts.hidden = false;
+    const rows = alerts.slice(0, 20).map((a) => {
+      const t = new Date(a.at).toLocaleTimeString();
+      return `<div class="nanopine-alert-row" title="${escapeAttr(a.scriptName)} — bar ${a.bar}">
+        <span class="when">${t}</span>
+        <span>${escapeHtml(a.scriptName)}: ${escapeHtml(a.message)}</span>
+      </div>`;
+    });
+    this.elAlertsList.innerHTML = rows.join('');
   }
 }
 
