@@ -322,78 +322,150 @@ export class ChartManager {
     const smcStructLines = [];
     const lastT = this._lastVisibleBarTimeSec(refTf);
 
-    const ob = smc.orderBlock;
-    if (ob && Number.isFinite(ob.index)) {
-      const t = this._signalBarTimeSec(refTf, ob.index);
-      if (t != null) {
-        const bull = ob.type === 'BULLISH';
-        markers.push({
-          time: t,
-          position: bull ? 'belowBar' : 'aboveBar',
-          shape: 'square',
-          color: bull ? '#26a69a' : '#ef5350',
-          text: 'OB',
-          id: 'smc-ob',
-        });
-      }
-      if (
-        lastT != null &&
-        Number.isFinite(ob.high) &&
-        Number.isFinite(ob.low) &&
-        Number.isFinite(ob.index)
-      ) {
+    // 1. Order Blocks
+    if (Array.isArray(smc.orderBlocks)) {
+      for (const ob of smc.orderBlocks) {
         const tOb = this._signalBarTimeSec(refTf, ob.index);
         if (tOb != null) {
           const bull = ob.type === 'BULLISH';
+          markers.push({
+            time: tOb,
+            position: bull ? 'belowBar' : 'aboveBar',
+            shape: 'square',
+            color: bull ? '#26a69a' : '#ef5350',
+            text: 'OB',
+            size: 0.8,
+          });
+
+          if (lastT != null) {
+            const isInst = ob.score >= 6;
+            const alpha = ob.isMitigated ? 0.05 : (isInst ? 0.35 : 0.20);
+            const strokeAlpha = ob.isMitigated ? 0.2 : 0.6;
+            
+            smcZones.push({
+              t1: tOb,
+              t2: lastT,
+              top: ob.high,
+              bottom: ob.low,
+              fill: bull 
+                ? `rgba(38,166,154,${alpha})` 
+                : `rgba(239,83,80,${alpha})`,
+              stroke: bull 
+                ? `rgba(38,166,154,${strokeAlpha})` 
+                : `rgba(239,83,80,${strokeAlpha})`,
+              text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
+              textColor: bull ? 'rgba(200,255,240,0.8)' : 'rgba(255,220,220,0.8)',
+            });
+          }
+        }
+      }
+    }
+
+    // 2. Fair Value Gaps
+    if (Array.isArray(smc.fvgs)) {
+      for (const fvg of smc.fvgs) {
+        const tFvg = this._signalBarTimeSec(refTf, fvg.index);
+        if (tFvg != null && lastT != null) {
+          const bull = fvg.type === 'BULLISH';
+          const isHighValue = fvg.score >= 2;
+          const alpha = isHighValue ? 0.22 : 0.12;
+          
           smcZones.push({
-            t1: tOb,
+            t1: tFvg,
             t2: lastT,
-            top: Math.max(ob.high, ob.low),
-            bottom: Math.min(ob.high, ob.low),
-            fill: bull ? 'rgba(38,166,154,0.2)' : 'rgba(239,83,80,0.2)',
-            stroke: bull ? 'rgba(38,166,154,0.55)' : 'rgba(239,83,80,0.55)',
-            text: bull ? 'Demand OB' : 'Supply OB',
-            textColor: bull ? 'rgba(200,255,240,0.95)' : 'rgba(255,220,220,0.95)',
+            top: fvg.high,
+            bottom: fvg.low,
+            fill: `rgba(255,193,7,${alpha})`, 
+            stroke: `rgba(255,193,7,${isHighValue ? 0.5 : 0.3})`,
+            text: isHighValue ? 'Propulsion FVG' : 'FVG',
+            textColor: 'rgba(255,236,179,0.7)',
           });
         }
       }
     }
 
-    const fvg = smc.fvg;
-    if (fvg && Number.isFinite(fvg.low) && Number.isFinite(fvg.high)) {
-      const t = Number.isFinite(fvg.index) ? this._signalBarTimeSec(refTf, fvg.index) : null;
-      if (t != null) {
-        markers.push({
-          time: t,
-          position: 'aboveBar',
-          shape: 'circle',
-          color: '#ffab00',
-          text: 'FVG',
-          id: 'smc-fvg',
-        });
-      }
-      if (lastT != null && Number.isFinite(fvg.index)) {
-        const i = Math.trunc(fvg.index);
-        const tFvg =
-          this._signalBarTimeSec(refTf, Math.max(0, i - 2)) ?? this._signalBarTimeSec(refTf, i);
-        if (tFvg != null) {
-          const bull = fvg.type === 'BULLISH';
+    // 3. Dealing Range (Premium / Discount)
+    if (smc.dealingRange && lastT != null) {
+      const dr = smc.dealingRange;
+      const startT = lastT - 3600 * 4; 
+      smcZones.push({
+        t1: startT,
+        t2: lastT,
+        top: dr.high,
+        bottom: dr.equilibrium,
+        fill: 'rgba(239,83,80,0.03)',
+        text: 'PREMIUM',
+        textColor: 'rgba(239,83,80,0.3)',
+      });
+      smcZones.push({
+        t1: startT,
+        t2: lastT,
+        top: dr.equilibrium,
+        bottom: dr.low,
+        fill: 'rgba(38,166,154,0.03)',
+        text: 'DISCOUNT',
+        textColor: 'rgba(38,166,154,0.3)',
+      });
+      // Equilibrium Line
+      smcStructLines.push({
+        t1: startT,
+        t2: lastT,
+        price: dr.equilibrium,
+        color: 'rgba(176,190,197,0.4)',
+        label: 'EQ',
+        lineWidth: 1,
+      });
+    }
+
+    // 4. Breaker Blocks
+    if (Array.isArray(smc.breakers)) {
+      for (const bb of smc.breakers) {
+        const tBb = this._signalBarTimeSec(refTf, bb.index);
+        if (tBb != null && lastT != null) {
+          const bull = bb.type === 'BULLISH';
           smcZones.push({
-            t1: tFvg,
+            t1: tBb,
             t2: lastT,
-            top: Math.max(fvg.high, fvg.low),
-            bottom: Math.min(fvg.high, fvg.low),
-            fill: bull ? 'rgba(255,171,0,0.18)' : 'rgba(255,171,0,0.12)',
-            stroke: 'rgba(255,171,0,0.55)',
-            text: bull ? 'Bull FVG' : 'Bear FVG',
-            textColor: 'rgba(255,224,178,0.95)',
+            top: bb.high,
+            bottom: bb.low,
+            fill: bull ? 'rgba(126,87,194,0.15)' : 'rgba(126,87,194,0.15)', 
+            stroke: 'rgba(126,87,194,0.4)',
+            text: bull ? 'Bull Breaker' : 'Bear Breaker',
+            textColor: 'rgba(209,196,233,0.8)',
+          });
+        }
+      }
+    }
+
+    // 5. Generic Blocks (Liquidity, Sessions, etc.)
+    if (Array.isArray(smc.blocks)) {
+      for (const blk of smc.blocks) {
+        const t1 = this._signalBarTimeSec(refTf, blk.startIndex);
+        const t2 = this._signalBarTimeSec(refTf, blk.endIndex) || lastT;
+        if (t1 != null && t2 != null) {
+          let fill = 'rgba(144,164,174,0.1)';
+          let stroke = 'rgba(144,164,174,0.3)';
+          let textColor = 'rgba(207,216,220,0.8)';
+          
+          if (blk.type === 'LIQUIDITY') {
+            fill = 'rgba(0,188,212,0.15)'; 
+            stroke = 'rgba(0,188,212,0.4)';
+            textColor = 'rgba(178,235,242,0.8)';
+          } else if (blk.type === 'SESSION') {
+            fill = 'rgba(100,181,246,0.05)'; 
+            stroke = 'rgba(100,181,246,0.2)';
+            textColor = 'rgba(187,222,251,0.5)';
+          }
+          
+          smcZones.push({
+            t1, t2, top: blk.high, bottom: blk.low,
+            fill, stroke, text: blk.subType, textColor
           });
         }
       }
     }
 
     if (lastT != null) {
-      let hasLiqSweepMarker = false;
       if (smc.bos && smc.bos !== 'NONE') {
         const bull = smc.bos === 'BULLISH';
         const tBos = smc.bosLine && Number.isFinite(smc.bosLine.endIndex) 
@@ -454,6 +526,7 @@ export class ChartManager {
           });
         }
       }
+      let hasLiqSweepMarker = false;
       const liq = smc.liquidity;
       if (liq && typeof liq === 'object') {
         const pools = Array.isArray(liq.pools) ? liq.pools : [];

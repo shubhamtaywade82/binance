@@ -73,9 +73,11 @@ export interface DashboardSignalsPayload {
     score: number;
     liquiditySweep: string;
     /** `index` = bar offset in `refPriceTf` series (chart maps to time). */
-    orderBlock: { type: string; low: number; high: number; index: number } | null;
-    /** Fair value gap zone + anchor bar index (C3 in SMC scan). */
-    fvg: { type: string; low: number; high: number; index: number } | null;
+    orderBlocks: any[];
+    fvgs: any[];
+    breakers: any[];
+    blocks: any[];
+    dealingRange: any | null;
     bos: string;
     choch: string;
     /** Swing bar → confirmation bar at `price` (for chart BOS segment). */
@@ -584,8 +586,11 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           smc: {
             score: smc.score,
             liquiditySweep: smc.liquiditySweep,
-            orderBlock: smc.orderBlock,
-            fvg: smc.fvg,
+            orderBlocks: smc.orderBlocks,
+            fvgs: smc.fvgs,
+            breakers: smc.breakers,
+            blocks: smc.blocks,
+            dealingRange: smc.dealingRange,
             bos: smc.bos,
             choch: smc.choch,
             bosLine: smc.bosLine,
