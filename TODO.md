@@ -1269,7 +1269,7 @@ if __name__ == "__main__":
 | ☐ | Private listenKey keep-alive (PUT every 30 min) |
 | ☐ | `countdownCancelAll` keepalive to auto-cancel on crash |
 | ☐ | Prometheus metrics endpoint |
-| ☐ | Structured JSON logging |
+| ✅ | Structured JSON logging | `LOG_JSON_CONSOLE=true` — NDJSON on stdout/stderr (`app-logger.ts`), same fields as file sink |
 | ☐ | Dockerfile + `systemd` / `supervisor` unit file |
 | ☐ | Deploy to AWS `ap-southeast-1` (Singapore) for lowest Binance latency |
 
