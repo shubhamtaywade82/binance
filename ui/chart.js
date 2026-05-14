@@ -504,8 +504,8 @@ export class ChartManager {
             time: tSw,
             position: sw.kind === 'high' ? 'aboveBar' : 'belowBar',
             shape: 'circle',
-            color: sw.kind === 'high' ? 'rgba(255,82,82,0.6)' : 'rgba(0,230,118,0.6)',
-            size: 0.5,
+            color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)',
+            size: 0.2, // Smaller, more subtle markers
           });
         }
       }
@@ -519,10 +519,10 @@ export class ChartManager {
           markers.push({
             time: tSp,
             position: isHigh ? 'aboveBar' : 'belowBar',
-            shape: isHigh ? 'arrowDown' : 'arrowUp', // Use small arrows as pointers for labels
+            shape: 'circle', // Minimal shape to focus on the text label
             color: isHigh ? '#ff5252' : '#00e676',
             text: sp.label.toUpperCase(),
-            size: 1.5,
+            size: 0.1, // Near zero size to "remove" the icon
           });
         }
       }
