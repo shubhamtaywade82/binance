@@ -15,6 +15,7 @@ import { fetchBinanceKlines } from '../binance/rest-klines';
 import { biasFromCandles } from '../strategy/htf-ltf';
 import { analyzeTrend } from '../strategy/trend';
 import { analyzeSmc } from '../strategy/smc';
+import { analyzeKnnArchitecture, type KnnArchitectureResult } from '../strategy/knn-architecture';
 import type { LiquidityEngineResult } from '../strategy/liquidity-engine';
 import type { OrderBookMicroSnapshot, OrderBookSnapshotRing } from '../liquidity/order-book-snapshot-ring';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
@@ -92,6 +93,7 @@ export interface DashboardSignalsPayload {
     sweepCandleIndex: number | null;
     sweepCandleOpenTime: number | null;
   };
+  knnArchitecture: KnnArchitectureResult | null;
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
 }
@@ -320,6 +322,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           ltfScore: signals.ltfScore,
           ltfSignals: signals.ltfSignals,
           smc: signals.smc,
+          knnArchitecture: signals.knnArchitecture,
           solMtf: signals.solMtf,
         };
 
@@ -523,6 +526,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         const htfBiasRaw = biasFromCandles(candlesHtf);
         const ltfTrend = analyzeTrend(candlesTrend);
         const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
+        const knnArchitecture = analyzeKnnArchitecture(candlesSmc);
 
         let solMtf = null;
         const c5 = rows['5m'];
@@ -602,6 +606,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             sweepCandleIndex,
             sweepCandleOpenTime,
           },
+          knnArchitecture,
           solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
           signalMeta: {
             trendSeriesTf: effectiveTf,

@@ -124,6 +124,7 @@ const DEFAULT_VISIBLE_BARS = {
 const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
+const KNN_ARCHITECTURE_STORAGE_KEY = 'qt_knn_chart_overlay';
 
 /** Persisted chart timeframe (must match `.tf-btn` data-tf). */
 const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
@@ -147,6 +148,7 @@ const storeChartTf = (tf) => {
     /* ignore */
   }
 };
+
 
 const readStoredIndicatorOn = (key, defaultOn = true) => {
   try {
@@ -227,6 +229,7 @@ export class ChartManager {
     /** Shaded OB / FVG zones (LWC series primitive). */
     this._smcZonePrimitive = null;
     this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
+    this._knnArchitectureEnabled = this._readKnnArchitectureEnabled();
     /** Latest WS `signals` payload for redraw after `setData`. */
     this._lastSignalsForChart = null;
     this._signalHudEnabled = readSignalHudEnabled();
@@ -245,6 +248,22 @@ export class ChartManager {
   _storeSmcOverlayEnabled(on) {
     try {
       localStorage.setItem(SMC_OVERLAY_STORAGE_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _readKnnArchitectureEnabled() {
+    try {
+      return localStorage.getItem(KNN_ARCHITECTURE_STORAGE_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  _storeKnnArchitectureEnabled(on) {
+    try {
+      localStorage.setItem(KNN_ARCHITECTURE_STORAGE_KEY, on ? '1' : '0');
     } catch {
       /* ignore */
     }
@@ -307,321 +326,287 @@ export class ChartManager {
 
   _paintSmcFromStoredSignals() {
     this._clearSmcChartVisuals();
-    if (!this._smcSignalsOverlayEnabled || !this._lastSignalsForChart || !this.candleSeries) return;
+    if ((!this._smcSignalsOverlayEnabled && !this._knnArchitectureEnabled) || !this._lastSignalsForChart || !this.candleSeries) return;
+    
     const s = this._lastSignalsForChart;
-    const refTf = s.refPriceTf;
-    if (typeof refTf !== 'string' || refTf !== this.currentTf) return;
+    const refTf = s.refPriceTf || this.currentTf;
 
-    const smc = s.smc;
-    if (!smc) return;
-
+    const smc = this._smcSignalsOverlayEnabled ? s.smc : null;
+    const knn = (this._knnArchitectureEnabled && s.knnArchitecture) ? s.knnArchitecture : null;
+    
     const markers = [];
     /** @type {{ t1: number; t2: number; top: number; bottom: number; fill: string; stroke?: string; text?: string; textColor?: string }[]} */
     const smcZones = [];
-    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number }[]} */
+    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number; lineStyle?: number }[]} */
     const smcStructLines = [];
-    const lastT = this._lastVisibleBarTimeSec(refTf);
+    const lastT = this._lastVisibleBarTimeSec(refTf) || this._lastVisibleBarTimeSec(this.currentTf) || Math.floor(Date.now() / 1000);
 
-    // 1. Order Blocks
-    if (Array.isArray(smc.orderBlocks)) {
-      for (const ob of smc.orderBlocks) {
-        const tOb = this._signalBarTimeSec(refTf, ob.index);
-        if (tOb != null) {
-          const bull = ob.type === 'BULLISH';
-          markers.push({
-            time: tOb,
-            position: bull ? 'belowBar' : 'aboveBar',
-            shape: 'square',
-            color: bull ? '#26a69a' : '#ef5350',
-            text: 'OB',
-            size: 0.8,
-          });
+    if (smc) {
+      // 1. Order Blocks
+      if (Array.isArray(smc.orderBlocks)) {
+        for (const ob of smc.orderBlocks) {
+          const tOb = this._signalBarTimeSec(refTf, ob.index);
+          if (tOb != null) {
+            const bull = ob.type === 'BULLISH';
+            markers.push({
+              time: tOb,
+              position: bull ? 'belowBar' : 'aboveBar',
+              shape: 'square',
+              color: bull ? '#26a69a' : '#ef5350',
+              text: 'OB',
+              size: 0.8,
+            });
 
-          if (lastT != null) {
-            const isInst = ob.score >= 6;
-            const alpha = ob.isMitigated ? 0.05 : (isInst ? 0.35 : 0.20);
-            const strokeAlpha = ob.isMitigated ? 0.2 : 0.6;
-            
+            if (lastT != null) {
+              const isInst = ob.score >= 6;
+              const alpha = ob.isMitigated ? 0.08 : (isInst ? 0.45 : 0.30);
+              const strokeAlpha = ob.isMitigated ? 0.2 : 0.7;
+              smcZones.push({
+                t1: tOb, t2: lastT, top: ob.high, bottom: ob.low,
+                fill: bull ? `rgba(38,166,154,${alpha})` : `rgba(239,83,80,${alpha})`,
+                stroke: bull ? `rgba(38,166,154,${strokeAlpha})` : `rgba(239,83,80,${strokeAlpha})`,
+                text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
+                textColor: bull ? 'rgba(200,255,240,0.95)' : 'rgba(255,220,220,0.95)',
+              });
+            }
+          }
+        }
+      }
+
+      // 2. Fair Value Gaps
+      if (Array.isArray(smc.fvgs)) {
+        for (const fvg of smc.fvgs) {
+          const tFvg = this._signalBarTimeSec(refTf, fvg.index);
+          if (tFvg != null && lastT != null) {
+            const isHighValue = fvg.score >= 2;
+            const alpha = isHighValue ? 0.35 : 0.20;
             smcZones.push({
-              t1: tOb,
-              t2: lastT,
-              top: ob.high,
-              bottom: ob.low,
-              fill: bull 
-                ? `rgba(38,166,154,${alpha})` 
-                : `rgba(239,83,80,${alpha})`,
-              stroke: bull 
-                ? `rgba(38,166,154,${strokeAlpha})` 
-                : `rgba(239,83,80,${strokeAlpha})`,
-              text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
-              textColor: bull ? 'rgba(200,255,240,0.8)' : 'rgba(255,220,220,0.8)',
+              t1: tFvg, t2: lastT, top: fvg.high, bottom: fvg.low,
+              fill: `rgba(255,193,7,${alpha})`, 
+              stroke: `rgba(255,193,7,${isHighValue ? 0.6 : 0.4})`,
+              text: isHighValue ? 'Propulsion FVG' : 'FVG',
+              textColor: 'rgba(255,236,179,0.9)',
             });
           }
         }
       }
-    }
 
-    // 2. Fair Value Gaps
-    if (Array.isArray(smc.fvgs)) {
-      for (const fvg of smc.fvgs) {
-        const tFvg = this._signalBarTimeSec(refTf, fvg.index);
-        if (tFvg != null && lastT != null) {
-          const bull = fvg.type === 'BULLISH';
-          const isHighValue = fvg.score >= 2;
-          const alpha = isHighValue ? 0.22 : 0.12;
-          
-          smcZones.push({
-            t1: tFvg,
-            t2: lastT,
-            top: fvg.high,
-            bottom: fvg.low,
-            fill: `rgba(255,193,7,${alpha})`, 
-            stroke: `rgba(255,193,7,${isHighValue ? 0.5 : 0.3})`,
-            text: isHighValue ? 'Propulsion FVG' : 'FVG',
-            textColor: 'rgba(255,236,179,0.7)',
-          });
-        }
+      // 3. Dealing Range
+      if (smc.dealingRange && lastT != null) {
+        const dr = smc.dealingRange;
+        const startT = lastT - 3600 * 4; 
+        smcZones.push({ t1: startT, t2: lastT, top: dr.high, bottom: dr.equilibrium, fill: 'rgba(239,83,80,0.06)', text: 'PREMIUM', textColor: 'rgba(239,83,80,0.4)' });
+        smcZones.push({ t1: startT, t2: lastT, top: dr.equilibrium, bottom: dr.low, fill: 'rgba(38,166,154,0.06)', text: 'DISCOUNT', textColor: 'rgba(38,166,154,0.4)' });
+        smcStructLines.push({ t1: startT, t2: lastT, price: dr.equilibrium, color: 'rgba(176,190,197,0.5)', label: 'EQ', lineWidth: 1 });
       }
-    }
 
-    // 3. Dealing Range (Premium / Discount)
-    if (smc.dealingRange && lastT != null) {
-      const dr = smc.dealingRange;
-      const startT = lastT - 3600 * 4; 
-      smcZones.push({
-        t1: startT,
-        t2: lastT,
-        top: dr.high,
-        bottom: dr.equilibrium,
-        fill: 'rgba(239,83,80,0.03)',
-        text: 'PREMIUM',
-        textColor: 'rgba(239,83,80,0.3)',
-      });
-      smcZones.push({
-        t1: startT,
-        t2: lastT,
-        top: dr.equilibrium,
-        bottom: dr.low,
-        fill: 'rgba(38,166,154,0.03)',
-        text: 'DISCOUNT',
-        textColor: 'rgba(38,166,154,0.3)',
-      });
-      // Equilibrium Line
-      smcStructLines.push({
-        t1: startT,
-        t2: lastT,
-        price: dr.equilibrium,
-        color: 'rgba(176,190,197,0.4)',
-        label: 'EQ',
-        lineWidth: 1,
-      });
-    }
-
-    // 4. Breaker Blocks
-    if (Array.isArray(smc.breakers)) {
-      for (const bb of smc.breakers) {
-        const tBb = this._signalBarTimeSec(refTf, bb.index);
-        if (tBb != null && lastT != null) {
-          const bull = bb.type === 'BULLISH';
-          smcZones.push({
-            t1: tBb,
-            t2: lastT,
-            top: bb.high,
-            bottom: bb.low,
-            fill: bull ? 'rgba(126,87,194,0.15)' : 'rgba(126,87,194,0.15)', 
-            stroke: 'rgba(126,87,194,0.4)',
-            text: bull ? 'Bull Breaker' : 'Bear Breaker',
-            textColor: 'rgba(209,196,233,0.8)',
-          });
-        }
-      }
-    }
-
-    // 5. Generic Blocks (Liquidity, Sessions, etc.)
-    if (Array.isArray(smc.blocks)) {
-      for (const blk of smc.blocks) {
-        const t1 = this._signalBarTimeSec(refTf, blk.startIndex);
-        const t2 = this._signalBarTimeSec(refTf, blk.endIndex) || lastT;
-        if (t1 != null && t2 != null) {
-          let fill = 'rgba(144,164,174,0.1)';
-          let stroke = 'rgba(144,164,174,0.3)';
-          let textColor = 'rgba(207,216,220,0.8)';
-          
-          if (blk.type === 'LIQUIDITY') {
-            fill = 'rgba(0,188,212,0.15)'; 
-            stroke = 'rgba(0,188,212,0.4)';
-            textColor = 'rgba(178,235,242,0.8)';
-          } else if (blk.type === 'SESSION') {
-            fill = 'rgba(100,181,246,0.05)'; 
-            stroke = 'rgba(100,181,246,0.2)';
-            textColor = 'rgba(187,222,251,0.5)';
+      // 4. Breaker Blocks
+      if (Array.isArray(smc.breakers)) {
+        for (const bb of smc.breakers) {
+          const tBb = this._signalBarTimeSec(refTf, bb.index);
+          if (tBb != null && lastT != null) {
+            const bull = bb.type === 'BULLISH';
+            smcZones.push({
+              t1: tBb, t2: lastT, top: bb.high, bottom: bb.low,
+              fill: 'rgba(126,87,194,0.25)', stroke: 'rgba(126,87,194,0.5)',
+              text: bull ? 'Bull Breaker' : 'Bear Breaker', textColor: 'rgba(209,196,233,0.9)',
+            });
           }
-          
-          smcZones.push({
-            t1, t2, top: blk.high, bottom: blk.low,
-            fill, stroke, text: blk.subType, textColor
-          });
-        }
-      }
-    }
-
-    if (lastT != null) {
-      if (smc.bos && smc.bos !== 'NONE') {
-        const bull = smc.bos === 'BULLISH';
-        const tBos = smc.bosLine && Number.isFinite(smc.bosLine.endIndex) 
-          ? this._signalBarTimeSec(refTf, smc.bosLine.endIndex) 
-          : null;
-        markers.push({
-          time: tBos ?? lastT,
-          position: 'aboveBar',
-          shape: bull ? 'arrowUp' : 'arrowDown',
-          color: '#b388ff',
-          text: 'BOS',
-          id: 'smc-bos',
-        });
-      }
-      if (smc.choch && smc.choch !== 'NONE') {
-        const bull = smc.choch === 'BULLISH';
-        const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) 
-          ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) 
-          : null;
-        markers.push({
-          time: tChoch ?? lastT,
-          position: 'belowBar',
-          shape: bull ? 'arrowUp' : 'arrowDown',
-          color: '#80cbc4',
-          text: 'CHoCH',
-          id: 'smc-choch',
-        });
-      }
-
-      // 1. Swing dots
-      if (Array.isArray(smc.swings)) {
-        for (const sw of smc.swings) {
-          const tSw = this._signalBarTimeSec(refTf, sw.index);
-          if (!tSw) continue;
-          markers.push({
-            time: tSw,
-            position: sw.kind === 'high' ? 'aboveBar' : 'belowBar',
-            shape: 'circle',
-            color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)',
-            size: 0.2, // Smaller, more subtle markers
-          });
         }
       }
 
-      // 2. Structural Labels (HH, HL, LH, LL)
+      // 5. Generic Blocks
+      if (Array.isArray(smc.blocks)) {
+        for (const blk of smc.blocks) {
+          const t1 = this._signalBarTimeSec(refTf, blk.startIndex);
+          const t2 = this._signalBarTimeSec(refTf, blk.endIndex) || lastT;
+          if (t1 != null && t2 != null) {
+            let fill = 'rgba(144,164,174,0.2)', stroke = 'rgba(144,164,174,0.5)', textColor = 'rgba(207,216,220,0.95)';
+            if (blk.type === 'LIQUIDITY') { 
+              fill = 'rgba(0,188,212,0.25)'; 
+              stroke = 'rgba(0,188,212,0.6)'; 
+              textColor = 'rgba(178,235,242,0.95)'; 
+            } else if (blk.type === 'SESSION') { 
+              fill = 'rgba(100,181,246,0.15)'; 
+              stroke = 'rgba(100,181,246,0.4)'; 
+              textColor = 'rgba(187,222,251,0.95)'; 
+            }
+            smcZones.push({ t1, t2, top: blk.high, bottom: blk.low, fill, stroke, text: blk.subType, textColor });
+          }
+        }
+      }
+
+      // 6. BOS/CHoCH Markers
+      if (lastT != null) {
+        if (smc.bos && smc.bos !== 'NONE') {
+          const bull = smc.bos === 'BULLISH';
+          const tBos = smc.bosLine && Number.isFinite(smc.bosLine.endIndex) ? this._signalBarTimeSec(refTf, smc.bosLine.endIndex) : null;
+          markers.push({ time: tBos ?? lastT, position: 'aboveBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#b388ff', text: 'BOS', id: 'smc-bos' });
+        }
+        if (smc.choch && smc.choch !== 'NONE') {
+          const bull = smc.choch === 'BULLISH';
+          const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) : null;
+          markers.push({ time: tChoch ?? lastT, position: 'belowBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#80cbc4', text: 'CHoCH', id: 'smc-choch' });
+        }
+        if (Array.isArray(smc.swings)) {
+          for (const sw of smc.swings) {
+            const tSw = this._signalBarTimeSec(refTf, sw.index);
+            if (tSw) markers.push({ time: tSw, position: sw.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)', size: 0.2 });
+          }
+        }
+      }
+
+      // 7. Structural Labels
       if (Array.isArray(smc.structPoints)) {
         for (const sp of smc.structPoints) {
           const tSp = this._signalBarTimeSec(refTf, sp.swing.index);
-          if (!tSp) continue;
-          const isHigh = sp.swing.kind === 'high';
-          markers.push({
-            time: tSp,
-            position: isHigh ? 'aboveBar' : 'belowBar',
-            shape: 'circle', // Minimal shape to focus on the text label
-            color: isHigh ? '#ff5252' : '#00e676',
-            text: sp.label.toUpperCase(),
-            size: 0.1, // Near zero size to "remove" the icon
-          });
+          if (tSp) markers.push({ time: tSp, position: sp.swing.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sp.swing.kind === 'high' ? '#ff5252' : '#00e676', text: sp.label.toUpperCase(), size: 0.1 });
         }
       }
+
+      // 8. Liquidity
       let hasLiqSweepMarker = false;
       const liq = smc.liquidity;
       if (liq && typeof liq === 'object') {
         const pools = Array.isArray(liq.pools) ? liq.pools : [];
-        let liqLines = 0;
         for (const p of pools) {
-          if (liqLines >= 4) break;
-          const px = p.price;
-          if (!Number.isFinite(px)) continue;
-          const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
-          this._addSmcPriceLine(
-            px,
-            bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)',
-            bullPool ? 'LQ↑' : 'LQ↓',
-            LineStyle.Dotted,
-          );
-          liqLines++;
+          if (Number.isFinite(p.price)) {
+            const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
+            this._addSmcPriceLine(p.price, bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)', bullPool ? 'LQ↑' : 'LQ↓', LineStyle.Dotted);
+          }
         }
         const pr = liq.primaryRejection;
-        if (
-          pr &&
-          pr.outcome === 'rejection' &&
-          pr.sweepBarIndex != null &&
-          Number.isFinite(pr.sweepBarIndex)
-        ) {
+        if (pr && pr.outcome === 'rejection' && pr.sweepBarIndex != null) {
           const tSweep = this._signalBarTimeSec(refTf, pr.sweepBarIndex);
           if (tSweep != null) {
             const buyRaid = pr.poolKind === 'buyside' || pr.poolKind === 'BUYSIDE';
-            const raidArrow = pr.raidDirection === 'DOWN' ? '↓' : '↑';
-            markers.push({
-              time: tSweep,
-              position: buyRaid ? 'aboveBar' : 'belowBar',
-              shape: buyRaid ? 'arrowDown' : 'arrowUp',
-              color: '#ff80ab',
-              text: `LQ${raidArrow}${Number(pr.score) || 0}`,
-            });
+            markers.push({ time: tSweep, position: buyRaid ? 'aboveBar' : 'belowBar', shape: buyRaid ? 'arrowDown' : 'arrowUp', color: '#ff80ab', text: `LQ${pr.raidDirection === 'DOWN' ? '↓' : '↑'}${Number(pr.score) || 0}` });
             hasLiqSweepMarker = true;
           }
         }
       }
       if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE' && !hasLiqSweepMarker) {
-        markers.push({
-          time: lastT,
-          position: 'inBar',
-          shape: 'circle',
-          color: '#ff80ab',
-          text: 'LS',
+        markers.push({ time: lastT, position: 'inBar', shape: 'circle', color: '#ff80ab', text: 'LS' });
+      }
+
+      // 9. Structure Segments
+      const pushSmcStructureSegment = (line, color, label, position) => {
+        if (!line || !Number.isFinite(line.price)) return;
+        const tA = this._signalBarTimeSec(refTf, line.startIndex);
+        const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
+        if (tA != null && tB != null) {
+          const t1 = Math.min(tA, tB), t2 = Math.max(tA, tB);
+          if (t2 > t1) smcStructLines.push({ t1, t2, price: line.price, color, label, position, lineWidth: 2 });
+        }
+      };
+      if (smc.bos && smc.choch && smc.bosLine && smc.chochLine && smc.bosLine.startIndex === smc.chochLine.startIndex && smc.bosLine.endIndex === smc.chochLine.endIndex && Math.abs(smc.bosLine.price - smc.chochLine.price) < 1e-10) {
+        pushSmcStructureSegment(smc.bosLine, '#a389d4', 'BOS · CHoCH', smc.bos === 'BULLISH' ? 'top' : 'bottom');
+      } else {
+        if (smc.bos && smc.bos !== 'NONE') pushSmcStructureSegment(smc.bosLine, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
+        if (smc.choch && smc.choch !== 'NONE') pushSmcStructureSegment(smc.chochLine, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
+      }
+    }
+
+    if (knn) {
+      // kNN Market Architecture Logic
+      const profileWidthSec = 3600 * 6; // Wider profile area
+      const chartRightEdge = lastT + profileWidthSec;
+      
+      const renderKnnLine = (lineData, color, style, label) => {
+        const startT = lastT - 3600 * 24;
+        if (lineData.high) {
+          smcStructLines.push({ t1: startT, t2: chartRightEdge, price: lineData.high, color, label: label + ' H', lineWidth: 1.5, lineStyle: style });
+        }
+        if (lineData.low) {
+          smcStructLines.push({ t1: startT, t2: chartRightEdge, price: lineData.low, color, label: label + ' L', lineWidth: 1.5, lineStyle: style });
+        }
+      };
+      
+      // Colors: brighter and more institutional
+      renderKnnLine(knn.stLines, 'rgba(176,190,197,0.5)', 2, 'ST'); // Dotted
+      renderKnnLine(knn.mtLines, 'rgba(207,216,220,0.7)', 1, 'MT'); // Dashed
+      renderKnnLine(knn.ltLines, 'rgba(255,255,255,0.9)', 0, 'LT'); // Solid White for LT
+
+      // BOS Markers
+      const addBosMarkers = (list, label, color, lineStyle) => {
+        for (const b of list) {
+          const t = this._signalBarTimeSec(refTf, b.index);
+          if (t) {
+            markers.push({ 
+              time: t, 
+              position: b.type === 'BULLISH' ? 'aboveBar' : 'belowBar', 
+              shape: b.type === 'BULLISH' ? 'arrowUp' : 'arrowDown', 
+              color, 
+              text: label, 
+              size: 0.4 
+            });
+            // Add a line segment leading up to the break (visualize the broken level)
+            const lookback = 3600 * 2; 
+            smcStructLines.push({
+              t1: t - lookback,
+              t2: t,
+              price: b.price,
+              color: color + '99', // Add transparency
+              label: '',
+              lineWidth: 1,
+              lineStyle: lineStyle
+            });
+          }
+        }
+      };
+      addBosMarkers(knn.stBOS, 'ST BOS', '#26a69a', 2);
+      addBosMarkers(knn.mtBOS, 'MT BOS', '#4db6ac', 1);
+      addBosMarkers(knn.ltBOS, 'LT BOS', '#80cbc4', 0);
+
+      // Delta Tanks - Institutional Look
+      for (const tank of knn.deltaTanks) {
+        const isBull = tank.delta >= 0;
+        const color = isBull ? '#00e676' : '#ff5252';
+        const fill = isBull ? 'rgba(0,230,118,0.25)' : 'rgba(255,82,82,0.25)';
+        
+        smcZones.push({
+          t1: lastT,
+          t2: chartRightEdge,
+          top: tank.price * 1.003,
+          bottom: tank.price * 0.997,
+          fill: fill,
+          stroke: color,
+          tankRatio: tank.ratio,
+          text: `[DELTA TANK] ${(tank.ratio * 100).toFixed(0)}%`,
+          textColor: '#ffffff',
+          labelAlign: 'right'
         });
       }
+
+      // Anchored Volume Profile - Right Aligned
+      if (Array.isArray(knn.volumeProfile) && knn.volumeProfile.length > 1) {
+        const maxVol = Math.max(...knn.volumeProfile.map(v => v.volume));
+        const binHeight = (knn.volumeProfile[1].price - knn.volumeProfile[0].price) * 0.98;
+        
+        for (const bin of knn.volumeProfile) {
+          if (bin.volume === 0) continue;
+          const binWidth = (bin.volume / maxVol) * profileWidthSec;
+          const isBull = bin.price > (knn.ltLines.high || s.refPrice || 0);
+          
+          smcZones.push({
+            t1: chartRightEdge - binWidth,
+            t2: chartRightEdge,
+            top: bin.price + binHeight / 2,
+            bottom: bin.price - binHeight / 2,
+            fill: bin.isPoc ? 'rgba(255,255,255,0.4)' : (isBull ? 'rgba(38,166,154,0.3)' : 'rgba(239,83,80,0.3)'),
+            stroke: bin.isPoc ? '#ffffff' : 'rgba(255,255,255,0.1)',
+            isVolumeProfile: true
+          });
+        }
+      }
     }
 
-    const bosLinePayload = smc.bosLine;
-    const chochLinePayload = smc.chochLine;
-    const bosActive = smc.bos && smc.bos !== 'NONE';
-    const chochActive = smc.choch && smc.choch !== 'NONE';
-    const sameBosChochGeometry =
-      bosActive &&
-      chochActive &&
-      bosLinePayload &&
-      chochLinePayload &&
-      bosLinePayload.startIndex === chochLinePayload.startIndex &&
-      bosLinePayload.endIndex === chochLinePayload.endIndex &&
-      Math.abs(bosLinePayload.price - chochLinePayload.price) < 1e-10;
-
-    const pushSmcStructureSegment = (line, color, label, position) => {
-      if (!line || !Number.isFinite(line.price)) return;
-      const tA = this._signalBarTimeSec(refTf, line.startIndex);
-      const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
-      if (tA == null || tB == null) return;
-      const t1 = Math.min(tA, tB);
-      const t2 = Math.max(tA, tB);
-      if (t2 <= t1) return;
-      smcStructLines.push({ t1, t2, price: line.price, color, label, position, lineWidth: 2 });
-    };
-
-    if (sameBosChochGeometry && bosLinePayload) {
-      pushSmcStructureSegment(bosLinePayload, '#a389d4', 'BOS · CHoCH', smc.bos === 'BULLISH' ? 'top' : 'bottom');
-    } else {
-      if (bosActive) pushSmcStructureSegment(bosLinePayload, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
-      if (chochActive) pushSmcStructureSegment(chochLinePayload, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
-    }
-
-    if (Number.isFinite(s.refPrice)) {
-      this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
-    }
-
+    if (Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
     this._smcZonePrimitive?.setZones(smcZones);
     this._smcZonePrimitive?.setLines(smcStructLines);
-
     if (markers.length) {
       markers.sort((a, b) => a.time - b.time);
-      try {
-        this.candleSeries.setMarkers(markers);
-      } catch (e) {
-        console.warn('[chart] SMC markers', e);
-      }
+      try { this.candleSeries.setMarkers(markers); } catch (e) { console.warn('[chart] SMC markers', e); }
     }
   }
 
@@ -1336,8 +1321,7 @@ export class ChartManager {
       smcToggle.addEventListener('change', () => {
         this._smcSignalsOverlayEnabled = smcToggle.checked;
         this._storeSmcOverlayEnabled(this._smcSignalsOverlayEnabled);
-        if (this._smcSignalsOverlayEnabled) this._paintSmcFromStoredSignals();
-        else this._clearSmcChartVisuals();
+        this._paintSmcFromStoredSignals();
       });
     }
 
@@ -1348,6 +1332,16 @@ export class ChartManager {
         this._signalHudEnabled = hudToggle.checked;
         storeSignalHudEnabled(this._signalHudEnabled);
         this.updateStrategyHud(this._lastSignalsForChart);
+      });
+    }
+
+    const knnToggle = document.getElementById('toggle-knn-overlay');
+    if (knnToggle instanceof HTMLInputElement) {
+      knnToggle.checked = this._knnArchitectureEnabled;
+      knnToggle.addEventListener('change', () => {
+        this._knnArchitectureEnabled = knnToggle.checked;
+        this._storeKnnArchitectureEnabled(this._knnArchitectureEnabled);
+        this._paintSmcFromStoredSignals();
       });
     }
 

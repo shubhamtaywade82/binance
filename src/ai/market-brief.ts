@@ -24,6 +24,7 @@ export interface MarketSignalsSnapshot {
     bos?: string;
     choch?: string;
   };
+  knnArchitecture?: any;
   solMtf?: { pass: boolean; direction: string; reasons: string[] } | null;
 }
 
@@ -93,6 +94,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     ltfScore: snapshot.ltfScore,
     ltfSignals: snapshot.ltfSignals,
     smc: snapshot.smc,
+    knnArchitecture: snapshot.knnArchitecture,
     solMtf: snapshot.solMtf,
   });
 };
