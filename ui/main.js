@@ -18,6 +18,8 @@ import { SignalsPanel }     from './signals.js';
 import { SentimentGauge }  from './sentiment.js';
 import { MicrostructurePanel } from './microstructure.js';
 import { Rolling1mTradeStats } from './rolling-1m-stats.js';
+import { ScriptManager } from './scripts/ui/script-manager.js';
+import { ScriptEditor } from './scripts/ui/script-editor.js';
 
 // ─── Module instances ─────────────────────────────────────────────────────
 const chart    = new ChartManager('chart-container');
@@ -27,6 +29,9 @@ const signals  = new SignalsPanel();
 const gauge    = new SentimentGauge();
 const msPanel  = new MicrostructurePanel();
 const rolling1m = new Rolling1mTradeStats();
+/** User-script runtime (NanoPine). Mounted after chart.init() so the worker has chart data to read. */
+let scripts = null;
+let scriptEditor = null;
 
 const topOfBookFromDepth = (depth) => {
   const b = depth?.bids?.[0]?.price;
@@ -219,6 +224,7 @@ const dispatch = (msg) => {
         indicators: msg.indicators,
         availableTimeframes: msg.availableTimeframes,
       });
+      scripts?.onSnapshot();
 
       // Feed order book
       if (msg.depth) {
@@ -291,6 +297,7 @@ const dispatch = (msg) => {
     case 'kline': {
       if (!appliesToActiveWatch(msg)) break;
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
+      if (msg.isFinal === true) scripts?.onClosedBar(msg.tf, msg.candle);
       if (msg.tf === '1m') syncVwap1mRow();
       if (msg.tf === chart.getCurrentTf()) {
         const target = chart.getLastCloseForTf(chart.getCurrentTf());
@@ -415,23 +422,45 @@ const dispatch = (msg) => {
     case 'ai_brief': {
       const body = document.getElementById('ai-brief-body');
       const st = document.getElementById('ai-brief-status');
+      const isPartial = msg.partial === true;
       if (st) {
-        st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
-        st.className = `mono-sm ${msg.error ? 'bear' : 'dim'}`;
-      }
-      if (body) {
         if (msg.error) {
-          body.classList.add('ai-brief-prose');
-          body.innerHTML = `<p class="ai-brief-error"><strong>Error</strong> — ${escapeHtml(String(msg.error))}</p>`;
+          st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
+          st.className = 'mono-sm bear';
+        } else if (isPartial) {
+          st.textContent = 'Streaming…';
+          st.className = 'mono-sm dim';
         } else {
-          body.classList.add('ai-brief-prose');
-          body.innerHTML = renderAiBriefMarkdown(msg.text ?? '');
-          body.querySelectorAll('a[href^="http"]').forEach((a) => {
-            a.setAttribute('target', '_blank');
-            a.setAttribute('rel', 'noopener noreferrer');
-          });
+          st.textContent = msg.ts ? new Date(msg.ts).toLocaleTimeString() : '—';
+          st.className = 'mono-sm dim';
         }
       }
+      if (!body) break;
+      body.classList.add('ai-brief-prose');
+      if (msg.error) {
+        body.innerHTML = `<p class="ai-brief-error"><strong>Error</strong> — ${escapeHtml(String(msg.error))}</p>`;
+        break;
+      }
+      const text = typeof msg.text === 'string' ? msg.text : '';
+      const thinking = typeof msg.thinking === 'string' ? msg.thinking : '';
+      const thinkOpen = isPartial ? ' open' : '';
+      const thinkBlock =
+        thinking.trim().length > 0
+          ? `<details class="ai-brief-thinking-details"${thinkOpen}><summary class="ai-brief-thinking-summary">Reasoning</summary><pre class="ai-brief-thinking-pre">${escapeHtml(thinking)}</pre></details>`
+          : '';
+      let mdBlock;
+      if (text.trim().length > 0) {
+        mdBlock = renderAiBriefMarkdown(text);
+      } else if (thinking.trim().length > 0) {
+        mdBlock = '<p class="ai-brief-muted mono-sm">Generating brief…</p>';
+      } else {
+        mdBlock = renderAiBriefMarkdown('');
+      }
+      body.innerHTML = `${thinkBlock}<div class="ai-brief-md">${mdBlock}</div>`;
+      body.querySelectorAll('a[href^="http"]').forEach((a) => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
       break;
     }
 
@@ -518,8 +547,15 @@ window.addEventListener('DOMContentLoaded', () => {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'set_chart_tf', tf }));
     }
+    scripts?.onTfChange(tf);
   });
   initSidebarTabs();
+
+  scripts = new ScriptManager(chart);
+  const scriptsHost = document.getElementById('nanopine-host');
+  if (scriptsHost) scriptEditor = new ScriptEditor(scriptsHost, scripts);
+  window.__nanopine = { manager: scripts, editor: scriptEditor };
+
   chart.setHistoryRequestHandler(({ tf, oldestOpenTime }) => {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'load_history', tf, oldestOpenTime }));

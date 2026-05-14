@@ -362,6 +362,10 @@ export const AppConfigSchema = z.object({
     .default(120)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(30).max(3600)),
+  /** When true, Ollama extended thinking is on (`think: true`); uses more tokens. */
+  AI_BRIEF_THINK_ENABLED: boolFromString(false),
+  /** When true, stream the brief over the dashboard WebSocket (partial `ai_brief` updates). */
+  AI_BRIEF_STREAM_ENABLED: boolFromString(false),
   AI_REQUEST_TIMEOUT_MS: z
     .union([z.number(), z.string()])
     .default(60_000)

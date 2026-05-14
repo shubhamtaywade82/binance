@@ -29,6 +29,7 @@ import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
 import { snapshotMicrostructure } from '../binance/microstructure';
+import { createScriptsApi } from './scripts-api';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -134,6 +135,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let aiBriefInflight = false;
   let aiBriefWarnedNoModel = false;
   let aiBriefWarnedCloudKey = false;
+  /** Throttle partial `ai_brief` WebSocket frames when streaming. */
+  let lastAiBriefStreamBroadcastAt = 0;
+  const AI_BRIEF_STREAM_MIN_MS = 75;
 
   const supertrendParamsBySym = new Map<string, { period: number; mult: number }>();
   const lastSupertrendTuneAtBySym = new Map<string, number>();
@@ -147,9 +151,26 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         return watchSymbolByClient.get(client) ?? symbolUpper;
       }
 
-  const httpServer = http.createServer((_req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Trading bot — dashboard WebSocket (same process as orchestrator)\n');
+  const scriptsApi = createScriptsApi({
+    filePath: process.env.NANOPINE_SCRIPTS_PATH || 'data/nanopine-scripts.json',
+    log: { info: (m, c) => log.info(m, c as never), warn: (m, c) => log.warn(m, c as never) },
+  });
+
+  const httpServer = http.createServer((req, res) => {
+    // CORS allows the dev UI on a different port to talk to /api directly when not proxied.
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if ((req.method ?? '').toUpperCase() === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    scriptsApi.handle(req, res).then((handled) => {
+      if (handled) return;
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('Trading bot — dashboard WebSocket (same process as orchestrator)\n');
+    });
   });
 
   const wss = new WebSocketServer({ server: httpServer });
@@ -305,16 +326,40 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             model: cfg.OLLAMA_MODEL,
             apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+            thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
+            streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+            onStreamChunk:
+              cfg.AI_BRIEF_STREAM_ENABLED === true
+                ? ({ content, thinking }) => {
+                    const t = Date.now();
+                    if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
+                    lastAiBriefStreamBroadcastAt = t;
+                    broadcast({
+                      type: 'ai_brief',
+                      text: content,
+                      thinking,
+                      partial: true,
+                      ts: t,
+                    });
+                  }
+                : undefined,
           },
           snapshot,
         ).then((r) => {
           aiBriefInflight = false;
           lastAiBriefAt = Date.now();
-          if (r.text) {
-            broadcast({ type: 'ai_brief', text: r.text, ts: Date.now() });
-          } else if (r.error) {
-            broadcast({ type: 'ai_brief', error: r.error, ts: Date.now() });
+          const ts = Date.now();
+          if (r.error) {
+            broadcast({ type: 'ai_brief', error: r.error, partial: false, ts });
+            return;
           }
+          broadcast({
+            type: 'ai_brief',
+            text: r.text ?? '',
+            thinking: r.thinking ?? '',
+            partial: false,
+            ts,
+          });
         });
       }
 

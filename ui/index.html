@@ -124,6 +124,7 @@
         <button type="button" id="tab-live" class="sidebar-tab active" role="tab" aria-selected="true" aria-controls="pane-live" data-tab="live" title="Market sentiment and order book">Live</button>
         <button type="button" id="tab-tape" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-tape" data-tab="tape" title="Live trade tape">Tape</button>
         <button type="button" id="tab-insights" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-insights" data-tab="insights" title="Strategy signals and AI brief">Insights</button>
+        <button type="button" id="tab-scripts" class="sidebar-tab" role="tab" aria-selected="false" aria-controls="pane-scripts" data-tab="scripts" title="User-defined indicator scripts (NanoPine)">Scripts</button>
       </nav>
       <div class="sidebar-tab-panels">
         <div class="sidebar-tab-pane is-active" role="tabpanel" data-tab-pane="live" id="pane-live" aria-labelledby="tab-live">
@@ -378,6 +379,18 @@
                 </p>
                 <p class="ai-brief-muted"><em>Advisory only — not financial advice.</em></p>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-tab-pane" role="tabpanel" data-tab-pane="scripts" id="pane-scripts" aria-labelledby="tab-scripts" aria-hidden="true">
+          <div class="sidebar-scripts-stack">
+            <div class="panel sidebar-inner-panel" id="scripts-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Scripts (NanoPine)</h2>
+                <span class="mono-sm dim" title="User-defined indicator scripts run client-side in a Web Worker.">v1</span>
+              </div>
+              <div id="nanopine-host" class="nanopine-host"></div>
             </div>
           </div>
         </div>

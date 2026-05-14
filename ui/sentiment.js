@@ -67,7 +67,7 @@ export class SentimentGauge {
     canvas.style.width = '100%';
     const W = Math.max(1, canvas.clientWidth);
     const H = 38;
-    
+
     // Set internal resolution
     canvas.width = W * devicePixelRatio;
     canvas.height = H * devicePixelRatio;

@@ -4,13 +4,17 @@
   "private": true,
   "description": "Binance public market data + CoinDCX futures execution",
   "type": "commonjs",
+  "workspaces": [
+    "packages/*"
+  ],
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "build:indicator-runtime": "npm run build -w @coindcx/indicator-runtime",
     "start": "node dist/index.js",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
     "dev:once": "ts-node src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/indicator-runtime/tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -32,6 +36,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@coindcx/indicator-runtime": "workspace:*",
     "axios": "^1.7.9",
     "dompurify": "^3.4.2",
     "dotenv": "^16.4.7",
