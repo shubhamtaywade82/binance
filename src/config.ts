@@ -6,7 +6,7 @@ loadDotenv();
 
 export type { TradingAsset } from './config/asset-presets';
 
-const BinanceProduct = z.enum(['usdm', 'spot']);
+const BinanceProduct = z.enum(['usdm', 'usdm_demo', 'spot']);
 const ExecutionModeEnum = z.enum(['paper', 'live']);
 
 const numFromString = (def: number) =>
@@ -396,6 +396,29 @@ export const AppConfigSchema = z.object({
   /** Directory for prediction logs. */
   ML_PREDICTION_DIR: z.string().default('./data/predictions'),
 
+  /**
+   * Global shadow mode: connect to live data but suppress all order placement at the adapter level.
+   * Unlike `READ_ONLY`, shadow mode still runs the full signal/strategy pipeline and logs what
+   * would have been sent — useful for pre-deployment validation against real market conditions.
+   */
+  SHADOW_MODE: boolFromString(false),
+
+  /**
+   * Maximum notional value (USDT) per single order. 0 = disabled.
+   * When > 0, order quantity is clamped so `qty * price <= MAX_NOTIONAL_USDT`.
+   */
+  MAX_NOTIONAL_USDT: numFromString(0),
+
+  /** HTTP port for the Prometheus /metrics + /health endpoint (0 = disabled). */
+  PROMETHEUS_PORT: z
+    .string()
+    .default('9090')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0 || n > 65535) return 9090;
+      return n;
+    }),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 
@@ -478,6 +501,7 @@ export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecr
 export const binanceRestBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'https://demo-fapi.binance.com';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
@@ -485,6 +509,7 @@ export const binanceRestBase = (cfg: AppConfig): string => {
 export const binanceWsBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'wss://demo-fstream.binance.com';
   if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';
   return 'wss://fstream.binance.com';
 }

@@ -1262,15 +1262,15 @@ if __name__ == "__main__":
 | Status | Item |
 |--------|------|
 | ☐ | Replace `dict`-based orderbook with sorted array (faster top-N) |
-| ☐ | Add orderbook snapshot sync (U/u update-ID tracking) |
-| ☐ | `clientOrderId` per order for idempotent retries |
-| ☐ | Exponential backoff on 429 / 5xx |
-| ☐ | User-data stream for `ORDER_TRADE_UPDATE` (don't poll order state) |
-| ☐ | Private listenKey keep-alive (PUT every 30 min) |
-| ☐ | `countdownCancelAll` keepalive to auto-cancel on crash |
-| ☐ | Prometheus metrics endpoint |
-| ☐ | Structured JSON logging |
-| ☐ | Dockerfile + `systemd` / `supervisor` unit file |
+| ✅ | Add orderbook snapshot sync (U/u update-ID tracking) | `orderbook.ts` — `applyDiff` validates U/u sequence + desync detection |
+| ✅ | `clientOrderId` per order for idempotent retries | `generateClientOrderId()` — deterministic SHA256 prefix |
+| ✅ | Exponential backoff on 429 / 5xx | `retry-with-backoff.ts` — `retryWithBackoff()` with jitter |
+| ✅ | User-data stream for `ORDER_TRADE_UPDATE` (don't poll order state) | `private-ws.ts` — user-data stream for fills |
+| ✅ | Private listenKey keep-alive (PUT every 30 min) | `private-ws.ts` — listenKey renewal interval |
+| ✅ | `countdownCancelAll` keepalive to auto-cancel on crash | `BINANCE_DEADMAN_COUNTDOWN_MS` in orchestrator |
+| ✅ | Prometheus metrics endpoint | `src/metrics/prometheus-exporter.ts` — `/metrics` on port 9090 |
+| ✅ | Structured JSON logging | NDJSON app logger + structured heartbeat |
+| ✅ | Dockerfile + `systemd` / `supervisor` unit file | `Dockerfile` (multi-stage, node:22-alpine) + `ml_bot/Dockerfile` + `docker-compose.yml` |
 | ☐ | Deploy to AWS `ap-southeast-1` (Singapore) for lowest Binance latency |
 
 ---
@@ -1305,38 +1305,38 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 #### Trading metrics
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | Realized PnL (running total) | Sum of closed trade PnL |
-| ☐ | Unrealized PnL | Current open position mark-to-market |
-| ☐ | Equity curve | Cumulative PnL time-series |
-| ☐ | Drawdown | Peak-to-trough in equity, max and current |
-| ☐ | Win rate | Winning trades / total trades |
-| ☐ | Avg win / avg loss | Profit factor = avg_win / avg_loss |
-| ☐ | Sharpe ratio | Rolling 7-day / 30-day |
+| ✅ | Realized PnL (running total) | `TradingMetricsTracker.recordTrade()` |
+| ✅ | Unrealized PnL | `TradingMetricsTracker.updateUnrealizedPnl()` |
+| ✅ | Equity curve | Ring buffer, last 1000 points |
+| ✅ | Drawdown | Peak-to-trough tracking, max and current |
+| ✅ | Win rate | Winning / total trades |
+| ✅ | Avg win / avg loss | Profit factor = avgWin / avgLoss |
+| ✅ | Sharpe ratio | Rolling 7-day / 30-day annualized from daily returns ring |
 
 #### Execution metrics
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | Order send latency | Time from signal to REST response |
-| ☐ | Fill latency | Time from REST response to `ORDER_TRADE_UPDATE` |
-| ☐ | Slippage bps | Fill price vs microprice at order time |
-| ☐ | Fill rate | Filled / placed (market = ~100%; limit may miss) |
+| ✅ | Order send latency | `LatencyTracker` — P50/P95/P99, Prometheus histogram |
+| ✅ | Fill latency | `LatencyTracker.recordFill()` |
+| ✅ | Slippage bps | `FillQualityTracker` — signed slippage vs microprice |
+| ✅ | Fill rate | Tracked via `LatencyTracker` filled/sent ratio |
 
 #### Model metrics
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | p_up / p_down distributions | Histogram every N minutes |
-| ☐ | Confidence histogram | How often model is above threshold |
-| ☐ | Live prediction accuracy | Compare model label vs actual outcome |
-| ☐ | Feature drift | Rolling mean/std vs training baseline |
+| ✅ | p_up / p_down distributions | `ModelMetricsTracker` running averages |
+| ✅ | Confidence histogram | `aboveThresholdPct` — % predictions above configurable threshold |
+| ✅ | Live prediction accuracy | `recordOutcome()` — correct / total filled |
+| ✅ | Feature drift | Welford online mean/std per feature, flags >3σ deviation |
 
 #### System metrics
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | WS message lag | Time between Binance event and processing |
-| ☐ | Queue depth | Backlog in async queue |
-| ☐ | CPU / memory | Per-process |
-| ☐ | Errors per minute | Uncaught exceptions, API errors |
-| ☐ | WS reconnects | Count per hour |
+| ✅ | WS message lag | `SystemMetricsTracker.recordWsLag()` — rolling avg of last 100 |
+| ✅ | Queue depth | Tracked via system metrics |
+| ✅ | CPU / memory | Per-process via `process.memoryUsage()` / `process.cpuUsage()` |
+| ✅ | Errors per minute | `recordError()` — trailing 1-minute window |
+| ✅ | WS reconnects | `recordWsReconnect()` — trailing 1-hour window |
 
 ---
 
@@ -1713,12 +1713,12 @@ WS API testnet URL). The gaps below are safety and workflow items.
 
 | Status | Item | Notes |
 |--------|------|-------|
-| ☐ | **Environment validation on startup** | If `BINANCE_FUTURES_TESTNET=false` and `EXECUTION_MODE=live`, log a loud warning and require explicit `CONFIRMED_LIVE=true` env var to proceed — prevents accidental mainnet live orders during development |
-| ☐ | **Shadow mode flag** (`SHADOW_MODE=true`) | Connect to mainnet data streams but suppress ALL order placement at the adapter level regardless of `EXECUTION_MODE`; log what *would* have been sent. Different from `READ_ONLY` (which is adapter-level, not enforced centrally). Needed for Phase 3 of the deployment workflow. |
-| ☐ | **Shadow prediction log** | When `SHADOW_MODE=true`, record every signal with timestamp, direction, and the actual price outcome N seconds later for offline accuracy measurement |
-| ☐ | **Max notional cap for Phase 4** | `MAX_NOTIONAL_USDT` env var that hard-caps order size regardless of risk engine output; set to e.g. 50 USDT during first live week |
-| ☐ | **`demo-fapi.binance.com` support** | Config comment mentions it but URL is not wired in; add as a third option (`BINANCE_PRODUCT=usdm_demo`) for the Binance portfolio margin demo environment |
-| ☐ | **Testnet liquidity warning** | Log a startup notice when `BINANCE_FUTURES_TESTNET=true` reminding that fills and slippage are not realistic and paper results will not transfer directly to mainnet |
+| ✅ | **Environment validation on startup** | `src/safety/env-validator.ts` — throws on live+mainnet without `CONFIRMED_LIVE_TRADING`, warns on dangerous combos |
+| ✅ | **Shadow mode flag** (`SHADOW_MODE=true`) | `src/safety/shadow-mode.ts` — wraps adapter, intercepts order/cancel/modify, logs + returns mock |
+| ✅ | **Shadow prediction log** | `src/safety/shadow-prediction-log.ts` — CSV to `data/shadow/`, daily rotation, `logSignal()` + `fillOutcome()` |
+| ✅ | **Max notional cap for Phase 4** | `src/safety/notional-cap.ts` — `applyNotionalCap()`, `MAX_NOTIONAL_USDT` in config (default 0 = disabled) |
+| ✅ | **`demo-fapi.binance.com` support** | `BINANCE_PRODUCT=usdm_demo` wired in config — REST `demo-fapi.binance.com`, WS `demo-fstream.binance.com` |
+| ✅ | **Testnet liquidity warning** | Logged in `validateEnvironment()` when `BINANCE_FUTURES_TESTNET=true` |
 
 ### 20.3 Four-Phase Deployment Checklist
 
