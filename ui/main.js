@@ -364,6 +364,13 @@ const dispatch = (msg) => {
       break;
     }
 
+    /* ── Funding Rate ─ */
+    case 'funding': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.setFundingRate(msg);
+      break;
+    }
+
     /* ── 24hr Ticker: 24h stats only — main LTP stays chart/kline (avoids fighting aggTrade). ─ */
     case 'ticker_24hr': {
       if (!appliesToActiveWatch(msg)) break;

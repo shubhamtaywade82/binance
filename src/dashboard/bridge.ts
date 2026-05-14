@@ -30,6 +30,7 @@ import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
 import { OiPoller } from '../signals/oi-poller';
+import { FundingTracker } from '../signals/funding-tracker';
 import { BinanceRestClient } from '../binance/rest-client';
 import { binanceRestBase } from '../config';
 import { snapshotMicrostructure } from '../binance/microstructure';
@@ -323,6 +324,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let signalsTimer: ReturnType<typeof setInterval> | null = null;
   let validationTimer: ReturnType<typeof setInterval> | null = null;
   let oiPollTimer: ReturnType<typeof setInterval> | null = null;
+  let fundingTimer: ReturnType<typeof setInterval> | null = null;
 
   const oiRestClient = new BinanceRestClient({
     apiKey: cfg.BINANCE_API_KEY ?? '',
@@ -360,6 +362,33 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         divergence: snap.oiDivergence,
         spike: snap.oiSpike,
         regime: snap.regime,
+      });
+    }
+  };
+
+  const fundingTrackers = new Map<string, FundingTracker>();
+
+  const ensureFundingTracker = (sym: string): FundingTracker => {
+    let tracker = fundingTrackers.get(sym);
+    if (!tracker) {
+      tracker = new FundingTracker();
+      fundingTrackers.set(sym, tracker);
+    }
+    return tracker;
+  };
+
+  const broadcastFunding = (): void => {
+    for (const sym of watchlistSymbols) {
+      const tracker = fundingTrackers.get(sym);
+      if (!tracker) continue;
+      const snap = tracker.snapshot();
+      broadcast({
+        type: 'funding',
+        symbol: sym,
+        rate: snap.currentRate,
+        zscore: snap.zscore,
+        extreme: snap.extremeFlag,
+        crowdedSide: snap.crowdedSide,
       });
     }
   };
@@ -1060,6 +1089,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       const symU = u.symbol.toUpperCase();
       if (!watchlistSet.has(symU)) return;
       lastMarkBySym.set(symU, u.markPrice);
+      if (u.fundingRate !== 0) ensureFundingTracker(symU).update(u.fundingRate);
       broadcast({ type: 'mark_price', symbol: symU, price: u.markPrice, ts: u.eventTime });
     },
     on24hrTicker: (u) => {
@@ -1155,6 +1185,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         for (const sym of watchlistSymbols) ensureOiPoller(sym);
 
         oiPollTimer = setInterval(broadcastOiRegime, OI_POLL_INTERVAL_SEC * 1000);
+        fundingTimer = setInterval(broadcastFunding, 15_000);
 
         heartbeatTimer = setInterval(() => {
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
@@ -1202,6 +1233,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         if (oiPollTimer) {
           clearInterval(oiPollTimer);
           oiPollTimer = null;
+        }
+        if (fundingTimer) {
+          clearInterval(fundingTimer);
+          fundingTimer = null;
         }
         for (const p of oiPollers.values()) p.stop();
         oiPollers.clear();

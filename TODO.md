@@ -2074,7 +2074,7 @@ or can be computed from loaded candle data on the client.
 | | |
 |---|---|
 | **What** | Volume-weighted average price computed from all loaded candles since midnight UTC. Drawn as a smooth colored line overlay on the candle chart. Key mean-reversion anchor. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2115,7 +2115,7 @@ or can be computed from loaded candle data on the client.
 | | |
 |---|---|
 | **What** | RSI(14) oscillator rendered as a line in a separate sub-panel below the volume histogram, with horizontal reference lines at 30 and 70 (overbought/oversold thresholds). |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2326,7 +2326,7 @@ exists only in server-side trackers.
 | | |
 |---|---|
 | **What** | Small floating gauge or colored band showing the current funding rate, its z-score, and whether it's at an extreme. Signals when funding is crowded (longs or shorts about to get squeezed). |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done |
 
 **Data source:**
 
@@ -2429,7 +2429,7 @@ exists only in server-side trackers.
 | | |
 |---|---|
 | **What** | Horizontal histogram on the right edge of the chart showing volume distribution by price level. Highlights the Point of Control (POC) — the price with the most volume — as a key support/resistance level. |
-| **Status** | ☐ Not started |
+| **Status** | ✅ Done (via kNN Architecture overlay — volume profile bins rendered as SmcZoneBoxes when kNN toggle is enabled) |
 
 **Data source:**
 
@@ -2513,13 +2513,13 @@ Recommended implementation order based on value-to-effort ratio:
 |---|---|---|---|---|
 | 1 | ~~22.1 Liquidation Cascade Markers~~ | 1 | Low | Very High |
 | 2 | ~~22.2 Mark Price Line~~ | 1 | Very Low | High |
-| 3 | 22.3 Session VWAP Line | 1 | Low | High |
-| 4 | 22.4 RSI Sub-Panel | 1 | Medium | High |
+| 3 | ~~22.3 Session VWAP Line~~ | 1 | Low | High |
+| 4 | ~~22.4 RSI Sub-Panel~~ | 1 | Medium | High |
 | 5 | ~~22.10 OI Divergence Overlay~~ | 3 | Medium | Very High |
-| 6 | 22.9 Funding Rate Gauge | 3 | Medium | High |
+| 6 | ~~22.9 Funding Rate Gauge~~ | 3 | Medium | High |
 | 7 | 22.6 TFI Lane | 2 | Medium | Medium |
 | 8 | 22.5 Spread Heatmap | 2 | Low | Medium |
-| 9 | 22.11 Volume Profile (VPVR) | 3 | High | High |
+| 9 | ~~22.11 Volume Profile (VPVR)~~ | 3 | High | High |
 | 10 | 22.7 Depth Pressure Zones | 2 | Medium | Medium |
 | 11 | 22.8 OBI-Tinted Candles | 2 | Medium | Low |
 | 12 | 22.12 Micro-Candle Sub-Chart | 3 | High | Medium |

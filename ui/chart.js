@@ -130,6 +130,8 @@ const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
 const KNN_ARCHITECTURE_STORAGE_KEY = 'qt_knn_chart_overlay';
 const LIQUIDATION_MARKERS_STORAGE_KEY = 'qt_chart_liquidations';
 const OI_REGIME_STORAGE_KEY = 'qt_chart_oi_regime';
+const VWAP_STORAGE_KEY = 'qt_chart_vwap';
+const RSI_STORAGE_KEY = 'qt_chart_rsi';
 
 /** Persisted chart timeframe (must match `.tf-btn` data-tf). */
 const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
@@ -254,6 +256,15 @@ export class ChartManager {
     this._oiRegime = null;
     this._oiRegimeEnabled = readStoredIndicatorOn(OI_REGIME_STORAGE_KEY, true);
     this._oiRegimePriceLine = null;
+    /** Session VWAP series. */
+    this._vwapSeries = null;
+    this._vwapEnabled = readStoredIndicatorOn(VWAP_STORAGE_KEY, false);
+    /** RSI(14) sub-panel series. */
+    this._rsiSeries = null;
+    this._rsiEnabled = readStoredIndicatorOn(RSI_STORAGE_KEY, false);
+    /** Funding rate axis label. */
+    this._fundingPriceLine = null;
+    this._lastFunding = null;
   }
 
   _readSmcOverlayEnabled() {
@@ -1113,6 +1124,45 @@ export class ChartManager {
     });
   }
 
+  // ── Funding Rate Overlay ────────────────────────────────────────────
+
+  setFundingRate(msg) {
+    this._lastFunding = msg ?? null;
+    this._syncFundingOverlay();
+  }
+
+  _syncFundingOverlay() {
+    if (this._fundingPriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
+      this._fundingPriceLine = null;
+    }
+    if (!this._lastFunding || !this.candleSeries) return;
+    const { rate, zscore, extreme, crowdedSide } = this._lastFunding;
+    if (!Number.isFinite(rate)) return;
+
+    const pctStr = (rate * 100).toFixed(4) + '%';
+    const isNeg = rate < 0;
+    const color = extreme
+      ? (isNeg ? '#00e5ff' : '#ff5252')
+      : (isNeg ? 'rgba(0,229,255,0.5)' : 'rgba(255,82,82,0.5)');
+    const label = `FR ${pctStr}${extreme ? ' ⚠' : ''}`;
+
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) return;
+
+    const offset = anchorPrice * 0.001;
+    this._fundingPriceLine = this.candleSeries.createPriceLine({
+      price: anchorPrice + (isNeg ? -offset : offset),
+      color: 'transparent',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      lineVisible: false,
+      axisLabelVisible: true,
+      axisLabelColor: color,
+      title: label,
+    });
+  }
+
   _hideLtpPriceLine() {
     this._cancelLtpAnim();
     this._ltpTargetTicks = null;
@@ -1382,6 +1432,33 @@ export class ChartManager {
       priceLineVisible: false,
     });
 
+    this._vwapSeries = this.chart.addLineSeries({
+      color: '#e040fb',
+      lineWidth: 1.5,
+      lineStyle: 0,
+      priceScaleId: 'right',
+      lastValueVisible: true,
+      priceLineVisible: false,
+      visible: this._vwapEnabled,
+    });
+
+    this._rsiSeries = this.chart.addLineSeries({
+      color: '#ce93d8',
+      lineWidth: 1.5,
+      priceScaleId: 'rsi',
+      lastValueVisible: true,
+      priceLineVisible: false,
+      visible: this._rsiEnabled,
+    });
+    this.chart.priceScale('rsi').applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0.02 },
+      borderVisible: false,
+      visible: this._rsiEnabled,
+    });
+    this._rsiSeries.createPriceLine({ price: 70, color: 'rgba(255,82,82,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+    this._rsiSeries.createPriceLine({ price: 30, color: 'rgba(0,200,220,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+    this._rsiSeries.createPriceLine({ price: 50, color: 'rgba(255,255,255,0.08)', lineWidth: 1, lineStyle: LineStyle.Dotted, lineVisible: true, axisLabelVisible: false });
+
     this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
     this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
 
@@ -1491,6 +1568,29 @@ export class ChartManager {
       });
     }
 
+    const vwapToggle = document.getElementById('toggle-vwap');
+    if (vwapToggle instanceof HTMLInputElement) {
+      vwapToggle.checked = this._vwapEnabled;
+      vwapToggle.addEventListener('change', () => {
+        this._vwapEnabled = vwapToggle.checked;
+        storeIndicatorOn(VWAP_STORAGE_KEY, this._vwapEnabled);
+        this._vwapSeries.applyOptions({ visible: this._vwapEnabled });
+        if (this._vwapEnabled) this._paintVwap(this.currentTf);
+      });
+    }
+
+    const rsiToggle = document.getElementById('toggle-rsi');
+    if (rsiToggle instanceof HTMLInputElement) {
+      rsiToggle.checked = this._rsiEnabled;
+      rsiToggle.addEventListener('change', () => {
+        this._rsiEnabled = rsiToggle.checked;
+        storeIndicatorOn(RSI_STORAGE_KEY, this._rsiEnabled);
+        this._rsiSeries.applyOptions({ visible: this._rsiEnabled });
+        this.chart.priceScale('rsi').applyOptions({ visible: this._rsiEnabled });
+        if (this._rsiEnabled) this._paintIndicators(this.currentTf);
+      });
+    }
+
     const signalHudEl = document.getElementById('chart-signal-hud');
     if (signalHudEl) {
       signalHudEl.addEventListener('toggle', (e) => {
@@ -1569,6 +1669,8 @@ export class ChartManager {
     this.ema21Series.setData([]);
     this.ema50Series.setData([]);
     this.stSeries.setData([]);
+    this._vwapSeries?.setData([]);
+    this._rsiSeries?.setData([]);
   }
 
   _maybeRequestHistory(logicalRange) {
@@ -1809,6 +1911,7 @@ export class ChartManager {
     this.set24hHighLow(null, null);
     this._liquidationMarkers = [];
     this._lastMarkPrice = null;
+    this._lastFunding = null;
     this._oiRegime = null;
     if (this._oiRegimePriceLine && this.candleSeries) {
       try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
@@ -1942,6 +2045,10 @@ export class ChartManager {
         try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
         this._oiRegimePriceLine = null;
       }
+      if (this._fundingPriceLine && this.candleSeries) {
+        try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
+        this._fundingPriceLine = null;
+      }
       this.chart.timeScale().fitContent();
       this._hideLtpPriceLine();
       this._emitLtpDisplay(null);
@@ -2009,6 +2116,41 @@ export class ChartManager {
     this._syncBookTopLines();
     this._syncMarkLine();
     this._syncOiRegimeOverlay();
+    this._syncFundingOverlay();
+  }
+
+  _computeSessionVwap(candles) {
+    const result = [];
+    let cumPV = 0;
+    let cumV = 0;
+    let sessionDay = -1;
+    for (const c of candles) {
+      const d = new Date(c.openTime);
+      const day = d.getUTCDate() + d.getUTCMonth() * 100 + d.getUTCFullYear() * 10000;
+      if (day !== sessionDay) {
+        cumPV = 0;
+        cumV = 0;
+        sessionDay = day;
+      }
+      const tp = (c.high + c.low + c.close) / 3;
+      cumPV += tp * c.volume;
+      cumV += c.volume;
+      if (cumV > 0) {
+        result.push({ time: Math.floor(c.openTime / 1000), value: cumPV / cumV });
+      }
+    }
+    return result;
+  }
+
+  _paintVwap(tf) {
+    if (!this._vwapSeries || !this._vwapEnabled) return;
+    const raw = this.candleMap[tf];
+    if (!raw?.length) {
+      this._vwapSeries.setData([]);
+      return;
+    }
+    const candles = this._sortedDedupeCandles(raw);
+    this._vwapSeries.setData(this._computeSessionVwap(candles));
   }
 
   _paintIndicators(tf) {
@@ -2062,5 +2204,14 @@ export class ChartManager {
       const stPadded = this._padLineLikeToLastTime(stData, tLastCandle);
       this.stSeries.setData(stPadded);
     }
+
+    if (ind.rsi && this._rsiEnabled) {
+      const rsiData = toLine(ind.rsi);
+      this._rsiSeries.setData(this._padLineLikeToLastTime(rsiData, tLastCandle));
+    } else if (this._rsiSeries) {
+      this._rsiSeries.setData([]);
+    }
+
+    this._paintVwap(tf);
   }
 }
