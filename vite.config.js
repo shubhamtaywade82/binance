@@ -4,8 +4,19 @@ import { defineConfig } from 'vite';
 
 const workspaceRoot = path.dirname(fileURLToPath(import.meta.url));
 
+const cleanUrls = () => ({
+  name: 'clean-urls',
+  configureServer(server) {
+    server.middlewares.use((req, _res, next) => {
+      if (req.url === '/ai' || req.url === '/ai/') req.url = '/ai.html';
+      next();
+    });
+  },
+});
+
 export default defineConfig({
   root: 'ui',
+  plugins: [cleanUrls()],
   resolve: {
     alias: {
       '@coindcx/indicator-runtime': path.resolve(workspaceRoot, 'packages/indicator-runtime/src/index.ts'),
