@@ -147,7 +147,16 @@ export class ExecutionRouter implements ExecutionAdapter {
         ? 'https://testnet.binancefuture.com'
         : 'https://fapi.binance.com';
 
-      const client = new BinanceRestClient({ apiKey, apiSecret, baseUrl });
+      const client = new BinanceRestClient({
+        apiKey,
+        apiSecret,
+        baseUrl,
+        retry: {
+          maxAttempts: this.cfg.BINANCE_REST_RETRY_MAX_ATTEMPTS,
+          baseDelayMs: this.cfg.BINANCE_REST_RETRY_BASE_MS,
+          maxDelayMs: this.cfg.BINANCE_REST_RETRY_MAX_MS,
+        },
+      });
       return new BinanceLiveExecutionAdapter({
         client,
         symbol:        this.cfg.BINANCE_SYMBOL.trim().toUpperCase(),
