@@ -1480,7 +1480,7 @@ body::before {
   .sidebar-tab-bar { padding: 6px 8px; }
 }
 
-</* ── NanoPine script editor ─────────────────────────────────────────────── */
+/* ── NanoPine script editor ─────────────────────────────────────────────── */
 .sidebar-scripts-stack { display: flex; flex-direction: column; height: 100%; }
 .nanopine-host { display: flex; flex: 1 1 auto; min-height: 0; }
 .nanopine-panel {

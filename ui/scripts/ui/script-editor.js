@@ -2,8 +2,7 @@
 // Scripts tab of the right sidebar. Uses a plain <textarea> + a gutter <div> for
 // line numbers; no Monaco yet (Phase 2 swap behind this API).
 
-import { tokenize } from '../runtime/lexer.js';
-import { parse } from '../runtime/parser.js';
+import { tokenize, parse } from '@coindcx/indicator-runtime';
 
 export class ScriptEditor {
   /**
