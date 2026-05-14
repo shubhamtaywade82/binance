@@ -3,17 +3,14 @@
 // Two entry points:
 //   - prepare(program, ctx)            — wires indicator metadata + input defaults
 //   - runBar(program, ctx, barIndex)   — evaluates statements for one bar
-//
-// The interpreter is intentionally simple: no functions, no loops in the user
-// language, no closures. The only stateful behaviour comes from (1) the per-call-site
-// TA caches in ctx.callState and (2) user-assigned named series in ctx.userSeries.
 
 import { RuntimeError, ValidationError } from './errors.js';
 import { Series } from './series.js';
 import { BUILTINS, isBuiltin } from './ta.js';
+import type { ExecutionContext } from './context.js';
+import type { Expr, InputKind, Program, Statement } from './nodes.js';
 
-// Statements that must run once at script load (before the bar loop).
-export function prepare(program, ctx) {
+export function prepare(program: Program, ctx: ExecutionContext): void {
   let seenHeader = false;
   for (const stmt of program.body) {
     if (stmt.type === 'IndicatorDecl' || stmt.type === 'StrategyDecl') {
@@ -34,36 +31,30 @@ export function prepare(program, ctx) {
         ctx.initStrategy(ctx.meta.opts);
       }
     } else if (stmt.type === 'InputDecl') {
-      // Default value = first positional arg; an instance-level inputs map can override.
       if (!ctx.inputs.has(stmt.name)) {
-        const def = stmt.args.length > 0 ? evalConstExpr(stmt.args[0], ctx) : null;
+        const def = stmt.args.length > 0 ? evalConstExpr(stmt.args[0]!, ctx) : null;
         ctx.inputs.set(stmt.name, coerceInput(def, stmt.kind, stmt.name, ctx));
       } else if (stmt.kind === 'source') {
-        // Override may be a string name — resolve to the builtin series.
         const raw = ctx.inputs.get(stmt.name);
         if (typeof raw === 'string' && raw in ctx.builtins) {
-          ctx.inputs.set(stmt.name, ctx.builtins[raw]);
+          ctx.inputs.set(stmt.name, ctx.builtins[raw as keyof typeof ctx.builtins]);
         }
       }
     }
   }
 }
 
-export function runBar(program, ctx, barIndex) {
+export function runBar(program: Program, ctx: ExecutionContext, barIndex: number): void {
   ctx.resetForBar(barIndex);
   for (const stmt of program.body) {
-    if (
-      stmt.type === 'IndicatorDecl' ||
-      stmt.type === 'StrategyDecl' ||
-      stmt.type === 'InputDecl'
-    )
+    if (stmt.type === 'IndicatorDecl' || stmt.type === 'StrategyDecl' || stmt.type === 'InputDecl')
       continue;
     execStatement(stmt, ctx);
   }
   if (ctx.meta.kind === 'strategy') ctx.tickStrategyBar();
 }
 
-function execStatement(stmt, ctx) {
+function execStatement(stmt: Statement, ctx: ExecutionContext): void {
   ctx.tickNodeBudget();
   switch (stmt.type) {
     case 'Assign': {
@@ -76,14 +67,14 @@ function execStatement(stmt, ctx) {
       return;
     }
     default:
-      throw new RuntimeError(`Unexpected statement type ${stmt.type}`, {
-        line: stmt.line,
-        col: stmt.col,
+      throw new RuntimeError(`Unexpected statement type ${(stmt as Statement).type}`, {
+        line: (stmt as Statement).line,
+        col: (stmt as Statement).col,
       });
   }
 }
 
-function evalExpr(node, ctx) {
+function evalExpr(node: Expr, ctx: ExecutionContext): unknown {
   ctx.tickNodeBudget();
   switch (node.type) {
     case 'Number':
@@ -102,9 +93,6 @@ function evalExpr(node, ctx) {
           col: node.col,
         });
       }
-      // Series identifiers evaluate to a *number* (the current bar's value) unless
-      // they are passed as an argument to a function that expects a Series. We keep
-      // them as Series here and let the call site / index logic decide.
       return v;
     }
     case 'Unary': {
@@ -123,7 +111,7 @@ function evalExpr(node, ctx) {
       const target = evalExpr(node.target, ctx);
       const idx = toNumber(evalExpr(node.index, ctx));
       if (!(target instanceof Series)) {
-        throw new RuntimeError("Index target is not a series", {
+        throw new RuntimeError('Index target is not a series', {
           line: node.line,
           col: node.col,
         });
@@ -132,16 +120,14 @@ function evalExpr(node, ctx) {
     }
     case 'Call':
       return evalCall(node, ctx);
-    default:
-      throw new RuntimeError(`Unknown expression type ${node.type}`, {
-        line: node.line,
-        col: node.col,
-      });
+    default: {
+      const n = node as Expr;
+      throw new RuntimeError(`Unknown expression type ${n.type}`, { line: n.line, col: n.col });
+    }
   }
 }
 
-function evalBinary(node, ctx) {
-  // Short-circuit boolean ops.
+function evalBinary(node: Extract<Expr, { type: 'Binary' }>, ctx: ExecutionContext): unknown {
   if (node.op === 'and') {
     const l = toBool(evalExpr(node.left, ctx));
     if (!l) return false;
@@ -185,7 +171,7 @@ function evalBinary(node, ctx) {
   }
 }
 
-function evalCall(node, ctx) {
+function evalCall(node: Extract<Expr, { type: 'Call' }>, ctx: ExecutionContext): unknown {
   if (!isBuiltin(node.callee)) {
     throw new RuntimeError(`Unknown function '${node.callee}'`, {
       line: node.line,
@@ -193,11 +179,11 @@ function evalCall(node, ctx) {
     });
   }
   const args = node.args.map((a) => evalExpr(a, ctx));
-  const handler = BUILTINS[node.callee];
+  const handler = BUILTINS[node.callee]!;
   return handler(ctx, node, args, node.kwargs, (n) => evalExpr(n, ctx));
 }
 
-function toNumber(v) {
+function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'boolean') return v ? 1 : 0;
   if (v instanceof Series) return v.get(0);
@@ -208,7 +194,7 @@ function toNumber(v) {
   return NaN;
 }
 
-function toBool(v) {
+function toBool(v: unknown): boolean {
   if (typeof v === 'boolean') return v;
   if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
   if (v instanceof Series) {
@@ -218,9 +204,7 @@ function toBool(v) {
   return Boolean(v);
 }
 
-// Constant evaluator for declaration positions (kwargs of indicator(), defaults of input()).
-// Disallows series/runtime identifiers — only literal-ish expressions are accepted.
-function evalConstExpr(node, ctx) {
+function evalConstExpr(node: Expr, ctx: ExecutionContext): unknown {
   switch (node.type) {
     case 'Number':
       return node.value;
@@ -264,7 +248,7 @@ function evalConstExpr(node, ctx) {
   });
 }
 
-function coerceInput(value, kind, name, ctx) {
+function coerceInput(value: unknown, kind: InputKind, name: string, ctx: ExecutionContext): unknown {
   switch (kind) {
     case 'int': {
       const n = Number(value);
@@ -285,9 +269,8 @@ function coerceInput(value, kind, name, ctx) {
     case 'string':
       return String(value ?? '');
     case 'source': {
-      // A source input names one of the builtin price/volume series.
       const seriesName = String(value ?? 'close');
-      if (ctx && seriesName in ctx.builtins) return ctx.builtins[seriesName];
+      if (seriesName in ctx.builtins) return ctx.builtins[seriesName as keyof typeof ctx.builtins];
       return seriesName;
     }
     default:

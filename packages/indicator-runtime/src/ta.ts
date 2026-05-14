@@ -3,13 +3,11 @@
 // Every TA call site is keyed by AST node identity so that its incremental state
 // (EmaState / RsiState / etc.) survives between bars. The interpreter passes the
 // AST node + the current Series argument; this module owns the keyed cache.
-//
-// Plots and shapes are not TA — they're emitted via ExecutionContext.emitPlot /
-// emitShape — but the call dispatch lives here so the interpreter has a single
-// `callBuiltin(ctx, callNode, evaluatedArgs, kwargs)` entrypoint.
 
 import { RuntimeError, ValidationError } from './errors.js';
 import { Series, DEFAULT_SERIES_CAPACITY } from './series.js';
+import type { ExecutionContext } from './context.js';
+import type { Expr, KwArg } from './nodes.js';
 import {
   EmaState,
   RsiState,
@@ -25,21 +23,28 @@ import {
 
 const MAX_LEN = DEFAULT_SERIES_CAPACITY;
 
-// kwargsToMap: { color, lineWidth, title, ... } from KwArg[].
-function kwargsToMap(kwargs, evaluator) {
-  const out = {};
+type CallExpr = Extract<Expr, { type: 'Call' }>;
+
+interface SecurityCallState {
+  tf: string;
+  srcName: string;
+  series: Series;
+}
+
+function kwargsToMap(kwargs: KwArg[], evaluator: (e: Expr) => unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const kw of kwargs) out[kw.name] = evaluator(kw.value);
   return out;
 }
 
-function asNumber(v, name) {
+function asNumber(v: unknown, name: string): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) {
     throw new RuntimeError(`Argument '${name}' must be a finite number (got ${v})`);
   }
   return v;
 }
 
-function asInt(v, name) {
+function asInt(v: unknown, name: string): number {
   const n = asNumber(v, name);
   if (!Number.isInteger(n)) {
     throw new RuntimeError(`Argument '${name}' must be an integer (got ${n})`);
@@ -47,7 +52,7 @@ function asInt(v, name) {
   return n;
 }
 
-function asPeriod(v, name) {
+function asPeriod(v: unknown, name: string): number {
   const n = asInt(v, name);
   if (n <= 0) throw new RuntimeError(`Argument '${name}' must be > 0 (got ${n})`);
   if (n > MAX_LEN) {
@@ -56,26 +61,25 @@ function asPeriod(v, name) {
   return n;
 }
 
-function asSeries(v, name) {
+function asSeries(v: unknown, name: string): Series {
   if (!(v instanceof Series)) {
     throw new RuntimeError(`Argument '${name}' must be a series`);
   }
   return v;
 }
 
-function asBool(v) {
+function asBool(v: unknown): boolean {
   if (v === true) return true;
   if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
   if (v instanceof Series) {
     const x = v.get(0);
     return Number.isFinite(x) && x !== 0;
   }
-  return false;
+  return Boolean(v);
 }
 
-// Per-call-site cache lookup. `ctx.callState` is a WeakMap keyed by AST Call nodes.
-function getCallState(ctx, node, factory) {
-  let s = ctx.callState.get(node);
+function getCallState<T extends object>(ctx: ExecutionContext, node: object, factory: () => T): T {
+  let s = ctx.callState.get(node) as T | undefined;
   if (!s) {
     s = factory();
     ctx.callState.set(node, s);
@@ -83,10 +87,15 @@ function getCallState(ctx, node, factory) {
   return s;
 }
 
-// BUILTINS table: name → handler(ctx, callNode, args, kwargs, evaluator)
-// where `args` is an array of already-evaluated values and `kwargs` is the KwArg[].
-export const BUILTINS = {
-  // -- TA: moving averages and oscillators -------------------------------------
+export type BuiltinHandler = (
+  ctx: ExecutionContext,
+  node: CallExpr,
+  args: unknown[],
+  kwargs: KwArg[],
+  evaluator: (e: Expr) => unknown,
+) => unknown;
+
+export const BUILTINS: Record<string, BuiltinHandler> = {
   sma(ctx, node, args) {
     const src = asSeries(args[0], 'src');
     const len = asPeriod(args[1], 'len');
@@ -233,15 +242,11 @@ export const BUILTINS = {
     return state.update(src.get(0));
   },
 
-  // -- Cross detection ---------------------------------------------------------
   crossover(_ctx, _node, args) {
-    const [a, b] = args;
+    const [a, b] = args as [unknown, unknown];
     if (a instanceof Series && b instanceof Series) {
       return a.get(0) > b.get(0) && a.get(1) <= b.get(1);
     }
-    // Scalars passed in: caller should compare currents/previous explicitly. For MVP
-    // crossover only meaningfully works when at least one side is a Series — we accept
-    // mixed Series/scalar by treating scalar as constant series.
     const a0 = a instanceof Series ? a.get(0) : asNumber(a, 'a');
     const a1 = a instanceof Series ? a.get(1) : asNumber(a, 'a');
     const b0 = b instanceof Series ? b.get(0) : asNumber(b, 'b');
@@ -250,7 +255,7 @@ export const BUILTINS = {
   },
 
   crossunder(_ctx, _node, args) {
-    const [a, b] = args;
+    const [a, b] = args as [unknown, unknown];
     const a0 = a instanceof Series ? a.get(0) : asNumber(a, 'a');
     const a1 = a instanceof Series ? a.get(1) : asNumber(a, 'a');
     const b0 = b instanceof Series ? b.get(0) : asNumber(b, 'b');
@@ -258,7 +263,6 @@ export const BUILTINS = {
     return a0 < b0 && a1 >= b1;
   },
 
-  // -- Utility -----------------------------------------------------------------
   change(_ctx, _node, args) {
     const src = asSeries(args[0], 'src');
     return src.get(0) - src.get(1);
@@ -267,7 +271,7 @@ export const BUILTINS = {
   nz(_ctx, _node, args) {
     const v = args[0];
     const fb = args.length > 1 ? args[1] : 0;
-    if (typeof v !== 'number' || !Number.isFinite(v)) return fb;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return fb as number;
     return v;
   },
 
@@ -288,30 +292,26 @@ export const BUILTINS = {
     return Math.min(asNumber(args[0], 'a'), asNumber(args[1], 'b'));
   },
 
-  // -- Output emitters ---------------------------------------------------------
-  // plot(value, color?, lineWidth?, title?, style="line"|"histogram"|"area", pane=0)
   plot(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('plot() requires at least one argument');
     }
     const value = args[0];
-    const num = typeof value === 'number' ? value : value instanceof Series ? value.get(0) : NaN;
+    const num =
+      typeof value === 'number' ? value : value instanceof Series ? value.get(0) : NaN;
     const optsFromKw = kwargsToMap(kwargs, evaluator);
-    const positional = {};
+    const positional: Record<string, unknown> = {};
     if (args.length >= 2 && typeof args[1] === 'string') positional.color = args[1];
     if (args.length >= 3 && typeof args[2] === 'number') positional.lineWidth = args[2];
     if (args.length >= 4 && typeof args[3] === 'string') positional.title = args[3];
-    const opts = { ...positional, ...optsFromKw };
+    const opts: Record<string, unknown> = { ...positional, ...optsFromKw };
     const style = typeof opts.style === 'string' ? opts.style : 'line';
-    const kind =
-      style === 'histogram' ? 'histogram' : style === 'area' ? 'area' : 'line';
+    const kind = style === 'histogram' ? 'histogram' : style === 'area' ? 'area' : 'line';
     if (!('pane' in opts) && ctx.meta?.opts?.overlay === false) opts.pane = 1;
     ctx.emitPlot(node, kind, num, opts);
     return num;
   },
 
-  // alert(cond, message?) — emits an alert event whenever cond is truthy.
-  // Browser-side notifications are surfaced by the main thread.
   alert(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('alert() requires at least one argument');
@@ -321,21 +321,20 @@ export const BUILTINS = {
     const optsFromKw = kwargsToMap(kwargs, evaluator);
     const message =
       (args.length >= 2 && typeof args[1] === 'string' && args[1]) ||
-      optsFromKw.message ||
-      optsFromKw.title ||
+      (optsFromKw.message as string) ||
+      (optsFromKw.title as string) ||
       `Alert at bar ${ctx.barIndex}`;
     ctx.emitAlert(node, String(message), optsFromKw);
     return true;
   },
 
-  // plotshape(cond, location?, color?, shape?, title?)
   plotshape(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('plotshape() requires at least one argument');
     }
     const cond = asBool(args[0]);
     const optsFromKw = kwargsToMap(kwargs, evaluator);
-    const positional = {};
+    const positional: Record<string, unknown> = {};
     if (args.length >= 2 && typeof args[1] === 'string') positional.location = args[1];
     if (args.length >= 3 && typeof args[2] === 'string') positional.color = args[2];
     if (args.length >= 4 && typeof args[3] === 'string') positional.shape = args[3];
@@ -345,14 +344,13 @@ export const BUILTINS = {
     return cond;
   },
 
-  // hline(price, color?, title?, lineStyle?)
   hline(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('hline() requires at least one argument');
     }
     const price = asNumber(args[0], 'price');
     const optsFromKw = kwargsToMap(kwargs, evaluator);
-    const positional = {};
+    const positional: Record<string, unknown> = {};
     if (args.length >= 2 && typeof args[1] === 'string') positional.color = args[1];
     if (args.length >= 3 && typeof args[2] === 'string') positional.title = args[2];
     const opts = { ...positional, ...optsFromKw };
@@ -360,10 +358,6 @@ export const BUILTINS = {
     return price;
   },
 
-  // security(tf, srcName) — fetch a builtin source value (close/open/high/low/volume/
-  // hl2/hlc3/ohlc4) from a higher timeframe at the most recently closed bar (no
-  // lookahead). Returns NaN until at least one higher-TF bar has fully closed within
-  // the script's history window.
   security(ctx, node, args) {
     if (args.length < 2) {
       throw new RuntimeError('security(tf, srcName) requires both arguments');
@@ -376,8 +370,7 @@ export const BUILTINS = {
         `security(): srcName must be one of open/high/low/close/volume/hl2/hlc3/ohlc4 (got "${srcName}")`,
       );
     }
-    // Cache a per-call-site Series so `security("1h","close")[k]` works for k bars ago.
-    let state = ctx.callState.get(node);
+    let state = ctx.callState.get(node) as SecurityCallState | undefined;
     if (!state) {
       state = { tf, srcName, series: new Series(ctx.capacity) };
       ctx.callState.set(node, state);
@@ -392,9 +385,6 @@ export const BUILTINS = {
     return state.series;
   },
 
-  // entry(cond, side, qty=1) — long/short entry at current bar's close.
-  // Calling entry while an opposite-side position is open auto-reverses (closes
-  // the existing position at the same bar's close, then opens the new one).
   entry(ctx, _node, args, kwargs, evaluator) {
     if (args.length < 2) {
       throw new RuntimeError('entry(cond, side, qty?) requires cond and side');
@@ -405,12 +395,15 @@ export const BUILTINS = {
       throw new RuntimeError(`entry(): side must be "long" or "short" (got ${args[1]})`);
     }
     const optsFromKw = kwargsToMap(kwargs, evaluator);
-    const qty = args.length >= 3 && Number.isFinite(args[2]) ? args[2] : optsFromKw.qty ?? 1;
-    ctx.strategyOrder(side, cond, { qty });
+    const qtyRaw =
+      args.length >= 3 && Number.isFinite(args[2] as number)
+        ? (args[2] as number)
+        : optsFromKw.qty;
+    const qty = Math.max(0, Number(qtyRaw) || 1);
+    ctx.strategyOrder(side as 'long' | 'short', cond, { qty });
     return cond;
   },
 
-  // exit(cond) — close any open position at current bar's close.
   exit(ctx, _node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('exit(cond) requires a condition');
@@ -421,7 +414,6 @@ export const BUILTINS = {
     return cond;
   },
 
-  // bgcolor(color, opacity?)
   bgcolor(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('bgcolor() requires at least one argument');
@@ -434,6 +426,6 @@ export const BUILTINS = {
   },
 };
 
-export function isBuiltin(name) {
+export function isBuiltin(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(BUILTINS, name);
 }

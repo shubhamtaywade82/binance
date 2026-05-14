@@ -24,16 +24,28 @@ const KEYWORDS = new Set([
 
 const SINGLE_PUNCT = new Set(['(', ')', '[', ']', ',', '?', ':', '.', '+', '-', '*', '/', '%']);
 
-export function tokenize(source) {
-  const tokens = [];
+export interface TokenBase {
+  line: number;
+  col: number;
+}
+
+export type Token =
+  | (TokenBase & { type: 'newline' | 'eof' })
+  | (TokenBase & { type: 'ident'; value: string })
+  | (TokenBase & { type: 'string'; value: string })
+  | (TokenBase & { type: 'number'; value: number })
+  | (TokenBase & { type: string }); // keywords, operators, punctuation
+
+export function tokenize(source: string): Token[] {
+  const tokens: Token[] = [];
   let i = 0;
   let line = 1;
   let col = 1;
   const n = source.length;
 
-  const peek = (k = 0) => (i + k < n ? source[i + k] : '');
-  const advance = () => {
-    const ch = source[i++];
+  const peek = (k = 0): string => (i + k < n ? source[i + k]! : '');
+  const advance = (): string => {
+    const ch = source[i++]!;
     if (ch === '\n') {
       line += 1;
       col = 1;
@@ -46,30 +58,26 @@ export function tokenize(source) {
   while (i < n) {
     const ch = peek();
 
-    // Newline (significant).
     if (ch === '\n') {
       tokens.push({ type: 'newline', line, col });
       advance();
       continue;
     }
 
-    // Whitespace.
     if (ch === ' ' || ch === '\t' || ch === '\r') {
       advance();
       continue;
     }
 
-    // Line comment: // until end of line.
     if (ch === '/' && peek(1) === '/') {
       while (i < n && peek() !== '\n') advance();
       continue;
     }
 
-    // String literal — double-quoted only, no escapes except \" and \\.
     if (ch === '"') {
       const startLine = line;
       const startCol = col;
-      advance(); // opening quote
+      advance();
       let s = '';
       while (i < n && peek() !== '"') {
         if (peek() === '\\') {
@@ -97,12 +105,11 @@ export function tokenize(source) {
       if (i >= n) {
         throw new LexError('Unterminated string literal', { line: startLine, col: startCol });
       }
-      advance(); // closing quote
+      advance();
       tokens.push({ type: 'string', value: s, line: startLine, col: startCol });
       continue;
     }
 
-    // Number literal — integer or decimal. No exponent in MVP.
     if (isDigit(ch) || (ch === '.' && isDigit(peek(1)))) {
       const startLine = line;
       const startCol = col;
@@ -129,7 +136,6 @@ export function tokenize(source) {
       continue;
     }
 
-    // Identifier / keyword.
     if (isIdentStart(ch)) {
       const startLine = line;
       const startCol = col;
@@ -138,14 +144,13 @@ export function tokenize(source) {
         s += advance();
       }
       if (KEYWORDS.has(s)) {
-        tokens.push({ type: s, line: startLine, col: startCol });
+        tokens.push({ type: s, line: startLine, col: startCol } as Token);
       } else {
         tokens.push({ type: 'ident', value: s, line: startLine, col: startCol });
       }
       continue;
     }
 
-    // Two-character operators.
     if (ch === '=' && peek(1) === '=') {
       tokens.push({ type: '==', line, col });
       advance();
@@ -171,7 +176,6 @@ export function tokenize(source) {
       continue;
     }
 
-    // Single-char operators / punctuation / comparators.
     if (ch === '<' || ch === '>' || ch === '=') {
       tokens.push({ type: ch, line, col });
       advance();
@@ -190,14 +194,14 @@ export function tokenize(source) {
   return tokens;
 }
 
-function isDigit(ch) {
+function isDigit(ch: string): boolean {
   return ch >= '0' && ch <= '9';
 }
 
-function isIdentStart(ch) {
+function isIdentStart(ch: string): boolean {
   return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_';
 }
 
-function isIdentPart(ch) {
+function isIdentPart(ch: string): boolean {
   return isIdentStart(ch) || isDigit(ch);
 }
