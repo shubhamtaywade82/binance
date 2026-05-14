@@ -447,12 +447,6 @@ export const AppConfigSchema = z.object({
    */
   SHADOW_MODE: boolFromString(false),
 
-  /**
-   * Maximum notional value (USDT) per single order. 0 = disabled.
-   * When > 0, order quantity is clamped so `qty * price <= MAX_NOTIONAL_USDT`.
-   */
-  MAX_NOTIONAL_USDT: numFromString(0),
-
   /** HTTP port for the Prometheus /metrics + /health endpoint (0 = disabled). */
   PROMETHEUS_PORT: z
     .string()

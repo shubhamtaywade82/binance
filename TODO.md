@@ -265,29 +265,32 @@ Items marked ✅ are already implemented.
 7. `ALGO_ORDER_UPDATE` + `CONDITIONAL_ORDER_TRIGGER_REJECT` private stream events
 
 ### P1 — Edge & Execution Quality
+
 8. ✅ Trade Flow Imbalance (TFI) — `microstructure.ts` + tests + orchestrator + dashboard
-9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
-10. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
-11. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
-12. ✅ `GET /fapi/v1/leverageBracket` — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket`
-13. ✅ `GET /fapi/v1/income` — `getIncomeHistory` with type/time/symbol filters
-14. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
+2. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
+3. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
+4. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
+5. ✅ `GET /fapi/v1/leverageBracket` — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket`
+6. ✅ `GET /fapi/v1/income` — `getIncomeHistory` with type/time/symbol filters
+7. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
 
 ### P2 — Analytics & Research
+
 15. ✅ `GET /fapi/v1/openInterest` — `getOpenInterest` + polling-ready interface
-16. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
-17. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
-18. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
-19. DEFERRED — PostgreSQL persistence layer
-20. DEFERRED — Backtest engine (kline replay)
+2. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
+3. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
+4. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
+5. DEFERRED — PostgreSQL persistence layer
+6. DEFERRED — Backtest engine (kline replay)
 
 ### P3 — Production Hardening (all DEFERRED — requires external infra)
+
 21. DEFERRED — Prometheus metrics + Grafana
-22. DEFERRED — Alert webhooks (Slack/Telegram)
-23. DEFERRED — External watchdog process
-24. DEFERRED — Redis hot state cache
-25. DEFERRED — Multi-symbol live execution
-26. DEFERRED — Walk-forward parameter validation
+2. DEFERRED — Alert webhooks (Slack/Telegram)
+3. DEFERRED — External watchdog process
+4. DEFERRED — Redis hot state cache
+5. DEFERRED — Multi-symbol live execution
+6. DEFERRED — Walk-forward parameter validation
 
 ---
 
@@ -519,17 +522,20 @@ THEN enter short
 ### 16.10 Updated Build Order (AI/ML additions)
 
 #### P1 — Foundational ✅
+
 - ✅ Feature builder: `feature-schema.ts` (40+ columns from all signal sources)
 - ✅ Rolling z-score normalization: `feature-normalizer.ts` (Welford online, ±5σ winsorize)
 - ✅ Feature snapshot serialization: `feature-recorder.ts` (CSV with daily rotation)
 
 #### P2 — Baseline Model ✅
+
 - ✅ Label builder: `ml_bot/label_builder.py` (direction/regression/vol/regime/fill/slippage/adverse + cost-adjusted + leakage guard)
 - ✅ LightGBM training script: `ml_bot/train.py` (direction + vol + fill + slippage + adverse + walk-forward + SHAP)
 - ✅ LightGBM volatility regressor for dynamic sizing
 - ✅ SHAP feature importance
 
 #### P3 — Live Inference ✅
+
 - ✅ ONNX model export: `ml_bot/export_onnx.py`
 - ✅ Inference service: `ml_bot/inference_server.py` (FastAPI `/infer` — direction, vol, fill, slippage, adverse)
 - ✅ Probability gate: `ml-gate.ts` wraps SMC in orchestrator
@@ -537,6 +543,7 @@ THEN enter short
 - ✅ Shadow mode: `ML_SHADOW_MODE=true` default
 
 #### P4 — Sequence & Ensemble (deferred — needs real data + Phase 1 baseline results)
+
 - ☐ TCN / Transformer sequence model
 - ☐ Multimodal encoder architecture
 - ✅ Execution quality head (fill/slippage/adverse models built)
@@ -609,6 +616,7 @@ trend_strength     # abs(ret_5m) / vol_5m  (signal-to-noise)
 ```
 
 **Engineering rules:**
+
 - Normalize each column with per-symbol rolling z-score (window = 1000 rows)
 - Winsorize at ±5 σ before feeding to model
 - Align all streams to a common clock tick (e.g. every 1 s on the second boundary)
@@ -1282,11 +1290,13 @@ pip install websockets orjson aiohttp lightgbm numpy joblib
 ```
 
 For inference server (optional):
+
 ```
 pip install fastapi uvicorn
 ```
 
 For ONNX upgrade:
+
 ```
 pip install onnxruntime skl2onnx
 ```
@@ -1303,6 +1313,7 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 ### 19.1 What to Track
 
 #### Trading metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
 | ✅ | Realized PnL (running total) | `TradingMetricsTracker.recordTrade()` |
@@ -1314,6 +1325,7 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 | ✅ | Sharpe ratio | Rolling 7-day / 30-day annualized from daily returns ring |
 
 #### Execution metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
 | ✅ | Order send latency | `LatencyTracker` — P50/P95/P99, Prometheus histogram |
@@ -1322,6 +1334,7 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 | ✅ | Fill rate | Tracked via `LatencyTracker` filled/sent ratio |
 
 #### Model metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
 | ✅ | p_up / p_down distributions | `ModelMetricsTracker` running averages |
@@ -1330,6 +1343,7 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 | ✅ | Feature drift | Welford online mean/std per feature, flags >3σ deviation |
 
 #### System metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
 | ✅ | WS message lag | `SystemMetricsTracker.recordWsLag()` — rolling avg of last 100 |

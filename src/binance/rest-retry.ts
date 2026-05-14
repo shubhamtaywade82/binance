@@ -17,7 +17,8 @@ export const DEFAULT_BINANCE_REST_RETRY_POLICY: BinanceRestRetryPolicy = {
 const readHeader = (headers: RawAxiosResponseHeaders | AxiosResponseHeaders | undefined, name: string): string | undefined => {
   if (!headers) return undefined;
   if (headers instanceof AxiosHeaders) {
-    return headers.get(name) ?? headers.get(name.toLowerCase()) ?? undefined;
+    const val = headers.get(name) ?? headers.get(name.toLowerCase());
+    return typeof val === 'string' ? val : val != null ? String(val) : undefined;
   }
   const record = headers as Record<string, unknown>;
   const v = record[name] ?? record[name.toLowerCase()];
