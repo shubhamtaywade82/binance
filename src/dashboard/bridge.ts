@@ -1029,6 +1029,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         ...(u.priceChange !== undefined ? { priceChange: u.priceChange } : {}),
         ...(u.priceChangePercent !== undefined ? { priceChangePercent: u.priceChangePercent } : {}),
         ...(u.openPrice !== undefined ? { openPrice: u.openPrice } : {}),
+        ...(u.highPrice !== undefined ? { highPrice: u.highPrice } : {}),
+        ...(u.lowPrice !== undefined ? { lowPrice: u.lowPrice } : {}),
       });
     },
     onBookTicker: (t: BookTickerEvent) => {

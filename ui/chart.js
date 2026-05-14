@@ -30,6 +30,7 @@ import {
   storeSignalHudEnabled,
 } from './chart-strategy-hud.js';
 import { SmcZoneBoxesPrimitive } from './chart-smc-zone-primitive.js';
+import { PartialPriceLinesPrimitive } from './chart-partial-price-lines.js';
 
 const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
 
@@ -190,7 +191,7 @@ export class ChartManager {
     this._historyDebounceTimer = null;
     /** @type {((p: { tf: string; oldestOpenTime: number }) => void) | null} */
     this._onNeedHistory = null;
-    /** Custom dashed LTP line (series default price line jumps on each tick). */
+    /** Invisible price line for axis label; visual line drawn by `_partialLinesPrimitive`. */
     this._ltpPriceLine = null;
     /** Integer price × 1_000 — sequential steps ±1 toward `_ltpTargetTicks`. */
     this._ltpDisplayTicks = null;
@@ -216,12 +217,15 @@ export class ChartManager {
     this._volAnimColor = '';
     /** @type {number | null} */
     this._volRafId = null;
-    /** Best bid / ask from order book — horizontal guides on the price scale. */
-    this._bookTopBidLine = null;
-    this._bookTopAskLine = null;
+    /** Best bid / ask from order book. */
     this._lastBookBid = null;
     this._lastBookAsk = null;
     this._bookTopLinesEnabled = readBookTopLinesEnabled();
+    /** 24h high/low values from ticker. */
+    this._lastHigh24h = null;
+    this._lastLow24h = null;
+    /** Single canvas primitive for all partial horizontal price lines (LTP, BID, ASK, 24h H/L). */
+    this._partialLinesPrimitive = null;
     /** @type {(() => void) | null} */
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
@@ -894,103 +898,97 @@ export class ChartManager {
     }
   }
 
-  _removeBookTopLines() {
-    if (this.candleSeries && this._bookTopBidLine) {
-      try {
-        this.candleSeries.removePriceLine(this._bookTopBidLine);
-      } catch {
-        /* ignore */
-      }
-    }
-    if (this.candleSeries && this._bookTopAskLine) {
-      try {
-        this.candleSeries.removePriceLine(this._bookTopAskLine);
-      } catch {
-        /* ignore */
-      }
-    }
-    this._bookTopBidLine = null;
-    this._bookTopAskLine = null;
-  }
-
-  _ensureBookTopLines() {
-    if (!this.candleSeries) return;
-    if (!this._bookTopBidLine) {
-      this._bookTopBidLine = this.candleSeries.createPriceLine({
-        price: this._lastBookBid ?? 0,
-        color: 'rgba(0,230,118,0.82)',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        lineVisible: true,
-        axisLabelVisible: true,
-        title: 'BID',
-        axisLabelColor: 'rgba(0,230,118,0.95)',
-        axisLabelTextColor: '#e8f5e9',
-      });
-    }
-    if (!this._bookTopAskLine) {
-      this._bookTopAskLine = this.candleSeries.createPriceLine({
-        price: this._lastBookAsk ?? 0,
-        color: 'rgba(255,23,68,0.82)',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        lineVisible: true,
-        axisLabelVisible: true,
-        title: 'ASK',
-        axisLabelColor: 'rgba(255,23,68,0.95)',
-        axisLabelTextColor: '#ffebee',
-      });
-    }
-  }
-
   _syncBookTopLines() {
-    if (!this.candleSeries) return;
+    if (!this._partialLinesPrimitive) return;
     if (!this._bookTopLinesEnabled) {
-      this._removeBookTopLines();
+      this._partialLinesPrimitive.removeLine('bid');
+      this._partialLinesPrimitive.removeLine('ask');
       return;
     }
     const bid = this._lastBookBid;
     const ask = this._lastBookAsk;
     if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid > ask) {
-      this._removeBookTopLines();
+      this._partialLinesPrimitive.removeLine('bid');
+      this._partialLinesPrimitive.removeLine('ask');
       return;
     }
-    this._ensureBookTopLines();
-    this._bookTopBidLine?.applyOptions({
-      price: bid,
-      lineVisible: true,
-      axisLabelVisible: true,
-      title: 'BID',
-      color: 'rgba(0,230,118,0.82)',
-      axisLabelColor: 'rgba(0,230,118,0.95)',
-      axisLabelTextColor: '#e8f5e9',
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('bid', {
+      startTimeSec: startTime, price: bid, color: 'rgba(0,230,118,0.82)',
+      title: 'BID', axisLabelColor: 'rgba(0,230,118,0.95)', axisLabelTextColor: '#e8f5e9',
     });
-    this._bookTopAskLine?.applyOptions({
-      price: ask,
-      lineVisible: true,
-      axisLabelVisible: true,
-      title: 'ASK',
-      color: 'rgba(255,23,68,0.82)',
-      axisLabelColor: 'rgba(255,23,68,0.95)',
-      axisLabelTextColor: '#ffebee',
+    this._partialLinesPrimitive.setLine('ask', {
+      startTimeSec: startTime, price: ask, color: 'rgba(255,23,68,0.82)',
+      title: 'ASK', axisLabelColor: 'rgba(255,23,68,0.95)', axisLabelTextColor: '#ffebee',
     });
   }
 
-  /**
-   * Best bid / ask from the order book (same top-of-book as the ladder). Non-finite clears lines.
-   */
   setBookTopLevels(bid, ask) {
     const b = Number.isFinite(bid) ? bid : null;
     const a = Number.isFinite(ask) ? ask : null;
     if (b == null || a == null) {
       this._lastBookBid = null;
       this._lastBookAsk = null;
-      this._removeBookTopLines();
+      this._partialLinesPrimitive?.removeLine('bid');
+      this._partialLinesPrimitive?.removeLine('ask');
       return;
     }
     this._lastBookBid = b;
     this._lastBookAsk = a;
     this._syncBookTopLines();
+  }
+
+  // ── 24h High / Low + helpers ──────────────────────────────────────────
+
+  _findCandleTimeSec(matchFn) {
+    const candles = this.candleMap[this.currentTf];
+    if (!candles?.length) return null;
+    for (let i = candles.length - 1; i >= 0; i--) {
+      if (matchFn(candles[i])) return Math.floor(candles[i].openTime / 1000);
+    }
+    return null;
+  }
+
+  _latestCandleTimeSec() {
+    const candles = this.candleMap[this.currentTf];
+    if (!candles?.length) return null;
+    return Math.floor(candles[candles.length - 1].openTime / 1000);
+  }
+
+  _sync24hLines() {
+    if (!this._partialLinesPrimitive) return;
+    const endTime = this._latestCandleTimeSec();
+    if (endTime == null) {
+      this._partialLinesPrimitive.removeLine('high24h');
+      this._partialLinesPrimitive.removeLine('low24h');
+      return;
+    }
+
+    if (this._lastHigh24h != null) {
+      const startTime = this._findCandleTimeSec((c) => c.high === this._lastHigh24h) ?? endTime;
+      this._partialLinesPrimitive.setLine('high24h', {
+        startTimeSec: startTime, price: this._lastHigh24h, color: 'rgba(255,255,255,0.25)',
+        title: '24h High',
+      });
+    } else {
+      this._partialLinesPrimitive.removeLine('high24h');
+    }
+
+    if (this._lastLow24h != null) {
+      const startTime = this._findCandleTimeSec((c) => c.low === this._lastLow24h) ?? endTime;
+      this._partialLinesPrimitive.setLine('low24h', {
+        startTimeSec: startTime, price: this._lastLow24h, color: 'rgba(255,255,255,0.25)',
+        title: '24h Low',
+      });
+    } else {
+      this._partialLinesPrimitive.removeLine('low24h');
+    }
+  }
+
+  set24hHighLow(high, low) {
+    this._lastHigh24h = Number.isFinite(high) ? high : null;
+    this._lastLow24h = Number.isFinite(low) ? low : null;
+    this._sync24hLines();
   }
 
   _hideLtpPriceLine() {
@@ -1006,6 +1004,7 @@ export class ChartManager {
       }
     }
     this._ltpPriceLine = null;
+    this._partialLinesPrimitive?.removeLine('ltp');
   }
 
   /** @param {object | null} tail coerced candle (openTime, OHLC, volume). */
@@ -1063,9 +1062,21 @@ export class ChartManager {
       color: COLORS.bear,
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
-      lineVisible: true,
+      lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: COLORS.bear,
+    });
+  }
+
+  _updateLtpVisual(price) {
+    if (!this._partialLinesPrimitive) return;
+    if (!Number.isFinite(price)) {
+      this._partialLinesPrimitive.removeLine('ltp');
+      return;
+    }
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('ltp', {
+      startTimeSec: startTime, price, color: COLORS.bear,
     });
   }
 
@@ -1097,6 +1108,7 @@ export class ChartManager {
 
     const p = ltpPriceFromTicks(this._ltpDisplayTicks);
     this._ltpPriceLine.applyOptions({ price: p });
+    this._updateLtpVisual(p);
     this._emitLtpDisplay(p);
     this._refreshFormingCandleFromCtx();
     if (this._ltpDisplayTicks !== this._ltpTargetTicks) {
@@ -1118,11 +1130,12 @@ export class ChartManager {
     this._ensureLtpPriceLine(p);
     this._ltpPriceLine.applyOptions({
       price: p,
-      lineVisible: true,
+      lineVisible: false,
       axisLabelVisible: true,
       color: COLORS.bear,
       axisLabelColor: COLORS.bear,
     });
+    this._updateLtpVisual(p);
     this._emitLtpDisplay(p);
     this._refreshFormingCandleFromCtx();
   }
@@ -1238,6 +1251,9 @@ export class ChartManager {
       lastValueVisible: false,
       priceLineVisible: false,
     });
+
+    this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
+    this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
 
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((lr) => {
       this._maybeRequestHistory(lr);
@@ -1640,6 +1656,7 @@ export class ChartManager {
   onSnapshot({ candles, indicators, availableTimeframes }) {
     this._historyExhausted = {};
     this._historyLoading = {};
+    this.set24hHighLow(null, null);
     this._applyAvailableTimeframes(availableTimeframes ?? null);
 
     const raw = candles ?? {};
@@ -1763,6 +1780,7 @@ export class ChartManager {
       this.candleSeries.setData([]);
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
+      this._partialLinesPrimitive?.clear();
       this.chart.timeScale().fitContent();
       this._hideLtpPriceLine();
       this._emitLtpDisplay(null);
@@ -1826,6 +1844,8 @@ export class ChartManager {
     const lastClose = candles[candles.length - 1]?.close;
     this._snapLtpTo(Number.isFinite(lastClose) ? lastClose : NaN);
     this._paintSmcFromStoredSignals();
+    this._sync24hLines();
+    this._syncBookTopLines();
   }
 
   _paintIndicators(tf) {

@@ -353,27 +353,29 @@ const dispatch = (msg) => {
     case 'ticker_24hr': {
       if (!appliesToActiveWatch(msg)) break;
       const changeEl = document.getElementById('hdr-change');
-      if (!changeEl) break;
-      let pctStr = null;
-      let bull = true;
-      if (msg.priceChangePercent != null && Number.isFinite(msg.priceChangePercent)) {
-        const v = Number(msg.priceChangePercent);
-        bull = v >= 0;
-        pctStr = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
-      } else if (
-        msg.priceChange != null &&
-        Number.isFinite(msg.priceChange) &&
-        Number.isFinite(msg.price)
-      ) {
-        const open = msg.price - msg.priceChange;
-        bull = msg.priceChange >= 0;
-        const pct = open !== 0 ? (msg.priceChange / open) * 100 : 0;
-        pctStr = `${msg.priceChange >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+      if (changeEl) {
+        let pctStr = null;
+        let bull = true;
+        if (msg.priceChangePercent != null && Number.isFinite(msg.priceChangePercent)) {
+          const v = Number(msg.priceChangePercent);
+          bull = v >= 0;
+          pctStr = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+        } else if (
+          msg.priceChange != null &&
+          Number.isFinite(msg.priceChange) &&
+          Number.isFinite(msg.price)
+        ) {
+          const open = msg.price - msg.priceChange;
+          bull = msg.priceChange >= 0;
+          const pct = open !== 0 ? (msg.priceChange / open) * 100 : 0;
+          pctStr = `${msg.priceChange >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+        }
+        if (pctStr != null) {
+          changeEl.textContent = pctStr;
+          changeEl.className = `hdr-change ${bull ? 'bull' : 'bear'}`;
+        }
       }
-      if (pctStr != null) {
-        changeEl.textContent = pctStr;
-        changeEl.className = `hdr-change ${bull ? 'bull' : 'bear'}`;
-      }
+      chart.set24hHighLow(msg.highPrice, msg.lowPrice);
       break;
     }
 
