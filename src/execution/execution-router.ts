@@ -145,7 +145,9 @@ export class ExecutionRouter implements ExecutionAdapter {
 
       const baseUrl = useTestnet
         ? 'https://testnet.binancefuture.com'
-        : 'https://fapi.binance.com';
+        : this.cfg.BINANCE_PRODUCT === 'usdm_demo'
+          ? 'https://demo-fapi.binance.com'
+          : 'https://fapi.binance.com';
 
       const client = new BinanceRestClient({ apiKey, apiSecret, baseUrl });
       return new BinanceLiveExecutionAdapter({

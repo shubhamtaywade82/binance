@@ -6,7 +6,7 @@ loadDotenv();
 
 export type { TradingAsset } from './config/asset-presets';
 
-const BinanceProduct = z.enum(['usdm', 'spot']);
+const BinanceProduct = z.enum(['usdm', 'usdm_demo', 'spot']);
 const ExecutionModeEnum = z.enum(['paper', 'live']);
 
 const numFromString = (def: number) =>
@@ -35,6 +35,11 @@ export const AppConfigSchema = z.object({
     .string()
     .default('sol')
     .transform((s) => normalizeTradingAsset(s)),
+  /**
+   * `usdm` — live USD-M REST `fapi.binance.com` (or testnet when `BINANCE_FUTURES_TESTNET=true`).
+   * `usdm_demo` — Binance **demo** USD-M REST `demo-fapi.binance.com` (virtual balances; not mainnet).
+   * `spot` — spot market.
+   */
   BINANCE_PRODUCT: BinanceProduct.default('usdm'),
   BINANCE_REST_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_WS_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
@@ -211,7 +216,9 @@ export const AppConfigSchema = z.object({
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
 
   /**
-   * USD-M Futures **testnet** (derivatives demo): REST `demo-fapi.binance.com`, WS `fstream.binancefuture.com`.
+   * USD-M **testnet** (HMAC keys from testnet.binancefuture.com): REST `testnet.binancefuture.com`,
+   * WS `fstream.binancefuture.com`. Only applies when `BINANCE_PRODUCT=usdm`.
+   * For Binance **demo trading** REST (`demo-fapi.binance.com`) use `BINANCE_PRODUCT=usdm_demo` instead.
    * Ignored when `BINANCE_PRODUCT=spot`. Overrides ignored if `BINANCE_REST_BASE` / `BINANCE_WS_BASE` are set.
    * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
    */
@@ -475,16 +482,22 @@ export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecr
   };
 }
 
+/** True for USD-M perpetual products (`usdm` or Binance demo-fapi `usdm_demo`). */
+export const isBinanceUsdmProduct = (p: AppConfig['BINANCE_PRODUCT']): boolean =>
+  p === 'usdm' || p === 'usdm_demo';
+
 export const binanceRestBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
-  if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'https://demo-fapi.binance.com';
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
 
 export const binanceWsBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
-  if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'wss://fstream.binancefuture.com';
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') return 'wss://fstream.binancefuture.com';
   return 'wss://fstream.binance.com';
 }

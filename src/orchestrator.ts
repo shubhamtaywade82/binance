@@ -1,4 +1,4 @@
-import { binanceWsBase, binanceRestBase, multiplexBinanceSymbols, type AppConfig } from './config';
+import { binanceWsBase, binanceRestBase, multiplexBinanceSymbols, isBinanceUsdmProduct, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
@@ -394,7 +394,7 @@ export class HybridOrchestrator {
       executionAdapter: this.cfg.BINANCE_EXECUTION_ADAPTER ? 'binance' : 'coindcx',
       privateWs: this.privateWs !== null,
       usdmMarkRestPollSec:
-        this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
+        isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT) ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',
       logFile: this.cfg.APP_LOG_PATH.trim() || '(stdout only — set APP_LOG_PATH for NDJSON file)',
     });
@@ -683,7 +683,7 @@ export class HybridOrchestrator {
         symbol: this.pairs.binanceSymbol,
         usdmMarkRestPollSec: this.cfg.USDM_MARK_REST_POLL_SEC,
         hint:
-          this.cfg.BINANCE_PRODUCT === 'usdm'
+          isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)
             ? this.cfg.USDM_MARK_REST_POLL_SEC > 0
               ? 'No mark on WS yet; if fapi REST is blocked too, mark REST poll will also fail. Else expect ltp_connected (mark_rest) on next poll.'
               : 'No markPriceUpdate yet — enable USDM_MARK_REST_POLL_SEC (default 5) or check BINANCE_WS_BASE / network.'
@@ -820,7 +820,7 @@ export class HybridOrchestrator {
     const hubSymbols = this.multiplexSymbolList.map((s) => s.toUpperCase());
     const primaryU = this.pairs.binanceSymbol.toUpperCase();
 
-    if (this.cfg.BINANCE_PRODUCT === 'usdm') {
+    if (isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) {
       try {
         const map = await this.fetchExchangeInfoForSymbols(binanceRestBase(this.cfg), hubSymbols);
         for (const symU of hubSymbols) {
@@ -907,7 +907,7 @@ export class HybridOrchestrator {
 
   private scheduleRestMarkPoll(): void {
     this.clearRestMarkPoll();
-    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    if (!isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) return;
     const sec = this.cfg.USDM_MARK_REST_POLL_SEC;
     if (sec <= 0) return;
     void this.pollRestMarkOnce();
@@ -922,7 +922,7 @@ export class HybridOrchestrator {
   }
 
   private async pollRestMarkOnce(): Promise<void> {
-    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    if (!isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) return;
     try {
       const row = await this.fetchUsdmMarkRest(this.cfg, this.pairs.binanceSymbol);
       if (!row) {

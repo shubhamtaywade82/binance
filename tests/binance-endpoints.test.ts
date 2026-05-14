@@ -11,6 +11,15 @@ describe('Derivatives (USD-M) REST / WS defaults', () => {
     expect(binanceWsBase(cfg)).toBe('wss://fstream.binance.com');
   });
 
+  it('usdm_demo: demo-fapi REST + fstream.binancefuture WS (Binance USD-M demo)', () => {
+    const cfg = AppConfigSchema.parse({
+      BINANCE_PRODUCT: 'usdm_demo',
+      BINANCE_FUTURES_TESTNET: false,
+    });
+    expect(binanceRestBase(cfg)).toBe('https://demo-fapi.binance.com');
+    expect(binanceWsBase(cfg)).toBe('wss://fstream.binancefuture.com');
+  });
+
   it('testnet: testnet.binancefuture.com + fstream.binancefuture root', () => {
     const cfg = AppConfigSchema.parse({
       BINANCE_PRODUCT: 'usdm',

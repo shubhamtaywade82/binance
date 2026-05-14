@@ -2,7 +2,7 @@
  * Routes USD-M Futures WebSocket streams to Binance `/public` vs `/market` hosts.
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
  */
-export type BinanceProductWs = 'usdm' | 'spot';
+export type BinanceProductWs = 'usdm' | 'usdm_demo' | 'spot';
 export type BinanceUsdmWsRoute = 'market' | 'public';
 export type BinanceWsRoute = BinanceUsdmWsRoute | 'spot';
 
@@ -11,7 +11,7 @@ const STREAM_SUFFIX = /\/(ws|stream)$/;
 
 export const normalizeWsRoot = (baseWsUrl: string, product: BinanceProductWs): string => {
   let root = baseWsUrl.replace(/\/$/, '');
-  if (product === 'usdm') {
+  if (product !== 'spot') {
     root = root.replace(ROUTED_SUFFIX, '');
   } else {
     root = root.replace(STREAM_SUFFIX, '');
