@@ -1011,7 +1011,7 @@ export class ChartManager {
     } else {
       // Proportional step: 40% of distance per frame (min 1 tick).
       // This makes it extremely responsive while still smooth.
-      const step = Math.sign(dist) * Math.max(1, Math.floor(Math.abs(dist) * 0.4));
+      const step = Math.sign(dist) * Math.max(1, Math.floor(Math.abs(dist) * 0.1));
       this._ltpDisplayTicks += step;
     }
 
