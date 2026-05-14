@@ -63,13 +63,14 @@ export class SentimentGauge {
   _draw() {
     const { ctx, canvas } = this;
     if (!ctx || !canvas) return;
-    const parent = canvas.parentElement;
-    const W = Math.max(1, parent.clientWidth);
+    // Let CSS width: 100% dictate the layout width, so it respects parent padding.
+    canvas.style.width = '100%';
+    const W = Math.max(1, canvas.clientWidth);
     const H = 38;
+    
+    // Set internal resolution
     canvas.width = W * devicePixelRatio;
     canvas.height = H * devicePixelRatio;
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
     ctx.scale(devicePixelRatio, devicePixelRatio);
 
     ctx.clearRect(0, 0, W, H);

@@ -98,6 +98,9 @@ const CHART_OPTS = {
 
 /** Match `DASHBOARD_STORE_MAX_BARS` / `src/dashboard/bridge.ts` — trim client cache same as server. */
 const MAX_STORE_BARS = 100_000;
+
+/** Proportional smoothing for current price line (0.01 = extremely slow/smooth, 1.0 = instant snap). */
+const LTP_SMOOTHING = Number.parseFloat(import.meta.env?.VITE_CHART_LTP_SMOOTHING ?? '0.1');
 /** When the left edge of the visible window is within this many bars of the oldest loaded bar, request older history. */
 const LAZY_HISTORY_EDGE_BARS = 24;
 const LAZY_HISTORY_DEBOUNCE_MS = 400;
@@ -1009,9 +1012,10 @@ export class ChartManager {
     if (Math.abs(dist) < 1) {
       this._ltpDisplayTicks = this._ltpTargetTicks;
     } else {
-      // Proportional step: 40% of distance per frame (min 1 tick).
+      // Proportional step: LTP_SMOOTHING of distance per frame (min 1 tick).
       // This makes it extremely responsive while still smooth.
-      const step = Math.sign(dist) * Math.max(1, Math.floor(Math.abs(dist) * 0.1));
+      const step = Math.sign(dist) * Math.max(1, Math.floor(Math.abs(dist) * LTP_SMOOTHING));
+
       this._ltpDisplayTicks += step;
     }
 
