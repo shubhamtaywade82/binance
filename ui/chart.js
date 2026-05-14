@@ -53,6 +53,8 @@ const storeBookTopLinesEnabled = (on) => {
 const COLORS = {
   bull: '#00e676',
   bear: '#ff1744',
+  /** Colorblind-safe bull for LTP / price lines (cyan-teal, distinguishable from bear red). */
+  ltpBull: '#00c8dc',
   accent: '#7c4dff',
   ema9: '#ffd740',
   ema21: '#00b0ff',
@@ -914,12 +916,12 @@ export class ChartManager {
     }
     const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
     this._partialLinesPrimitive.setLine('bid', {
-      startTimeSec: startTime, price: bid, color: 'rgba(0,230,118,0.82)',
-      title: 'BID', axisLabelColor: 'rgba(0,230,118,0.95)', axisLabelTextColor: '#e8f5e9',
+      startTimeSec: startTime, price: bid, color: 'rgba(0,200,220,0.82)',
+      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#e0f7fa',
     });
     this._partialLinesPrimitive.setLine('ask', {
-      startTimeSec: startTime, price: ask, color: 'rgba(255,23,68,0.82)',
-      title: 'ASK', axisLabelColor: 'rgba(255,23,68,0.95)', axisLabelTextColor: '#ffebee',
+      startTimeSec: startTime, price: ask, color: 'rgba(255,160,0,0.82)',
+      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#fff3e0',
     });
   }
 
@@ -1068,16 +1070,23 @@ export class ChartManager {
     });
   }
 
+  _ltpColor(price) {
+    const open = this._formingBarCtx?.open;
+    return (Number.isFinite(open) && price >= open) ? COLORS.ltpBull : COLORS.bear;
+  }
+
   _updateLtpVisual(price) {
     if (!this._partialLinesPrimitive) return;
     if (!Number.isFinite(price)) {
       this._partialLinesPrimitive.removeLine('ltp');
       return;
     }
+    const color = this._ltpColor(price);
     const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
     this._partialLinesPrimitive.setLine('ltp', {
-      startTimeSec: startTime, price, color: COLORS.bear,
+      startTimeSec: startTime, price, color,
     });
+    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color });
   }
 
   _ltpAnimStep() {
@@ -1128,12 +1137,13 @@ export class ChartManager {
     this._ltpDisplayTicks = ticks;
     const p = ltpPriceFromTicks(ticks);
     this._ensureLtpPriceLine(p);
+    const color = this._ltpColor(p);
     this._ltpPriceLine.applyOptions({
       price: p,
       lineVisible: false,
       axisLabelVisible: true,
-      color: COLORS.bear,
-      axisLabelColor: COLORS.bear,
+      color,
+      axisLabelColor: color,
     });
     this._updateLtpVisual(p);
     this._emitLtpDisplay(p);
