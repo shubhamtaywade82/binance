@@ -1,8 +1,8 @@
 // NanoPine AST node factories. Plain object nodes, JSON-serialisable so they can
 // cross the worker boundary if needed.
 
-import type { Expr, InputKind, KwArg, Program, Statement } from './nodes.js';
-import type { SourceLoc } from './nodes.js';
+import type { Expr, InputKind, KwArg, Program, Statement } from './nodes';
+import type { SourceLoc } from './nodes';
 
 export const Node = {
   Program: (body: Statement[]): Program => ({ type: 'Program', body }),

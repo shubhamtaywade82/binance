@@ -1,9 +1,9 @@
 // Recursive-descent parser for NanoPine.
 
-import { ParseError } from './errors.js';
-import { Node } from './ast.js';
-import type { Expr, InputKind, KwArg, Program, Statement } from './nodes.js';
-import type { Token } from './lexer.js';
+import { ParseError } from './errors';
+import { Node } from './ast';
+import type { Expr, InputKind, KwArg, Program, Statement } from './nodes';
+import type { Token } from './lexer';
 
 const INPUT_KINDS = new Set(['int', 'float', 'bool', 'source', 'string']);
 
