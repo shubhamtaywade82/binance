@@ -1,0 +1,286 @@
+// Tree-walking interpreter for NanoPine.
+//
+// Two entry points:
+//   - prepare(program, ctx)            — wires indicator metadata + input defaults
+//   - runBar(program, ctx, barIndex)   — evaluates statements for one bar
+//
+// The interpreter is intentionally simple: no functions, no loops in the user
+// language, no closures. The only stateful behaviour comes from (1) the per-call-site
+// TA caches in ctx.callState and (2) user-assigned named series in ctx.userSeries.
+
+import { RuntimeError, ValidationError } from './errors.js';
+import { Series } from './series.js';
+import { BUILTINS, isBuiltin } from './ta.js';
+
+// Statements that must run once at script load (before the bar loop).
+export function prepare(program, ctx) {
+  let seenIndicator = false;
+  for (const stmt of program.body) {
+    if (stmt.type === 'IndicatorDecl') {
+      if (seenIndicator) {
+        throw new ValidationError("Multiple 'indicator' declarations", {
+          line: stmt.line,
+          col: stmt.col,
+        });
+      }
+      seenIndicator = true;
+      ctx.meta.name = stmt.name;
+      ctx.meta.opts = {};
+      for (const kw of stmt.opts) {
+        ctx.meta.opts[kw.name] = evalConstExpr(kw.value, ctx);
+      }
+    } else if (stmt.type === 'InputDecl') {
+      // Default value = first positional arg; an instance-level inputs map can override.
+      if (!ctx.inputs.has(stmt.name)) {
+        const def = stmt.args.length > 0 ? evalConstExpr(stmt.args[0], ctx) : null;
+        ctx.inputs.set(stmt.name, coerceInput(def, stmt.kind, stmt.name, ctx));
+      } else if (stmt.kind === 'source') {
+        // Override may be a string name — resolve to the builtin series.
+        const raw = ctx.inputs.get(stmt.name);
+        if (typeof raw === 'string' && raw in ctx.builtins) {
+          ctx.inputs.set(stmt.name, ctx.builtins[raw]);
+        }
+      }
+    }
+  }
+}
+
+export function runBar(program, ctx, barIndex) {
+  ctx.resetForBar(barIndex);
+  for (const stmt of program.body) {
+    if (stmt.type === 'IndicatorDecl' || stmt.type === 'InputDecl') continue;
+    execStatement(stmt, ctx);
+  }
+}
+
+function execStatement(stmt, ctx) {
+  ctx.tickNodeBudget();
+  switch (stmt.type) {
+    case 'Assign': {
+      const value = evalExpr(stmt.value, ctx);
+      ctx.assign(stmt.name, value);
+      return;
+    }
+    case 'ExprStmt': {
+      evalExpr(stmt.expr, ctx);
+      return;
+    }
+    default:
+      throw new RuntimeError(`Unexpected statement type ${stmt.type}`, {
+        line: stmt.line,
+        col: stmt.col,
+      });
+  }
+}
+
+function evalExpr(node, ctx) {
+  ctx.tickNodeBudget();
+  switch (node.type) {
+    case 'Number':
+      return node.value;
+    case 'String':
+      return node.value;
+    case 'Bool':
+      return node.value;
+    case 'NA':
+      return NaN;
+    case 'Ident': {
+      const v = ctx.resolve(node.name);
+      if (v === undefined) {
+        throw new RuntimeError(`Unknown identifier '${node.name}'`, {
+          line: node.line,
+          col: node.col,
+        });
+      }
+      // Series identifiers evaluate to a *number* (the current bar's value) unless
+      // they are passed as an argument to a function that expects a Series. We keep
+      // them as Series here and let the call site / index logic decide.
+      return v;
+    }
+    case 'Unary': {
+      const arg = evalExpr(node.arg, ctx);
+      if (node.op === 'neg') return -toNumber(arg);
+      if (node.op === 'not') return !toBool(arg);
+      throw new RuntimeError(`Unknown unary op ${node.op}`, { line: node.line, col: node.col });
+    }
+    case 'Binary':
+      return evalBinary(node, ctx);
+    case 'Ternary': {
+      const cond = toBool(evalExpr(node.cond, ctx));
+      return cond ? evalExpr(node.then, ctx) : evalExpr(node.else, ctx);
+    }
+    case 'Index': {
+      const target = evalExpr(node.target, ctx);
+      const idx = toNumber(evalExpr(node.index, ctx));
+      if (!(target instanceof Series)) {
+        throw new RuntimeError("Index target is not a series", {
+          line: node.line,
+          col: node.col,
+        });
+      }
+      return target.get(idx | 0);
+    }
+    case 'Call':
+      return evalCall(node, ctx);
+    default:
+      throw new RuntimeError(`Unknown expression type ${node.type}`, {
+        line: node.line,
+        col: node.col,
+      });
+  }
+}
+
+function evalBinary(node, ctx) {
+  // Short-circuit boolean ops.
+  if (node.op === 'and') {
+    const l = toBool(evalExpr(node.left, ctx));
+    if (!l) return false;
+    return toBool(evalExpr(node.right, ctx));
+  }
+  if (node.op === 'or') {
+    const l = toBool(evalExpr(node.left, ctx));
+    if (l) return true;
+    return toBool(evalExpr(node.right, ctx));
+  }
+
+  const left = evalExpr(node.left, ctx);
+  const right = evalExpr(node.right, ctx);
+  const a = toNumber(left);
+  const b = toNumber(right);
+  switch (node.op) {
+    case '+':
+      return a + b;
+    case '-':
+      return a - b;
+    case '*':
+      return a * b;
+    case '/':
+      return b === 0 ? NaN : a / b;
+    case '%':
+      return b === 0 ? NaN : a % b;
+    case '==':
+      return a === b;
+    case '!=':
+      return a !== b;
+    case '<':
+      return a < b;
+    case '<=':
+      return a <= b;
+    case '>':
+      return a > b;
+    case '>=':
+      return a >= b;
+    default:
+      throw new RuntimeError(`Unknown binary op ${node.op}`, { line: node.line, col: node.col });
+  }
+}
+
+function evalCall(node, ctx) {
+  if (!isBuiltin(node.callee)) {
+    throw new RuntimeError(`Unknown function '${node.callee}'`, {
+      line: node.line,
+      col: node.col,
+    });
+  }
+  const args = node.args.map((a) => evalExpr(a, ctx));
+  const handler = BUILTINS[node.callee];
+  return handler(ctx, node, args, node.kwargs, (n) => evalExpr(n, ctx));
+}
+
+function toNumber(v) {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (v instanceof Series) return v.get(0);
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  return NaN;
+}
+
+function toBool(v) {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
+  if (v instanceof Series) {
+    const x = v.get(0);
+    return Number.isFinite(x) && x !== 0;
+  }
+  return Boolean(v);
+}
+
+// Constant evaluator for declaration positions (kwargs of indicator(), defaults of input()).
+// Disallows series/runtime identifiers — only literal-ish expressions are accepted.
+function evalConstExpr(node, ctx) {
+  switch (node.type) {
+    case 'Number':
+      return node.value;
+    case 'String':
+      return node.value;
+    case 'Bool':
+      return node.value;
+    case 'NA':
+      return NaN;
+    case 'Unary': {
+      const a = evalConstExpr(node.arg, ctx);
+      if (node.op === 'neg') return -Number(a);
+      if (node.op === 'not') return !a;
+      break;
+    }
+    case 'Binary': {
+      const a = evalConstExpr(node.left, ctx);
+      const b = evalConstExpr(node.right, ctx);
+      switch (node.op) {
+        case '+':
+          return Number(a) + Number(b);
+        case '-':
+          return Number(a) - Number(b);
+        case '*':
+          return Number(a) * Number(b);
+        case '/':
+          return Number(a) / Number(b);
+        case '%':
+          return Number(a) % Number(b);
+        default:
+          break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  throw new ValidationError(`Non-constant expression in declaration context (${node.type})`, {
+    line: node.line,
+    col: node.col,
+  });
+}
+
+function coerceInput(value, kind, name, ctx) {
+  switch (kind) {
+    case 'int': {
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        throw new ValidationError(`Input '${name}' (int) must be a finite number`);
+      }
+      return Math.round(n);
+    }
+    case 'float': {
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        throw new ValidationError(`Input '${name}' (float) must be a finite number`);
+      }
+      return n;
+    }
+    case 'bool':
+      return Boolean(value);
+    case 'string':
+      return String(value ?? '');
+    case 'source': {
+      // A source input names one of the builtin price/volume series.
+      const seriesName = String(value ?? 'close');
+      if (ctx && seriesName in ctx.builtins) return ctx.builtins[seriesName];
+      return seriesName;
+    }
+    default:
+      return value;
+  }
+}
