@@ -16,3 +16,4 @@ pnl-dashboard/frontend/.next/
 pnl-dashboard/frontend/out/
 pnl-dashboard/api/__pycache__/
 pnl-dashboard/api/routers/__pycache__/
+data/
