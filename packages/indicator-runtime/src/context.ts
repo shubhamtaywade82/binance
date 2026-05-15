@@ -68,6 +68,10 @@ export interface StrategyPosition {
 
 export interface StrategyState {
   initialCapital: number;
+  /** One-way fee fraction applied to notional on entry AND exit. 0.0004 = 0.04% (Binance taker). */
+  feePct: number;
+  /** Price-slippage fraction applied adversely (entry filled worse, exit filled worse). */
+  slippagePct: number;
   position: StrategyPosition | null;
   trades: ClosedTrade[];
   equity: number[];
@@ -445,8 +449,12 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
 
     initStrategy(opts) {
       const initialCapital = Number(opts?.initial_capital);
+      const feePctRaw = Number(opts?.fee_pct);
+      const slipPctRaw = Number(opts?.slippage_pct);
       this.strategy = {
         initialCapital: Number.isFinite(initialCapital) && initialCapital > 0 ? initialCapital : 10_000,
+        feePct: Number.isFinite(feePctRaw) && feePctRaw >= 0 ? feePctRaw : 0,
+        slippagePct: Number.isFinite(slipPctRaw) && slipPctRaw >= 0 ? slipPctRaw : 0,
         position: null,
         trades: [],
         equity: [],
@@ -476,8 +484,12 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
         this._closePosition(close, t, { reason: 'reverse' });
       }
       if (s.position && s.position.side === side) return;
-      const qty = Math.max(0, Number(opts?.qty) || 1);
-      s.position = { side, entryPrice: close, entryBar: this.barIndex, qty };
+      // Apply slippage adversely to entry: long buys higher, short sells lower.
+      const slip = s.slippagePct;
+      const entryPrice = side === 'long' ? close * (1 + slip) : close * (1 - slip);
+      const qty = computeQty(s, entryPrice, opts);
+      if (!Number.isFinite(qty) || qty <= 0) return;
+      s.position = { side, entryPrice, entryBar: this.barIndex, qty };
       s.markersBar.push({
         time: t,
         position: side === 'long' ? 'belowBar' : 'aboveBar',
@@ -490,16 +502,23 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
     _closePosition(price: number, time: number | null, opts?: Record<string, unknown>) {
       const s = this.strategy!;
       if (!s.position) return;
-      const pnl =
+      // Apply slippage adversely to exit fill (long sells lower, short covers higher).
+      const slip = s.slippagePct;
+      const exitPrice = s.position.side === 'long' ? price * (1 - slip) : price * (1 + slip);
+      const grossPnl =
         s.position.side === 'long'
-          ? (price - s.position.entryPrice) * s.position.qty
-          : (s.position.entryPrice - price) * s.position.qty;
+          ? (exitPrice - s.position.entryPrice) * s.position.qty
+          : (s.position.entryPrice - exitPrice) * s.position.qty;
+      const fee =
+        s.feePct *
+        (s.position.entryPrice * s.position.qty + exitPrice * s.position.qty);
+      const pnl = grossPnl - fee;
       const ret =
         s.position.entryPrice === 0 ? 0 : pnl / (s.position.entryPrice * s.position.qty);
       s.trades.push({
         side: s.position.side,
         entryPrice: s.position.entryPrice,
-        exitPrice: price,
+        exitPrice,
         entryBar: s.position.entryBar,
         exitBar: this.barIndex,
         qty: s.position.qty,
@@ -525,6 +544,9 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
       for (const t of s.trades) realized += t.pnl;
       let unrealized = 0;
       if (s.position && Number.isFinite(close)) {
+        // Mark-to-market at current close; do not include hypothetical exit fees so
+        // the equity curve is a fair "what's it worth now" reading. Exit fees land
+        // on the trade ledger when the position actually closes.
         unrealized =
           s.position.side === 'long'
             ? (close - s.position.entryPrice) * s.position.qty
@@ -764,6 +786,58 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
 
 function nodeKey(node: { line?: number; col?: number }): string {
   return `${node.line ?? 0}_${node.col ?? 0}`;
+}
+
+/**
+ * Resolve position size based on the entry() call's options.
+ *
+ * Supported sizing modes (`opts.sizing`):
+ *   - undefined / 'fixed'      → opts.qty (default 1)
+ *   - 'cash'                   → opts.amount USD / entryPrice
+ *   - 'pct_equity'             → (currentEquity * opts.amount) / entryPrice
+ *   - 'risk'                   → (currentEquity * opts.risk_pct) / |entryPrice - opts.stop|
+ *
+ * All modes clamp negative / non-finite results to 0 so a bad spec is a no-op
+ * rather than an exception that kills the script mid-run.
+ */
+function computeQty(
+  strategy: StrategyState,
+  entryPrice: number,
+  opts: Record<string, unknown> | undefined,
+): number {
+  const sizing = typeof opts?.sizing === 'string' ? opts.sizing : 'fixed';
+  const currentEquity =
+    strategy.equity.length > 0
+      ? strategy.equity[strategy.equity.length - 1]!
+      : strategy.initialCapital;
+  switch (sizing) {
+    case 'cash': {
+      const amount = Number(opts?.amount);
+      if (!Number.isFinite(amount) || amount <= 0 || entryPrice <= 0) return 0;
+      return amount / entryPrice;
+    }
+    case 'pct_equity': {
+      const pct = Number(opts?.amount);
+      if (!Number.isFinite(pct) || pct <= 0 || entryPrice <= 0) return 0;
+      return (currentEquity * pct) / entryPrice;
+    }
+    case 'risk': {
+      const riskPct = Number(opts?.risk_pct);
+      const stop = Number(opts?.stop);
+      if (!Number.isFinite(riskPct) || riskPct <= 0) return 0;
+      if (!Number.isFinite(stop) || stop <= 0 || entryPrice <= 0) return 0;
+      const stopDistance = Math.abs(entryPrice - stop);
+      if (stopDistance <= 0) return 0;
+      const riskBudget = currentEquity * riskPct;
+      return riskBudget / stopDistance;
+    }
+    case 'fixed':
+    default: {
+      const q = Number(opts?.qty);
+      if (!Number.isFinite(q)) return 1;
+      return Math.max(0, q);
+    }
+  }
 }
 
 function sameOpts(a: Record<string, unknown>, b: Record<string, unknown>): boolean {

@@ -26,6 +26,9 @@
     "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts",
     "dashboard": "DASHBOARD_ENABLED=true ts-node src/index.ts",
     "dashboard:ui": "concurrently -n bot,vite -c blue,green \"DASHBOARD_ENABLED=true nodemon --watch src --watch config --ext ts,json --exec ts-node src/index.ts\" \"vite\"",
+    "pnl:ui": "npm run dev --prefix pnl-dashboard/frontend",
+    "stack:up": "docker compose up -d && npm run dashboard:ui",
+    "stack:down": "docker compose down",
     "ui:dev": "vite",
     "readiness:binance": "ts-node scripts/binance-live-readiness.ts",
     "gateway": "ts-node gateway/ws-server.ts",
@@ -37,6 +40,8 @@
   },
   "dependencies": {
     "@coindcx/indicator-runtime": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/pg": "^8.20.0",
     "axios": "^1.7.9",
     "dompurify": "^3.4.2",
     "dotenv": "^16.4.7",
@@ -44,6 +49,8 @@
     "lightweight-charts": "^4.1.3",
     "marked": "^18.0.3",
     "ollama": "^0.5.18",
+    "pg": "^8.20.0",
+    "prom-client": "^15.1.3",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },

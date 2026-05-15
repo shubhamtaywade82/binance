@@ -4,6 +4,8 @@
 import { MSG } from '../worker/protocol.js';
 import { ChartOverlayManager } from './script-overlay.js';
 import { SAMPLE_SCRIPT, makeId, pickAdapter } from './script-store.js';
+import { tokenize, parse } from '@coindcx/indicator-runtime';
+import { generateStrategyTs } from './ts-export.js';
 
 export class ScriptManager extends EventTarget {
   constructor(chartManager, opts = {}) {
@@ -45,6 +47,24 @@ export class ScriptManager extends EventTarget {
     this._workerErrorBackoff = 0;
     this._initWorker();
     this.overlay.onAlert((ev) => this._onAlert(ev));
+  }
+
+  ingestServerAlert(msg) {
+    if (!msg || typeof msg.message !== 'string') return;
+    const entry = {
+      id: `srv_${msg.scriptId || 'unknown'}_${this.alerts.length}_${Date.now()}`,
+      instanceId: msg.scriptId,
+      scriptName: msg.scriptName || 'Server',
+      message: msg.message,
+      time: msg.time,
+      bar: msg.bar,
+      at: Date.now(),
+      serverSide: true,
+    };
+    this.alerts.unshift(entry);
+    if (this.alerts.length > 200) this.alerts.length = 200;
+    this.dispatchEvent(new CustomEvent('alert', { detail: entry }));
+    this._maybeNotify(entry);
   }
 
   _setStats(instanceId, out) {
@@ -139,6 +159,22 @@ export class ScriptManager extends EventTarget {
         if (msg.warning) console.warn('[nanopine]', msg.instanceId, msg.warning);
         break;
       }
+      case MSG.SWEEP_RESULT: {
+        const pending = this._sweepPromises?.get(msg.sweepId);
+        if (pending) {
+          this._sweepPromises.delete(msg.sweepId);
+          pending.resolve(msg.results || []);
+        }
+        break;
+      }
+      case MSG.WALK_FORWARD_RESULT: {
+        const pending = this._walkForwardPromises?.get(msg.runId);
+        if (pending) {
+          this._walkForwardPromises.delete(msg.runId);
+          pending.resolve(msg.windows || []);
+        }
+        break;
+      }
       case MSG.ERROR: {
         this.overlay.remove(msg.instanceId);
         this.stats.delete(msg.instanceId);
@@ -231,6 +267,123 @@ export class ScriptManager extends EventTarget {
     return incoming;
   }
 
+  exportAsTypescript(id) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) throw new Error('Script not found');
+    const program = parse(tokenize(sc.source));
+    return generateStrategyTs(sc, program);
+  }
+
+  collectSweepRanges(id) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) throw new Error('Script not found');
+    const program = parse(tokenize(sc.source));
+    const ranges = [];
+    for (const stmt of program.body) {
+      if (stmt.type !== 'InputDecl') continue;
+      if (stmt.kind !== 'int' && stmt.kind !== 'float') continue;
+      const def = stmt.args[0];
+      if (!def || (def.type !== 'Number')) continue;
+      ranges.push({ name: stmt.name, kind: stmt.kind, default: def.value });
+    }
+    return ranges;
+  }
+
+  async runWalkForward(id, ranges, opts = {}) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) throw new Error('Script not found');
+    if (!this.worker) throw new Error('Worker unavailable');
+    const tf = this.chartManager?.currentTf;
+    const candles = tf ? this.chartManager?.candleMap?.[tf] : null;
+    if (!candles || !candles.length) throw new Error('No candles loaded — open the chart first');
+    const combinations = expandCombinations(ranges);
+    if (!combinations.length) throw new Error('Range expansion produced zero combinations');
+    if (combinations.length > 200) {
+      throw new Error(
+        `Walk-forward × ${combinations.length} combos is too many. Tighten ranges (cap is 200).`,
+      );
+    }
+    const trainBars = Math.max(50, Math.floor(opts.trainBars || 500));
+    const testBars = Math.max(20, Math.floor(opts.testBars || 100));
+    const stepBars = Math.max(10, Math.floor(opts.stepBars || testBars));
+    if (candles.length < trainBars + testBars) {
+      throw new Error(
+        `Need at least ${trainBars + testBars} bars (have ${candles.length}). Reduce window sizes.`,
+      );
+    }
+    this._walkForwardPromises = this._walkForwardPromises || new Map();
+    const runId = `wf_${Math.random().toString(36).slice(2, 10)}`;
+    const windows = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._walkForwardPromises.delete(runId);
+        reject(new Error('Walk-forward timed out after 90 s'));
+      }, 90_000);
+      this._walkForwardPromises.set(runId, {
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+      });
+      this.worker.postMessage({
+        kind: MSG.WALK_FORWARD,
+        runId,
+        source: sc.source,
+        candles: candles.map(toPlainCandle),
+        extraCandles: this._collectExtraCandles(tf),
+        combinations,
+        trainBars,
+        testBars,
+        stepBars,
+      });
+    });
+    return windows;
+  }
+
+  async runSweep(id, ranges) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) throw new Error('Script not found');
+    if (!this.worker) throw new Error('Worker unavailable');
+    const tf = this.chartManager?.currentTf;
+    const candles = tf ? this.chartManager?.candleMap?.[tf] : null;
+    if (!candles || !candles.length) throw new Error('No candles loaded — open the chart first');
+    const combinations = expandCombinations(ranges);
+    if (!combinations.length) throw new Error('Range expansion produced zero combinations');
+    if (combinations.length > 1000) {
+      throw new Error(
+        `Sweep would run ${combinations.length} combinations (cap is 1000). Tighten your ranges.`,
+      );
+    }
+    this._sweepPromises = this._sweepPromises || new Map();
+    const sweepId = `sw_${Math.random().toString(36).slice(2, 10)}`;
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._sweepPromises.delete(sweepId);
+        reject(new Error('Sweep timed out after 60 s'));
+      }, 60_000);
+      this._sweepPromises.set(sweepId, {
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+      });
+      this.worker.postMessage({
+        kind: MSG.SWEEP,
+        sweepId,
+        source: sc.source,
+        candles: candles.map(toPlainCandle),
+        extraCandles: this._collectExtraCandles(tf),
+        combinations,
+      });
+    });
+    // Sort by total PnL desc, NaNs / errors last.
+    result.sort((a, b) => {
+      const pa = a.stats?.totalPnl ?? -Infinity;
+      const pb = b.stats?.totalPnl ?? -Infinity;
+      return pb - pa;
+    });
+    return result;
+  }
+
   duplicate(id) {
     const sc = this.scripts.find((s) => s.id === id);
     if (!sc) return null;
@@ -248,6 +401,15 @@ export class ScriptManager extends EventTarget {
     this.worker?.postMessage({ kind: MSG.REMOVE, instanceId: id });
     this.scripts.splice(idx, 1);
     this.status.delete(id);
+    this.store.saveAll(this.scripts);
+    this.dispatchEvent(new CustomEvent('change'));
+  }
+
+  setServerSide(id, on) {
+    const sc = this.scripts.find((s) => s.id === id);
+    if (!sc) return;
+    sc.runServerSide = !!on;
+    sc.updatedAt = Date.now();
     this.store.saveAll(this.scripts);
     this.dispatchEvent(new CustomEvent('change'));
   }
@@ -346,6 +508,45 @@ function splitStatsDelta(deltas) {
     else chartDeltas.push(d);
   }
   return { chartDeltas, statsDelta };
+}
+
+function expandCombinations(ranges) {
+  if (!ranges.length) return [];
+  const axes = ranges.map((r) => {
+    const values = [];
+    const start = Number(r.start);
+    const end = Number(r.end);
+    let step = Number(r.step);
+    if (!Number.isFinite(step) || step === 0) step = 1;
+    if (start <= end) {
+      if (step < 0) step = -step;
+      for (let v = start; v <= end + 1e-9; v += step) {
+        values.push(r.kind === 'int' ? Math.round(v) : v);
+      }
+    } else {
+      if (step > 0) step = -step;
+      for (let v = start; v >= end - 1e-9; v += step) {
+        values.push(r.kind === 'int' ? Math.round(v) : v);
+      }
+    }
+    return { name: r.name, values };
+  });
+  const out = [];
+  const idx = axes.map(() => 0);
+  while (true) {
+    const combo = {};
+    for (let i = 0; i < axes.length; i++) combo[axes[i].name] = axes[i].values[idx[i]];
+    out.push(combo);
+    let i = axes.length - 1;
+    while (i >= 0) {
+      idx[i] += 1;
+      if (idx[i] < axes[i].values.length) break;
+      idx[i] = 0;
+      i -= 1;
+    }
+    if (i < 0) break;
+  }
+  return out;
 }
 
 function toPlainCandle(c) {

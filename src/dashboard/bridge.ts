@@ -15,6 +15,7 @@ import { fetchBinanceKlines } from '../binance/rest-klines';
 import { biasFromCandles } from '../strategy/htf-ltf';
 import { analyzeTrend } from '../strategy/trend';
 import { analyzeSmc } from '../strategy/smc';
+import { analyzeKnnArchitecture, type KnnArchitectureResult } from '../strategy/knn-architecture';
 import type { LiquidityEngineResult } from '../strategy/liquidity-engine';
 import type { OrderBookMicroSnapshot, OrderBookSnapshotRing } from '../liquidity/order-book-snapshot-ring';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
@@ -25,11 +26,21 @@ import {
   buildSupertrendTuneSnapshot,
   requestSupertrendTune,
 } from '../ai/supertrend-tune';
+import type { ClosedPosition } from '../execution/types';
+import type { WalletState } from '../execution/paper/wallet';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
+import { OiPoller } from '../signals/oi-poller';
+import { FundingTracker } from '../signals/funding-tracker';
+import { BinanceRestClient } from '../binance/rest-client';
+import { binanceRestBase } from '../config';
 import { snapshotMicrostructure } from '../binance/microstructure';
 import { createScriptsApi } from './scripts-api';
+import { createScriptsAi } from './scripts-ai';
+import { createScriptAlertRunner } from './script-alert-runner';
+import { Ollama } from 'ollama';
+import type { DashboardPosition } from '../types';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -52,12 +63,16 @@ export interface DashboardFeeds {
    * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits only).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
+  paperWallet?: () => WalletState | null;
+  paperPositions?: () => DashboardPosition[] | null;
+  livePositions?: () => DashboardPosition[] | null;
 }
 
 export interface DashboardBridge {
   multiplexSidecar: MultiplexCallbacks;
   listen: () => Promise<void>;
   stop: () => Promise<void>;
+  broadcastPaperTrade: (trade: ClosedPosition) => void;
 }
 
 /** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
@@ -73,14 +88,18 @@ export interface DashboardSignalsPayload {
     score: number;
     liquiditySweep: string;
     /** `index` = bar offset in `refPriceTf` series (chart maps to time). */
-    orderBlock: { type: string; low: number; high: number; index: number } | null;
-    /** Fair value gap zone + anchor bar index (C3 in SMC scan). */
-    fvg: { type: string; low: number; high: number; index: number } | null;
+    orderBlocks: any[];
+    fvgs: any[];
+    breakers: any[];
+    blocks: any[];
+    dealingRange: any | null;
     bos: string;
     choch: string;
     /** Swing bar → confirmation bar at `price` (for chart BOS segment). */
     bosLine: { startIndex: number; endIndex: number; price: number } | null;
     chochLine: { startIndex: number; endIndex: number; price: number } | null;
+    structPoints: any[];
+    swings: any[];
     liquidity: LiquidityEngineResult | null;
     /** Top-of-book snapshot nearest the sweep candle close (or open); cleared from ring after attach. */
     liquidityOrderBook: OrderBookMicroSnapshot | null;
@@ -88,6 +107,7 @@ export interface DashboardSignalsPayload {
     sweepCandleIndex: number | null;
     sweepCandleOpenTime: number | null;
   };
+  knnArchitecture: KnnArchitectureResult | null;
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
 }
@@ -151,10 +171,133 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         return watchSymbolByClient.get(client) ?? symbolUpper;
       }
 
+  const getOpenPositions = (): DashboardPosition[] => {
+    const paper = feeds.paperPositions?.();
+    if (Array.isArray(paper)) return paper;
+    const live = feeds.livePositions?.();
+    if (Array.isArray(live)) return live;
+    return [];
+  };
+
   const scriptsApi = createScriptsApi({
     filePath: process.env.NANOPINE_SCRIPTS_PATH || 'data/nanopine-scripts.json',
     log: { info: (m, c) => log.info(m, c as never), warn: (m, c) => log.warn(m, c as never) },
   });
+  const scriptsAi = createScriptsAi({ cfg });
+  const scriptAlertRunner = createScriptAlertRunner({
+    evaluationTf: ltfTf,
+    log: { info: (m, c) => log.info(m, c as never), warn: (m, c) => log.warn(m, c as never) },
+    onAlert: (event) => {
+      broadcast({ type: 'script_alert', ...event });
+    },
+  });
+  scriptAlertRunner.setScripts(scriptsApi.list()).catch((err: Error) => {
+    log.warn('script_alert_initial_load_failed', { err: err.message });
+  });
+  scriptsApi.onChange = (scripts) => {
+    scriptAlertRunner.setScripts(scripts).catch((err: Error) => {
+      log.warn('script_alert_reload_failed', { err: err.message });
+    });
+  };
+
+  const chatModel = (cfg.OLLAMA_MODEL || '').trim();
+  const chatOllamaHost = cfg.OLLAMA_TARGET === 'cloud' ? ollamaApiUrl('cloud') : ollamaApiUrl('local');
+  const chatApiKey = (cfg.OLLAMA_API_KEY || '').trim();
+
+  const buildMarketContext = (): string => {
+    const s = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+    const parts: string[] = [
+      `Symbol: ${symbolUpper}`,
+      `Price: ${s.refPrice}`,
+      `HTF Bias: ${s.htfBias}`,
+      `LTF: direction=${s.ltfDirection}, confidence=${s.ltfConfidence}, score=${s.ltfScore}`,
+    ];
+
+    const smc = s.smc;
+    parts.push(`SMC: score=${smc.score}, bos=${smc.bos}, choch=${smc.choch}, blocks=${smc.blocks?.length ?? 0}, fvgs=${smc.fvgs?.length ?? 0}, sweep=${smc.liquiditySweep}`);
+
+    if (s.knnArchitecture) {
+      const k = s.knnArchitecture;
+      parts.push(`kNN: bias=${k.bias}, confidence=${k.confidence?.toFixed(2)}, stH=${k.stLines?.high}, stL=${k.stLines?.low}, ltH=${k.ltLines?.high}, ltL=${k.ltLines?.low}, deltaTanks=${k.deltaTanks?.length ?? 0}`);
+    }
+    if (s.solMtf) {
+      parts.push(`SOL MTF: pass=${s.solMtf.pass}, direction=${s.solMtf.direction}`);
+    }
+    parts.push(`Timeframe: ${s.signalMeta?.trendSeriesTf ?? 'unknown'}, HTF: ${s.signalMeta?.htf ?? 'unknown'}`);
+    return parts.join('\n');
+  };
+
+  const handleChatRequest = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    if (!chatModel) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OLLAMA_MODEL not configured in .env' }));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += (chunk as Buffer).length;
+      if (total > 32 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Request too large' }));
+        return;
+      }
+      chunks.push(chunk as Buffer);
+    }
+    let body: { messages?: { role: string; content: string }[]; context?: boolean };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const userMessages = Array.isArray(body.messages) ? body.messages : [];
+    if (!userMessages.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No messages provided' }));
+      return;
+    }
+
+    const includeContext = body.context !== false;
+    const systemMsg = includeContext
+      ? `You are QuantumTrade AI, an expert crypto trading assistant. You have real-time market data:\n\n${buildMarketContext()}\n\nUse this data to give specific, actionable trading analysis. Be concise and precise.`
+      : 'You are QuantumTrade AI, an expert crypto trading assistant. Be concise and precise.';
+
+    const messages = [
+      { role: 'system' as const, content: systemMsg },
+      ...userMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ];
+
+    try {
+      const headers: Record<string, string> | undefined = chatApiKey ? { Authorization: `Bearer ${chatApiKey}` } : undefined;
+      const ollama = new Ollama({ host: chatOllamaHost, headers });
+      const stream = await ollama.chat({ model: chatModel, messages, stream: true });
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      for await (const chunk of stream) {
+        if (res.destroyed) break;
+        const token = chunk.message?.content ?? '';
+        if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+        if (chunk.done) res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      }
+      res.end();
+    } catch (err) {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (err as Error).message }));
+      } else {
+        res.write(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`);
+        res.end();
+      }
+    }
+  };
 
   const httpServer = http.createServer((req, res) => {
     // CORS allows the dev UI on a different port to talk to /api directly when not proxied.
@@ -166,10 +309,26 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       res.end();
       return;
     }
-    scriptsApi.handle(req, res).then((handled) => {
-      if (handled) return;
+    (async () => {
+      if (req.url === '/api/scripts/capabilities') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ai: scriptsAi.enabled }));
+        return;
+      }
+      if (req.url === '/api/chat' && (req.method ?? '').toUpperCase() === 'POST') {
+        await handleChatRequest(req, res);
+        return;
+      }
+      if (await scriptsAi.handle(req, res)) return;
+      if (await scriptsApi.handle(req, res)) return;
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('Trading bot — dashboard WebSocket (same process as orchestrator)\n');
+    })().catch((err: Error) => {
+      log.warn('dashboard_http_handler_error', { err: err.message });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     });
   });
 
@@ -179,6 +338,76 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let signalsTimer: ReturnType<typeof setInterval> | null = null;
   let validationTimer: ReturnType<typeof setInterval> | null = null;
+  let oiPollTimer: ReturnType<typeof setInterval> | null = null;
+  let fundingTimer: ReturnType<typeof setInterval> | null = null;
+  let paperStateTimer: ReturnType<typeof setInterval> | null = null;
+
+  const oiRestClient = new BinanceRestClient({
+    apiKey: cfg.BINANCE_API_KEY ?? '',
+    apiSecret: cfg.BINANCE_API_SECRET ?? '',
+    baseUrl: binanceRestBase(cfg),
+  });
+  const oiPollers = new Map<string, OiPoller>();
+  const OI_POLL_INTERVAL_SEC = 10;
+
+  const ensureOiPoller = (sym: string): OiPoller => {
+    let poller = oiPollers.get(sym);
+    if (!poller) {
+      poller = new OiPoller(oiRestClient, sym, OI_POLL_INTERVAL_SEC, 60);
+      oiPollers.set(sym, poller);
+      poller.start();
+    }
+    return poller;
+  };
+
+  const broadcastOiRegime = (): void => {
+    for (const sym of watchlistSymbols) {
+      const poller = oiPollers.get(sym);
+      if (!poller) continue;
+      const mark = lastMarkBySym.get(sym);
+      if (Number.isFinite(mark)) poller.updatePrice(mark!);
+      const snap = poller.snapshot();
+      if (snap.regime === 'neutral' && snap.oi === 0) continue;
+      broadcast({
+        type: 'oi_regime',
+        symbol: sym,
+        oi: snap.oi,
+        delta1m: snap.oiDelta1m,
+        delta5m: snap.oiDelta5m,
+        zscore: snap.oiZscore,
+        divergence: snap.oiDivergence,
+        spike: snap.oiSpike,
+        regime: snap.regime,
+      });
+    }
+  };
+
+  const fundingTrackers = new Map<string, FundingTracker>();
+
+  const ensureFundingTracker = (sym: string): FundingTracker => {
+    let tracker = fundingTrackers.get(sym);
+    if (!tracker) {
+      tracker = new FundingTracker();
+      fundingTrackers.set(sym, tracker);
+    }
+    return tracker;
+  };
+
+  const broadcastFunding = (): void => {
+    for (const sym of watchlistSymbols) {
+      const tracker = fundingTrackers.get(sym);
+      if (!tracker) continue;
+      const snap = tracker.snapshot();
+      broadcast({
+        type: 'funding',
+        symbol: sym,
+        rate: snap.currentRate,
+        zscore: snap.zscore,
+        extreme: snap.extremeFlag,
+        crowdedSide: snap.crowdedSide,
+      });
+    }
+  };
 
   const VALIDATION_INTERVAL_MS = 5 * 60_000;
   const VALIDATION_DEPTH = 60;
@@ -316,6 +545,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           ltfScore: signals.ltfScore,
           ltfSignals: signals.ltfSignals,
           smc: signals.smc,
+          knnArchitecture: signals.knnArchitecture,
           solMtf: signals.solMtf,
         };
 
@@ -328,6 +558,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
             thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
             streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+            mcpEnabled: cfg.AI_MCP_ENABLED,
+            mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
+            mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
+            mcpLog: log,
             onStreamChunk:
               cfg.AI_BRIEF_STREAM_ENABLED === true
                 ? ({ content, thinking }) => {
@@ -519,6 +753,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         const htfBiasRaw = biasFromCandles(candlesHtf);
         const ltfTrend = analyzeTrend(candlesTrend);
         const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
+        const knnArchitecture = analyzeKnnArchitecture(candlesSmc);
 
         let solMtf = null;
         const c5 = rows['5m'];
@@ -582,17 +817,23 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           smc: {
             score: smc.score,
             liquiditySweep: smc.liquiditySweep,
-            orderBlock: smc.orderBlock,
-            fvg: smc.fvg,
+            orderBlocks: smc.orderBlocks,
+            fvgs: smc.fvgs,
+            breakers: smc.breakers,
+            blocks: smc.blocks,
+            dealingRange: smc.dealingRange,
             bos: smc.bos,
             choch: smc.choch,
             bosLine: smc.bosLine,
             chochLine: smc.chochLine,
+            structPoints: smc.structPoints,
+            swings: smc.swings,
             liquidity: smc.liquidity,
             liquidityOrderBook,
             sweepCandleIndex,
             sweepCandleOpenTime,
           },
+          knnArchitecture,
           solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
           signalMeta: {
             trendSeriesTf: effectiveTf,
@@ -673,6 +914,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
           indicators: computeIndicatorsFromRows(rows, sym),
           signals,
+          positions: getOpenPositions(),
         };
       }
 
@@ -851,6 +1093,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (chartTfBroadcastSet.has(tf)) {
         scheduleIndicatorBroadcastForSymbol(symU, isFinal);
       }
+      if (isFinal) {
+        void scriptAlertRunner.onClosedBar(symU, tf, candle);
+      }
       if (isFinal && tf === ltfTf) {
         maybePeriodicSupertrendTune(symU);
         broadcastSignalsPerClient();
@@ -865,6 +1110,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       const symU = u.symbol.toUpperCase();
       if (!watchlistSet.has(symU)) return;
       lastMarkBySym.set(symU, u.markPrice);
+      if (u.fundingRate !== 0) ensureFundingTracker(symU).update(u.fundingRate);
       broadcast({ type: 'mark_price', symbol: symU, price: u.markPrice, ts: u.eventTime });
     },
     on24hrTicker: (u) => {
@@ -878,6 +1124,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         ...(u.priceChange !== undefined ? { priceChange: u.priceChange } : {}),
         ...(u.priceChangePercent !== undefined ? { priceChangePercent: u.priceChangePercent } : {}),
         ...(u.openPrice !== undefined ? { openPrice: u.openPrice } : {}),
+        ...(u.highPrice !== undefined ? { highPrice: u.highPrice } : {}),
+        ...(u.lowPrice !== undefined ? { lowPrice: u.lowPrice } : {}),
       });
     },
     onBookTicker: (t: BookTickerEvent) => {
@@ -937,9 +1185,21 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
 
   const listen = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
-          httpServer.once('error', reject);
+          const errorHandler = (err: NodeJS.ErrnoException) => {
+            if (err.code === 'EADDRINUSE') {
+              log.warn('dashboard_bridge_port_conflict', {
+                port: cfg.DASHBOARD_PORT,
+                hint: `Port ${cfg.DASHBOARD_PORT} is already in use. Ensure no other instance of the bot is running (e.g., check with 'lsof -i :${cfg.DASHBOARD_PORT}').`,
+              });
+              reject(new Error(`Dashboard port ${cfg.DASHBOARD_PORT} in use`));
+            } else {
+              reject(err);
+            }
+          };
+
+          httpServer.once('error', errorHandler);
           httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
-            httpServer.off('error', reject);
+            httpServer.off('error', errorHandler);
             resolve();
           });
         });
@@ -955,9 +1215,26 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             'Vite: npm run ui:dev or npm run dashboard:ui (bot+Vite). Open http://127.0.0.1:5173 in a normal browser; embedded previews can show chrome-error frame blocks.',
         });
 
+        for (const sym of watchlistSymbols) ensureOiPoller(sym);
+
+        oiPollTimer = setInterval(broadcastOiRegime, OI_POLL_INTERVAL_SEC * 1000);
+        fundingTimer = setInterval(broadcastFunding, 15_000);
+
         heartbeatTimer = setInterval(() => {
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
         }, 10_000);
+
+        if (feeds.paperWallet || feeds.paperPositions || feeds.livePositions) {
+          paperStateTimer = setInterval(() => {
+            const wallet = feeds.paperWallet?.();
+            if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
+            const positions = getOpenPositions();
+            broadcast({ type: 'position_update', mode: feeds.paperPositions ? 'paper' : 'live', positions });
+            if (feeds.paperPositions) {
+              broadcast({ type: 'paper_position_update', positions });
+            }
+          }, 2000);
+        }
 
         signalsTimer = setInterval(() => {
           for (const s of watchlistSymbols) {
@@ -998,6 +1275,20 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           clearInterval(validationTimer);
           validationTimer = null;
         }
+        if (oiPollTimer) {
+          clearInterval(oiPollTimer);
+          oiPollTimer = null;
+        }
+        if (fundingTimer) {
+          clearInterval(fundingTimer);
+          fundingTimer = null;
+        }
+        if (paperStateTimer) {
+          clearInterval(paperStateTimer);
+          paperStateTimer = null;
+        }
+        for (const p of oiPollers.values()) p.stop();
+        oiPollers.clear();
         for (const c of wss.clients) {
           try {
             c.terminate();
@@ -1013,5 +1304,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         });
       }
 
-  return { multiplexSidecar, listen, stop };
+  const broadcastPaperTrade = (trade: ClosedPosition): void => {
+    broadcast({ type: 'paper_trade', ...trade });
+  };
+
+  return { multiplexSidecar, listen, stop, broadcastPaperTrade };
 }

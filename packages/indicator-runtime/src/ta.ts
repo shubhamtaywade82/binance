@@ -395,12 +395,19 @@ export const BUILTINS: Record<string, BuiltinHandler> = {
       throw new RuntimeError(`entry(): side must be "long" or "short" (got ${args[1]})`);
     }
     const optsFromKw = kwargsToMap(kwargs, evaluator);
-    const qtyRaw =
-      args.length >= 3 && Number.isFinite(args[2] as number)
-        ? (args[2] as number)
-        : optsFromKw.qty;
-    const qty = Math.max(0, Number(qtyRaw) || 1);
-    ctx.strategyOrder(side as 'long' | 'short', cond, { qty });
+    // Forward sizing kwargs to the context. Positional `qty` (third positional arg)
+    // still works in fixed-sizing mode.
+    const opts: Record<string, unknown> = { ...optsFromKw };
+    if (args.length >= 3 && Number.isFinite(args[2] as number)) {
+      opts.qty = args[2];
+    }
+    const allowed = new Set(['fixed', 'cash', 'pct_equity', 'risk']);
+    if (opts.sizing != null && !allowed.has(String(opts.sizing))) {
+      throw new RuntimeError(
+        `entry(): sizing must be one of fixed/cash/pct_equity/risk (got ${opts.sizing})`,
+      );
+    }
+    ctx.strategyOrder(side as 'long' | 'short', cond, opts);
     return cond;
   },
 

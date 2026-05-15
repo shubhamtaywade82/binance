@@ -62,6 +62,12 @@
         <button class="tf-btn" data-tf="4h">4h</button>
         <button class="tf-btn" data-tf="1d">1D</button>
       </div>
+      <button id="btn-toggle-sidebar" class="icon-btn" title="Toggle Sidebar (Ctrl+B)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="15" y1="3" x2="15" y2="21"></line>
+        </svg>
+      </button>
       <div id="ws-status" class="ws-status connecting">
         <span class="ws-dot"></span>
         <span id="ws-status-text">Connecting…</span>
@@ -109,11 +115,52 @@
               <input type="checkbox" id="toggle-smc-overlay" checked />
               <span>SMC</span>
             </label>
+            <label class="toggle-ctrl toggle-knn-overlay" title="Show kNN Market Architecture: multi-term BOS, lines, delta tanks, and volume profile">
+              <input type="checkbox" id="toggle-knn-overlay" checked />
+              <span>kNN</span>
+            </label>
+            <label class="toggle-ctrl" title="Show forced liquidation markers on candles">
+              <input type="checkbox" id="toggle-liquidations" checked />
+              <span>LIQ</span>
+            </label>
+            <label class="toggle-ctrl" title="Show OI regime line (price + open interest direction)">
+              <input type="checkbox" id="toggle-oi-regime" checked />
+              <span>OI</span>
+            </label>
+            <label class="toggle-ctrl" title="Session VWAP line (volume-weighted average price since midnight UTC)">
+              <input type="checkbox" id="toggle-vwap" />
+              <span>VWAP</span>
+            </label>
+            <label class="toggle-ctrl" title="RSI(14) oscillator sub-panel with 30/50/70 reference lines">
+              <input type="checkbox" id="toggle-rsi" />
+              <span>RSI</span>
+            </label>
+            <label class="toggle-ctrl" title="Tint volume bars by bid-ask spread width (yellow=wide, orange=very wide)">
+              <input type="checkbox" id="toggle-spread-heatmap" />
+              <span>SPR</span>
+            </label>
+            <label class="toggle-ctrl" title="Trade Flow Imbalance lane (cyan=buying, orange=selling)">
+              <input type="checkbox" id="toggle-tfi" />
+              <span>TFI</span>
+            </label>
+            <label class="toggle-ctrl" title="Depth pressure zone (bid/ask dominance near price)">
+              <input type="checkbox" id="toggle-depth-pressure" />
+              <span>DP</span>
+            </label>
+            <label class="toggle-ctrl" title="OBI-tinted candle borders (cyan=bid heavy, orange=ask heavy)">
+              <input type="checkbox" id="toggle-obi-tint" />
+              <span>OBI</span>
+            </label>
+            <label class="toggle-ctrl" title="Micro-candle sub-chart (5s candles from trade stream)">
+              <input type="checkbox" id="toggle-micro" />
+              <span>μ</span>
+            </label>
           </div>
         </div>
         <div class="chart-surface" id="chart-surface">
           <div id="chart-signal-hud" class="chart-signal-hud" hidden aria-live="polite"></div>
           <div id="chart-container"></div>
+          <div id="micro-chart-container" style="width:100%; height:100px; display:none; border-top: 1px solid rgba(255,255,255,0.06);"></div>
         </div>
       </div>
     </section>

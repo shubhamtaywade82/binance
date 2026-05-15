@@ -3,8 +3,9 @@
  * Advisory only — does not drive execution.
  */
 
-import { Ollama, type ChatRequest } from 'ollama';
+import { Ollama, type ChatRequest, type Message, type Tool, type ToolCall } from 'ollama';
 import { formatOllamaRequestError } from './ollama-request-error';
+import { getOrConnectMcpBridge, type McpBridgeLogger, type OllamaTool } from './mcp-bridge';
 
 export interface MarketSignalsSnapshot {
   symbol: string;
@@ -24,6 +25,7 @@ export interface MarketSignalsSnapshot {
     bos?: string;
     choch?: string;
   };
+  knnArchitecture?: any;
   solMtf?: { pass: boolean; direction: string; reasons: string[] } | null;
 }
 
@@ -45,6 +47,17 @@ export interface OllamaBriefConfig {
   streamEnabled?: boolean;
   /** Invoked during streaming (not on the final `done` chunk). */
   onStreamChunk?: (p: { content: string; thinking: string }) => void;
+  /**
+   * When true, attach MCP tools (from `mcpUrl`) and run a tool-calling loop
+   * (non-streaming). When false, behaves identically to the legacy flow.
+   */
+  mcpEnabled?: boolean;
+  /** Streamable-http URL of the MCP server (e.g. `http://localhost:4003`). */
+  mcpUrl?: string;
+  /** Hard cap on tool-call iterations per brief. */
+  mcpMaxToolIter?: number;
+  /** Optional logger; defaults to stderr. */
+  mcpLog?: McpBridgeLogger;
 }
 
 export interface MarketBriefResult {
@@ -93,6 +106,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     ltfScore: snapshot.ltfScore,
     ltfSignals: snapshot.ltfSignals,
     smc: snapshot.smc,
+    knnArchitecture: snapshot.knnArchitecture,
     solMtf: snapshot.solMtf,
   });
 };
@@ -191,6 +205,78 @@ const chatRequestShared = (
   };
 };
 
+const MCP_DEFAULT_MAX_ITER = 4;
+
+type ChatMessage = Message;
+
+const ollamaToolsAsTools = (tools: OllamaTool[]): Tool[] =>
+  // Ollama's `Tool` type narrows `parameters` more than JSON Schema requires; cast.
+  tools as unknown as Tool[];
+
+const runToolCallingLoop = async (
+  ollama: Ollama,
+  cfg: OllamaBriefConfig,
+  systemPrompt: string,
+  userJson: string,
+  tools: OllamaTool[],
+  callTool: (name: string, args: Record<string, unknown>) => Promise<string>,
+): Promise<{ text: string | null; thinking: string | null; lastResponse: unknown }> => {
+  const maxIter = Math.max(1, cfg.mcpMaxToolIter ?? MCP_DEFAULT_MAX_ITER);
+  const model = cfg.model.trim();
+  const thinkEnabled = cfg.thinkEnabled === true;
+  const messages: ChatMessage[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userJson },
+  ];
+  let last: unknown = null;
+  for (let iter = 0; iter < maxIter; iter++) {
+    const response = await ollama.chat({
+      model,
+      think: thinkEnabled,
+      messages,
+      tools: ollamaToolsAsTools(tools),
+      stream: false,
+      options: {
+        temperature: 0.25,
+        num_predict: BRIEF_NUM_PREDICT,
+      },
+    });
+    last = response;
+    const respMsg = response.message;
+    const toolCalls: ToolCall[] = Array.isArray(respMsg?.tool_calls) ? respMsg.tool_calls : [];
+    if (toolCalls.length === 0) {
+      const { content, thinking } = extractMessageStrings(response);
+      const { text, thinking: thOut } = finalizeBriefText(content, thinking, thinkEnabled);
+      return { text, thinking: thOut, lastResponse: response };
+    }
+
+    // Preserve the assistant message that initiated the tool calls.
+    messages.push({
+      role: 'assistant',
+      content: typeof respMsg?.content === 'string' ? respMsg.content : '',
+      tool_calls: toolCalls,
+    });
+
+    for (const call of toolCalls) {
+      const fn = call.function;
+      const name = fn?.name ?? '';
+      const args: Record<string, unknown> =
+        fn?.arguments && typeof fn.arguments === 'object' ? fn.arguments : {};
+      // Tool errors come back as strings; never throw out of the loop.
+      const result = await callTool(name, args);
+      messages.push({ role: 'tool', content: result, tool_name: name });
+    }
+  }
+  // Iteration cap reached without a final assistant text — return whatever we have.
+  const { content, thinking } = extractMessageStrings(last);
+  const { text, thinking: thOut } = finalizeBriefText(content, thinking, cfg.thinkEnabled === true);
+  return {
+    text: text ?? '## Brief\n\n_Tool-call iteration cap reached without a final answer._\n\n*Not financial advice.*',
+    thinking: thOut,
+    lastResponse: last,
+  };
+};
+
 export const requestMarketBrief = async (
   cfg: OllamaBriefConfig,
   snapshot: MarketSignalsSnapshot,
@@ -216,6 +302,30 @@ export const requestMarketBrief = async (
   });
 
   try {
+    if (cfg.mcpEnabled === true && cfg.mcpUrl) {
+      const bridge = await getOrConnectMcpBridge(cfg.mcpUrl, cfg.mcpLog);
+      if (bridge) {
+        const tools = await bridge.listTools();
+        if (tools.length > 0) {
+          const systemPrompt = thinkEnabled
+            ? SYSTEM_PROMPT_THINKING_ALLOWED
+            : SYSTEM_PROMPT_NO_EXTENDED_THINK;
+          const callTool = (name: string, args: Record<string, unknown>): Promise<string> =>
+            bridge.callTool(name, args);
+          const out = await runToolCallingLoop(ollama, cfg, systemPrompt, userJson, tools, callTool);
+          if (!out.text) {
+            return {
+              text: null,
+              thinking: null,
+              error: emptyCompletionHint(out.lastResponse, model),
+            };
+          }
+          return { text: out.text, thinking: out.thinking, error: null };
+        }
+        // No tools listed — fall through to legacy non-tool path.
+      }
+      // Bridge failed to connect — fall through; behavior matches MCP-disabled.
+    }
     if (streamEnabled) {
       const stream = await ollama.chat({
         ...chatRequestShared(model, thinkEnabled, userJson),

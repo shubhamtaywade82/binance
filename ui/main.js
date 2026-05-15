@@ -15,7 +15,7 @@ import { fmtLtpMovement, fmtSpreadMovement } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
-import { SentimentGauge }  from './sentiment.js';
+import { SentimentGauge }  from './market-sentiment.js';
 import { MicrostructurePanel } from './microstructure.js';
 import { Rolling1mTradeStats } from './rolling-1m-stats.js';
 import { ScriptManager } from './scripts/ui/script-manager.js';
@@ -91,6 +91,7 @@ const appliesToActiveWatch = (msg) => {
 let lastPrice = null;
 /** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
 let lastLtpTarget = null;
+let lastOpenPositions = [];
 
 // ─── Format helpers ───────────────────────────────────────────────────────
 const flashPrice = (el, up) => {
@@ -206,6 +207,10 @@ const syncVwap1mRow = () => {
   gauge.updateVwap(null, null);
 }
 
+const refreshOpenPositionOverlay = () => {
+  chart.setOpenPositions(lastOpenPositions, activeWatchSymbol);
+}
+
 // ─── Message Dispatcher ───────────────────────────────────────────────────
 const dispatch = (msg) => {
   switch (msg.type) {
@@ -225,6 +230,8 @@ const dispatch = (msg) => {
         availableTimeframes: msg.availableTimeframes,
       });
       scripts?.onSnapshot();
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
 
       // Feed order book
       if (msg.depth) {
@@ -285,6 +292,7 @@ const dispatch = (msg) => {
       else if (Number.isFinite(msg.bestBid) && Number.isFinite(msg.bestAsk)) {
         chart.setBookTopLevels(msg.bestBid, msg.bestAsk);
       }
+      refreshOpenPositionOverlay();
 
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
@@ -299,6 +307,7 @@ const dispatch = (msg) => {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
       if (msg.isFinal === true) scripts?.onClosedBar(msg.tf, msg.candle);
       if (msg.tf === '1m') syncVwap1mRow();
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       if (msg.tf === chart.getCurrentTf()) {
         const target = chart.getLastCloseForTf(chart.getCurrentTf());
         if (target != null && Number.isFinite(target)) {
@@ -346,6 +355,36 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ mark: msg.price });
       if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
+      chart.setMarkPrice(msg.price);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
+      break;
+    }
+
+    case 'paper_position_update':
+    case 'position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
+      break;
+    }
+
+    /* ── Forced Liquidation Orders ─ */
+    case 'force_order': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.addLiquidationMarker(msg);
+      break;
+    }
+
+    /* ── OI Regime ─ */
+    case 'oi_regime': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.setOiRegime(msg);
+      break;
+    }
+
+    /* ── Funding Rate ─ */
+    case 'funding': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.setFundingRate(msg);
       break;
     }
 
@@ -353,27 +392,29 @@ const dispatch = (msg) => {
     case 'ticker_24hr': {
       if (!appliesToActiveWatch(msg)) break;
       const changeEl = document.getElementById('hdr-change');
-      if (!changeEl) break;
-      let pctStr = null;
-      let bull = true;
-      if (msg.priceChangePercent != null && Number.isFinite(msg.priceChangePercent)) {
-        const v = Number(msg.priceChangePercent);
-        bull = v >= 0;
-        pctStr = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
-      } else if (
-        msg.priceChange != null &&
-        Number.isFinite(msg.priceChange) &&
-        Number.isFinite(msg.price)
-      ) {
-        const open = msg.price - msg.priceChange;
-        bull = msg.priceChange >= 0;
-        const pct = open !== 0 ? (msg.priceChange / open) * 100 : 0;
-        pctStr = `${msg.priceChange >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+      if (changeEl) {
+        let pctStr = null;
+        let bull = true;
+        if (msg.priceChangePercent != null && Number.isFinite(msg.priceChangePercent)) {
+          const v = Number(msg.priceChangePercent);
+          bull = v >= 0;
+          pctStr = `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+        } else if (
+          msg.priceChange != null &&
+          Number.isFinite(msg.priceChange) &&
+          Number.isFinite(msg.price)
+        ) {
+          const open = msg.price - msg.priceChange;
+          bull = msg.priceChange >= 0;
+          const pct = open !== 0 ? (msg.priceChange / open) * 100 : 0;
+          pctStr = `${msg.priceChange >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+        }
+        if (pctStr != null) {
+          changeEl.textContent = pctStr;
+          changeEl.className = `hdr-change ${bull ? 'bull' : 'bear'}`;
+        }
       }
-      if (pctStr != null) {
-        changeEl.textContent = pctStr;
-        changeEl.className = `hdr-change ${bull ? 'bull' : 'bear'}`;
-      }
+      chart.set24hHighLow(msg.highPrice, msg.lowPrice);
       break;
     }
 
@@ -382,6 +423,7 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ bid: msg.bid, ask: msg.ask });
       chart.setBookTopLevels(msg.bid, msg.ask);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       break;
     }
 
@@ -399,6 +441,11 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       msPanel.update(msg);
       gauge.update(msPanel.getObiRatio());
+      chart.setCurrentSpread(msg.spreadBps);
+      chart.setTfiSnapshot(msg.tfi5s);
+      chart.setDepthPressure(msg.depthPressure10);
+      chart.setObi(msg.weightedObi5?.weightedObi);
+      chart.setMicroBars(msg.microBars5s);
       break;
     }
 
@@ -473,6 +520,19 @@ const dispatch = (msg) => {
       break;
     }
 
+    case 'position_update':
+    case 'paper_position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
+      break;
+    }
+
+    /* ── Server-side NanoPine alerts ─ */
+    case 'script_alert': {
+      scripts?.ingestServerAlert?.(msg);
+      break;
+    }
+
     /* ── Heartbeat ─ */
     case 'heartbeat': {
       console.debug(`[hb] ${new Date(msg.ts).toISOString()} — clients: ${msg.clients}`);
@@ -480,6 +540,42 @@ const dispatch = (msg) => {
     }
   }
 }
+
+const SIDEBAR_STORAGE_KEY = 'qt_sidebar_hidden';
+
+const initSidebarToggle = () => {
+  const btn = document.getElementById('btn-toggle-sidebar');
+  const grid = document.getElementById('main-grid');
+  if (!btn || !grid) return;
+
+  const setHidden = (hidden) => {
+    grid.classList.toggle('sidebar-hidden', hidden);
+    btn.classList.toggle('active', hidden);
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, hidden ? '1' : '0');
+    } catch {}
+  };
+
+  // Restore state
+  try {
+    const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (stored === '1') setHidden(true);
+  } catch {}
+
+  btn.addEventListener('click', () => {
+    const isHidden = grid.classList.contains('sidebar-hidden');
+    setHidden(!isHidden);
+  });
+
+  // Shortcut Ctrl+B
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      btn.click();
+    }
+  });
+};
 
 // ─── Imbalance helper ─────────────────────────────────────────────────────
 const imbalanceRatio = (bids = [], asks = []) => {
@@ -549,6 +645,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     scripts?.onTfChange(tf);
   });
+  initSidebarToggle();
   initSidebarTabs();
 
   scripts = new ScriptManager(chart);
