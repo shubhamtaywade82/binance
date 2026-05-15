@@ -123,6 +123,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   const ledgerDir = cfg.PAPER_LEDGER_DIR.trim() || './paper';
   const walletPath = path.join(ledgerDir, 'wallet.json');
   const wallet = new PaperWallet(cfg.PAPER_INITIAL_BALANCE_USDT, walletPath);
+  // Survive restarts: if ./paper/wallet.json exists, resume from its balance
+  // instead of resetting to PAPER_INITIAL_BALANCE_USDT every boot.
+  wallet.loadFromDisk();
   const ledger = new Ledger(ledgerDir);
   const liquidation = new LiquidationEngine(cfg.PAPER_MAINT_MARGIN);
   const funding = new FundingEngine({
