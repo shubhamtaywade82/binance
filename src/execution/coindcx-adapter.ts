@@ -22,6 +22,7 @@ interface OpenLiveOrder {
   orderId: string;
   side: 'LONG' | 'SHORT';
   pair: string;
+  leverage: number;
   entryPrice: number;
   quantity: number;
   openedAt: number;
@@ -100,6 +101,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       orderId,
       side: req.side,
       pair: req.pair,
+      leverage: req.leverage,
       entryPrice: req.referencePrice,
       quantity: req.quantity,
       openedAt: Date.now(),
@@ -148,6 +150,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     const closed: ClosedPosition = {
       orderId,
       side: open.side,
+      leverage: open.leverage,
       entryPrice: open.entryPrice,
       exitPrice,
       quantity: open.quantity,

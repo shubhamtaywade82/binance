@@ -1,4 +1,11 @@
-import type { MicrostructureSnapshot, BookSlopeResult, TradeFlowExtended, CandleDerivedFeatures } from '../binance/microstructure';
+import {
+  microBarCloseRet,
+  microBarLastVolume,
+  type BookSlopeResult,
+  type CandleDerivedFeatures,
+  type MicrostructureSnapshot,
+  type TradeFlowExtended,
+} from '../binance/microstructure';
 import type { FundingSnapshot } from '../signals/funding-tracker';
 import type { OiSnapshot } from '../signals/oi-poller';
 import type { LiquidationSnapshot } from '../signals/liquidation-tracker';
@@ -38,6 +45,12 @@ export interface FeatureVector {
   rv_1s: number;
   rv_5s: number;
   rv_1m: number;
+  /** log-return between last two completed 1s micro-bar closes (from agg tape). */
+  micro_bar_1s_close_ret: number;
+  /** Total base-asset volume in the latest 1s micro bar. */
+  micro_bar_1s_volume: number;
+  micro_bar_5s_close_ret: number;
+  micro_bar_5s_volume: number;
 
   ret_1m: number;
   ret_5m: number;
@@ -99,6 +112,10 @@ export const FEATURE_KEYS: ReadonlyArray<keyof FeatureVector> = [
   'rv_1s',
   'rv_5s',
   'rv_1m',
+  'micro_bar_1s_close_ret',
+  'micro_bar_1s_volume',
+  'micro_bar_5s_close_ret',
+  'micro_bar_5s_volume',
   'ret_1m',
   'ret_5m',
   'vol_1m',
@@ -207,6 +224,11 @@ export const buildFeatureVector = (src: FeatureSourceData): FeatureVector => {
     rv_1s: micro.rv1s.rv,
     rv_5s: micro.rv5s.rv,
     rv_1m: vol1m,
+
+    micro_bar_1s_close_ret: microBarCloseRet(micro.microBars1s),
+    micro_bar_1s_volume: microBarLastVolume(micro.microBars1s),
+    micro_bar_5s_close_ret: microBarCloseRet(micro.microBars5s),
+    micro_bar_5s_volume: microBarLastVolume(micro.microBars5s),
 
     ret_1m: ret1m,
     ret_5m: ret5m,

@@ -27,6 +27,11 @@ export interface PaperAdapterOptions {
   latencyMs: number;
   equitySnapshotMs: number;
   symbolFor: (pair: string) => string;
+  partialFills?: boolean;
+  maxSlippageBps?: number;
+  onTradeClose?: (trade: ClosedPosition) => void;
+  /** Optional FX rate provider for INR-aware equity snapshots. */
+  fxRate?: { getInrPerUsdt(): number };
 }
 
 interface OpenPaperPosition {
@@ -48,17 +53,32 @@ interface OpenPaperPosition {
 export class PaperExecutionAdapter implements ExecutionAdapter {
   readonly name = 'paper' as const;
   private positions = new Map<string, OpenPaperPosition>();
+  private unrealizedByOrder = new Map<string, number>();
   private lastSnapshotTs = 0;
 
   constructor(private readonly opts: PaperAdapterOptions) {}
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
     const symbol = this.opts.symbolFor(req.pair).toUpperCase();
+    
+    // One-way mode enforcement: close opposite side, or return if same side
+    for (const [id, p] of this.positions.entries()) {
+      if (p.symbol === symbol) {
+        if (p.side === req.side) return { ok: true, orderId: id, fill: { price: p.entryPrice, quantity: p.quantity, feeUsdt: 0, slippageUsdt: 0, timestamp: p.openedAt, latencyMs: 0 } };
+        // Opposite side: close it first (market close)
+        await this.closePosition(id, 'REVERSAL');
+      }
+    }
+
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
     const tick = this.opts.book.latest(symbol);
     const lastTrade = this.opts.book.lastTrade(symbol);
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? req.referencePrice;
     const spread = tick ? tick.spread : Math.max(refMid * 0.0001, 0);
+
+    const topBookQty = (this.opts.partialFills && tick)
+      ? (req.side === 'LONG' ? tick.bestAskQty : tick.bestBidQty)
+      : undefined;
 
     const slip = SlippageEngine.priceImpactUsdt({
       side: req.side,
@@ -66,6 +86,9 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       spread,
       volatilityPct: 0,
       baseSlippageBps: this.opts.baseSlippageBps,
+      topBookQty,
+      midPrice: refMid,
+      maxSlippageBps: this.opts.maxSlippageBps,
     });
 
     const baseAsk = tick ? tick.bestAsk : refMid;
@@ -126,13 +149,24 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId, fill };
   }
 
+  /** Latest mark per symbol — used to refresh unrealized for other symbols' positions. */
+  private lastMarkBySymbol = new Map<string, number>();
+
   onMark(symbol: string, markPrice: number): void {
     const symU = symbol.toUpperCase();
+    if (Number.isFinite(markPrice)) this.lastMarkBySymbol.set(symU, markPrice);
+
+    // Recompute unrealized PnL for *every* open position, using the latest mark we
+    // have for each position's symbol. The mark just received is the freshest.
     let totalUnrealized = 0;
     for (const pos of this.positions.values()) {
-      if (pos.symbol !== symU) continue;
+      const refMark = pos.symbol === symU
+        ? markPrice
+        : (this.lastMarkBySymbol.get(pos.symbol) ?? pos.entryPrice);
       const sideMul = pos.side === 'LONG' ? 1 : -1;
-      totalUnrealized += (markPrice - pos.entryPrice) * pos.quantity * sideMul;
+      const unrealized = (refMark - pos.entryPrice) * pos.quantity * sideMul;
+      this.unrealizedByOrder.set(pos.orderId, unrealized);
+      totalUnrealized += unrealized;
     }
     this.opts.wallet.setUnrealized(totalUnrealized);
 
@@ -146,14 +180,20 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const now = Date.now();
     if (now - this.lastSnapshotTs >= this.opts.equitySnapshotMs) {
       this.lastSnapshotTs = now;
-      const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => ({
-        orderId: p.orderId,
-        side: p.side,
-        entryPrice: p.entryPrice,
-        quantity: p.quantity,
-        unrealizedUsdt: ((markPrice - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
-      }));
+      const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => {
+        const refMark = p.symbol === symU
+          ? markPrice
+          : (this.lastMarkBySymbol.get(p.symbol) ?? p.entryPrice);
+        return {
+          orderId: p.orderId,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          unrealizedUsdt: ((refMark - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
+        };
+      });
       this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
+
       this.opts.wallet.flushToDisk();
     }
   }
@@ -166,12 +206,19 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const lastTrade = this.opts.book.lastTrade(pos.symbol);
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? pos.entryPrice;
     const spread = tick ? tick.spread : Math.max(refMid * 0.0001, 0);
+    const topBookQty = (this.opts.partialFills && tick)
+      ? (pos.side === 'LONG' ? tick.bestBidQty : tick.bestAskQty)
+      : undefined;
+
     const slip = SlippageEngine.priceImpactUsdt({
       side: pos.side,
       quantity: pos.quantity,
       spread,
       volatilityPct: 0,
       baseSlippageBps: this.opts.baseSlippageBps,
+      topBookQty,
+      midPrice: refMid,
+      maxSlippageBps: this.opts.maxSlippageBps,
     });
 
     const baseAsk = tick ? tick.bestAsk : refMid;
@@ -191,10 +238,12 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     this.opts.liquidation.untrack(orderId);
     this.opts.funding.untrackPosition(orderId);
     this.positions.delete(orderId);
+    this.unrealizedByOrder.delete(orderId);
 
     const closed: ClosedPosition = {
       orderId,
       side: pos.side,
+      leverage: pos.leverage,
       entryPrice: pos.entryPrice,
       exitPrice,
       quantity: pos.quantity,
@@ -207,8 +256,48 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       closedAt: Date.now(),
     };
     this.opts.ledger.appendTrade(closed);
+    this.opts.onTradeClose?.(closed);
+
     this.opts.wallet.flushToDisk();
     return closed;
+  }
+
+  getOpenPositions(): Array<{
+    orderId: string;
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    entryPrice: number;
+    quantity: number;
+    leverage: number;
+    marginUsdt: number;
+    liqPrice: number;
+    openedAt: number;
+    unrealizedUsdt: number;
+  }> {
+    return Array.from(this.positions.values()).map((p) => ({
+      orderId: p.orderId,
+      symbol: p.symbol,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      quantity: p.quantity,
+      leverage: p.leverage,
+      marginUsdt: p.marginUsdt,
+      liqPrice: p.liqPrice,
+      openedAt: p.openedAt,
+      unrealizedUsdt: this.unrealizedByOrder.get(p.orderId) ?? 0,
+    }));
+  }
+
+  getWalletState() {
+    return this.opts.wallet.state();
+  }
+
+  setOnTradeClose(cb: (trade: ClosedPosition) => void): void {
+    this.opts.onTradeClose = cb;
+  }
+
+  setFxRate(fx: { getInrPerUsdt(): number }): void {
+    this.opts.fxRate = fx;
   }
 
   async setLeverage(_pair: string, _lev: number): Promise<void> {
