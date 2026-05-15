@@ -47,33 +47,99 @@ export const evaluateSmcConfluence = (ltfCandles: Candle[], htfCandles: Candle[]
   const ltfSmc = analyzeSmc(ltfCandles, refPrice, marketBias);
 
   let score = 0;
+  
+  // 1. Trend Alignment
   if (htfTrend === marketBias) {
     score += 1.5;
     reasons.push('ema_alignment');
   }
+
+  // 2. Market Structure (BOS / CHoCH)
   if (htfSmc.bos !== 'NONE' && ((marketBias === 'LONG' && htfSmc.bos === 'BULLISH') || (marketBias === 'SHORT' && htfSmc.bos === 'BEARISH'))) {
     score += 1.5;
     reasons.push('htf_bos');
   }
-  if (ltfSmc.orderBlock && ((marketBias === 'LONG' && ltfSmc.orderBlock.type === 'BULLISH') || (marketBias === 'SHORT' && ltfSmc.orderBlock.type === 'BEARISH'))) {
+  if (ltfSmc.choch !== 'NONE' && ((marketBias === 'LONG' && ltfSmc.choch === 'BULLISH') || (marketBias === 'SHORT' && ltfSmc.choch === 'BEARISH'))) {
     score += 1;
-    reasons.push('ltf_ob');
+    reasons.push('ltf_choch');
   }
+
+  // 3. Blocks & Gaps
+  const validObs = ltfSmc.orderBlocks.filter(ob => 
+    !ob.isMitigated && 
+    ((marketBias === 'LONG' && ob.type === 'BULLISH') || (marketBias === 'SHORT' && ob.type === 'BEARISH'))
+  );
+
+  const topOb = validObs.sort((a, b) => b.score - a.score)[0];
+  if (topOb) {
+    if (topOb.score >= 6) {
+      score += 2.5; // Institutional-grade OB
+      reasons.push('institutional_ob');
+    } else if (topOb.score >= 4) {
+      score += 1.5;
+      reasons.push('high_quality_ob');
+    } else {
+      score += 0.5;
+      reasons.push('minor_ob');
+    }
+  }
+
+  const validFvgs = ltfSmc.fvgs.filter(fvg => 
+    ((marketBias === 'LONG' && fvg.type === 'BULLISH') || (marketBias === 'SHORT' && fvg.type === 'BEARISH'))
+  );
+  if (validFvgs.length > 0) {
+    const topFvg = validFvgs.sort((a, b) => b.score - a.score)[0];
+    score += (topFvg?.score || 0.5);
+    reasons.push('fvg_alignment');
+  }
+
+  if ((marketBias === 'LONG' && ltfSmc.breakers.some(bb => bb.type === 'BULLISH')) || 
+      (marketBias === 'SHORT' && ltfSmc.breakers.some(bb => bb.type === 'BEARISH'))) {
+    score += 1;
+    reasons.push('breaker_flip');
+  }
+
+  // 4. Liquidity & Sessions
   if (ltfSmc.liquiditySweep !== 'NONE') {
     const favorableSweep = (marketBias === 'LONG' && ltfSmc.liquiditySweep === 'SHORT')
       || (marketBias === 'SHORT' && ltfSmc.liquiditySweep === 'LONG');
     if (favorableSweep) {
       score += 1.5;
       reasons.push('liq_sweep');
+      
+      // Bonus for Asia Session Sweep
+      const asiaBlock = ltfSmc.blocks.find(b => b.type === 'SESSION' && b.subType === 'ASIA');
+      if (asiaBlock) {
+        // If we just swept Asia High/Low
+        score += 1.0;
+        reasons.push('asia_sweep_confluence');
+      }
     }
   }
-  if (ltfSmc.choch !== 'NONE' && ((marketBias === 'LONG' && ltfSmc.choch === 'BULLISH') || (marketBias === 'SHORT' && ltfSmc.choch === 'BEARISH'))) {
-    score += 1;
-    reasons.push('choch');
-  }
 
-  const targetPx = marketBias === 'LONG' ? refPrice * (1 + cfg.targetPct) : refPrice * (1 - cfg.targetPct);
-  if (!Number.isFinite(targetPx) || targetPx <= 0) reasons.push('invalid_target');
+  // 5. Dealing Range (Premium / Discount) - CRITICAL SMC RULE
+  if (ltfSmc.dealingRange) {
+    const isDiscount = refPrice < ltfSmc.dealingRange.equilibrium;
+    const isPremium = refPrice > ltfSmc.dealingRange.equilibrium;
+    
+    if (marketBias === 'LONG') {
+      if (isDiscount) {
+        score += 1.5;
+        reasons.push('discount_pricing');
+      } else if (isPremium) {
+        score -= 2.0; // Heavy penalty for buying in premium
+        reasons.push('premium_risk');
+      }
+    } else if (marketBias === 'SHORT') {
+      if (isPremium) {
+        score += 1.5;
+        reasons.push('premium_pricing');
+      } else if (isDiscount) {
+        score -= 2.0; // Heavy penalty for selling in discount
+        reasons.push('discount_risk');
+      }
+    }
+  }
 
   return {
     pass: score >= threshold,

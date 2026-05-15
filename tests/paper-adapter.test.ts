@@ -48,6 +48,7 @@ describe('PaperExecutionAdapter roundtrip', () => {
     adapter.onMark('SOLUSDT', 110);
     const closed = await adapter.closePosition(open.orderId, 'TP');
     expect(closed.reason).toBe('TP');
+    expect(closed.leverage).toBe(10);
     expect(closed.netUsdt).toBeGreaterThan(0);
     expect(wallet.state().balanceUsdt).toBeGreaterThan(10_000);
     const tradesPath = path.join(dir, 'trades.jsonl');

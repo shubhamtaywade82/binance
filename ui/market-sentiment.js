@@ -63,14 +63,19 @@ export class SentimentGauge {
   _draw() {
     const { ctx, canvas } = this;
     if (!ctx || !canvas) return;
-    const parent = canvas.parentElement;
-    const W = Math.max(1, parent.clientWidth);
-    const H = 38;
-    canvas.width = W * devicePixelRatio;
-    canvas.height = H * devicePixelRatio;
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
-    ctx.scale(devicePixelRatio, devicePixelRatio);
+    // Use the canvas layout box (CSS width: 100%), not the parent's clientWidth —
+    // Size from the canvas layout box (not the padded wrap’s clientWidth), and use
+    // the laid-out rect so the bar center matches centered DOM labels (subpixel-safe).
+    const rect = canvas.getBoundingClientRect();
+    let W = rect.width;
+    let H = rect.height;
+    if (W < 1 || H < 1) {
+      W = Math.max(1, canvas.clientWidth);
+      H = Math.max(1, canvas.clientHeight);
+    }
+    canvas.width = Math.max(1, Math.round(W * devicePixelRatio));
+    canvas.height = Math.max(1, Math.round(H * devicePixelRatio));
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 
     ctx.clearRect(0, 0, W, H);
 

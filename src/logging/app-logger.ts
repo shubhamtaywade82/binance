@@ -17,7 +17,14 @@ const jsonLine = (level: 'info' | 'warn', msg: string, meta?: Record<string, unk
 
 export const createAppLogger = (cfg: AppConfig): AppLogger => {
   const filePath = (cfg.APP_LOG_PATH ?? '').trim();
+  const jsonConsole = cfg.LOG_JSON_CONSOLE;
   let fileWriteWarned = false;
+
+  const writeConsole = (level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>): void => {
+    const line = jsonConsole ? jsonLine(level, msg, meta) : consoleLine(msg, meta);
+    if (level === 'warn') process.stderr.write(line);
+    else process.stdout.write(line);
+  };
 
   const writeFile = (level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>): void => {
     if (!filePath) return;
@@ -36,11 +43,11 @@ export const createAppLogger = (cfg: AppConfig): AppLogger => {
 
   return {
     info: (msg, meta) => {
-      process.stdout.write(consoleLine(msg, meta));
+      writeConsole('info', msg, meta);
       writeFile('info', msg, meta);
     },
     warn: (msg, meta) => {
-      process.stderr.write(consoleLine(msg, meta));
+      writeConsole('warn', msg, meta);
       writeFile('warn', msg, meta);
     },
   };

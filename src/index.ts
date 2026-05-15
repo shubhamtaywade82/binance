@@ -12,6 +12,8 @@ import { OrderBookSnapshotRing } from './liquidity/order-book-snapshot-ring';
 import type { InstrumentPrecision } from './mapping/precision';
 import { ControlHttpServer } from './control/http-server';
 import { getRedisClient, closeRedisClient } from './services/redis';
+import { createExecutionRuntime } from './execution/create-runtime';
+import { CoinDcxFuturesClient } from './coindcx/futures-client';
 
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
@@ -20,6 +22,32 @@ let controlServer: ControlHttpServer | null = null;
 const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const log = createAppLogger(cfg);
+
+  if (cfg.SHADOW_MODE) {
+    log.warn('shadow_mode_active', {
+      hint:
+        'SHADOW_MODE=true: PositionManager logs open/close intent but does not call the execution adapter (no exchange orders). Strategy and market data still run. Flatten real exchange positions before using on a funded account.',
+    });
+  }
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') {
+    log.warn('binance_futures_testnet_liquidity', {
+      hint:
+        'BINANCE_FUTURES_TESTNET=true routes USD-M to Binance test/demo infrastructure. Book depth, queue priority, and fill quality differ sharply from mainnet fapi — do not treat simulated or testnet PnL as predictive of live performance.',
+    });
+  }
+
+  if (
+    cfg.EXECUTION_MODE === 'live' &&
+    cfg.BINANCE_EXECUTION_ADAPTER &&
+    !cfg.BINANCE_FUTURES_TESTNET &&
+    cfg.BINANCE_PRODUCT === 'usdm' &&
+    !cfg.CONFIRMED_LIVE_TRADING
+  ) {
+    log.warn('live_mainnet_missing_confirm', {
+      hint:
+        'Mainnet Binance live execution is configured but CONFIRMED_LIVE_TRADING (or CONFIRMED_LIVE) is not true. createExecutionRuntime will throw until this interlock is set.',
+    });
+  }
 
   const lifecycle = new Lifecycle({
     defaultTimeoutMs: cfg.SHUTDOWN_TIMEOUT_MS,
@@ -31,6 +59,15 @@ const main = async (): Promise<void> => {
   const orderBookSnapshotRing = new OrderBookSnapshotRing({
     depthLevels: Math.max(10, cfg.BINANCE_DEPTH_LEVELS || 20),
   });
+
+  const cdcx = new CoinDcxFuturesClient({
+    apiKey: cfg.COINDCX_API_KEY,
+    apiSecret: cfg.COINDCX_API_SECRET,
+    apiBaseUrl: cfg.API_BASE_URL,
+    readOnly: cfg.READ_ONLY,
+  });
+  const execution = createExecutionRuntime(cfg, cdcx);
+  const paperAdapter = execution.paperAdapter ?? null;
 
   if (cfg.DASHBOARD_ENABLED) {
     const store = new MultiTimeframeStore({
@@ -68,8 +105,20 @@ const main = async (): Promise<void> => {
       marketFeeds,
       orderBookSnapshotRing,
       precisionBySymbol,
+      paperWallet: paperAdapter ? () => paperAdapter.getWalletState() : undefined,
+      paperPositions: paperAdapter
+        ? () => paperAdapter.getOpenPositions().map((p) => ({ ...p, mode: 'paper' as const }))
+        : undefined,
+      livePositions: () => orch?.getDashboardPositions() ?? null,
     });
+
+    if (paperAdapter) {
+      paperAdapter.setOnTradeClose((trade) => dashboardBridge!.broadcastPaperTrade(trade));
+    }
+
     orch = new HybridOrchestrator(cfg, log, {
+      cdcx,
+      execution,
       store,
       orderbook,
       tradeTape,
@@ -79,7 +128,7 @@ const main = async (): Promise<void> => {
       precisionBySymbol,
     });
   } else {
-    orch = new HybridOrchestrator(cfg, log, { orderBookSnapshotRing });
+    orch = new HybridOrchestrator(cfg, log, { cdcx, execution, orderBookSnapshotRing });
   }
 
   const mx = orch.getMultiplexWs();

@@ -27,6 +27,8 @@ const makeMicro = (overrides?: Partial<MicrostructureSnapshot>): MicrostructureS
   rv1s: { rv: 0.001, sampleCount: 10 },
   rv5s: { rv: 0.002, sampleCount: 50 },
   rv1m: { rv: 0.003, sampleCount: 200 },
+  microBars1s: [],
+  microBars5s: [],
   ...overrides,
 });
 
