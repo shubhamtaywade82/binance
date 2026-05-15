@@ -31,14 +31,41 @@ export interface ExecutionRuntime {
   pgWriter?: PgWriter;
 }
 
-const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
-  return cfg.BINANCE_SYMBOL.trim().toUpperCase();
-}
+/**
+ * Map an OrderRequest.pair → Binance USD-M symbol.
+ *  · Event-bus path passes `pair = 'ETHUSDT'` directly → upper-case + return.
+ *  · CoinDCX legacy path passes `pair = 'B-SOL_USDT'` → strip 'B-' + '_'.
+ *  · Empty / unknown → fall back to BINANCE_SYMBOL.
+ *
+ * Pre-fix this returned BINANCE_SYMBOL unconditionally, which collapsed every
+ * multi-symbol paper fill onto the SOL book ticker (everyone got SOL's price).
+ */
+const symbolFromPair = (cfg: AppConfig, pair: string): string => {
+  const raw = (pair ?? '').trim();
+  if (!raw) return cfg.BINANCE_SYMBOL.trim().toUpperCase();
+  // CoinDCX style: B-SOL_USDT → SOLUSDT
+  if (raw.includes('-') || raw.includes('_')) {
+    const stripped = raw.replace(/^B-/i, '').replace('_', '').toUpperCase();
+    return stripped || cfg.BINANCE_SYMBOL.trim().toUpperCase();
+  }
+  // Already a Binance-style symbol
+  return raw.toUpperCase();
+};
 
 export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClient): ExecutionRuntime => {
+  // Subscribe book ticker for the entire multiplex watchlist (not only
+  // BINANCE_SYMBOL) so multi-symbol paper fills get realistic bid/ask data
+  // instead of falling back to the kline close + flat slippage.
+  const bookSymbols = Array.from(
+    new Set(
+      [cfg.BINANCE_SYMBOL, ...(cfg.BINANCE_WATCHLIST ?? [])]
+        .map((s) => (s ?? '').trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
   const book = new BookTickerFeed({
     wsBase: binanceWsBase(cfg),
-    symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
+    symbols: bookSymbols,
     product: cfg.BINANCE_PRODUCT,
   });
 
