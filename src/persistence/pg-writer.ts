@@ -4,25 +4,38 @@ import type { ClosedPosition } from '../execution/types';
 export interface PgWriterOptions {
   connectionString: string;
   maxPoolSize?: number;
+  batchSize?: number;
+  flushIntervalMs?: number;
 }
 
 export class PgWriter {
   public pool: Pool | null = null;
   private connected = false;
 
-  constructor(private readonly opts: PgWriterOptions) {}
+  private eventQueue: any[] = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+  private readonly batchSize: number;
+  private readonly flushIntervalMs: number;
+
+  constructor(private readonly opts: PgWriterOptions) {
+    this.batchSize = opts.batchSize ?? 100;
+    this.flushIntervalMs = opts.flushIntervalMs ?? 500;
+  }
 
   async connect(): Promise<void> {
     try {
       const config: PoolConfig = {
         connectionString: this.opts.connectionString,
-        max: this.opts.maxPoolSize ?? 5,
+        max: this.opts.maxPoolSize ?? 20, // Increased default from 5 to 20
         idleTimeoutMillis: 30_000,
         connectionTimeoutMillis: 5_000,
       };
       this.pool = new Pool(config);
       await this.pool.query('SELECT 1');
       this.connected = true;
+
+      // Start periodic flush
+      this.flushTimer = setInterval(() => this.flushEvents(), this.flushIntervalMs);
     } catch (err) {
       console.warn('[pg-writer] Failed to connect to PostgreSQL, persistence disabled:', (err as Error).message);
       this.pool = null;
@@ -31,6 +44,14 @@ export class PgWriter {
   }
 
   async close(): Promise<void> {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    // Final flush before closing
+    await this.flushEvents();
+
     if (this.pool) {
       await this.pool.end();
       this.pool = null;
@@ -42,6 +63,7 @@ export class PgWriter {
     return this.connected;
   }
 
+  // ... (writeTrade, upsertPosition, etc. remain unchanged)
   async writeTrade(t: ClosedPosition, symbol: string): Promise<void> {
     if (!this.pool) return;
     try {
@@ -203,15 +225,44 @@ export class PgWriter {
     payload: unknown;
   }): Promise<void> {
     if (!this.pool) return;
+
+    this.eventQueue.push(e);
+
+    if (this.eventQueue.length >= this.batchSize) {
+      this.flushEvents().catch(err => {
+        console.warn('[pg-writer] background flush failed:', err.message);
+      });
+    }
+  }
+
+  private async flushEvents(): Promise<void> {
+    if (!this.pool || this.eventQueue.length === 0) return;
+
+    const toFlush = [...this.eventQueue];
+    this.eventQueue = [];
+
     try {
-      await this.pool.query(
-        `INSERT INTO events (id, type, ts, source, symbol, payload)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO NOTHING`,
-        [e.id, e.type, e.ts, e.source, e.symbol ?? null, JSON.stringify(e.payload)]
-      );
+      // Chunk batch into smaller pieces if necessary to stay within PG parameter limits (max 65535)
+      // Each event has 6 fields. 100 events = 600 parameters. Batch size of 100 is safe.
+      const queryParts: string[] = [];
+      const values: any[] = [];
+      let paramIdx = 1;
+
+      for (const e of toFlush) {
+        queryParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++})`);
+        values.push(e.id, e.type, e.ts, e.source, e.symbol ?? null, JSON.stringify(e.payload));
+      }
+
+      const sql = `INSERT INTO events (id, type, ts, source, symbol, payload)
+                   VALUES ${queryParts.join(', ')}
+                   ON CONFLICT (id) DO NOTHING`;
+
+      await this.pool.query(sql, values);
     } catch (err) {
-      console.warn('[pg-writer] appendEvent failed:', (err as Error).message);
+      console.warn('[pg-writer] flushEvents failed:', (err as Error).message);
+      // Put back in queue? Or just log? 
+      // If it's a constraint error, retry might fail forever.
+      // For now, just log to prevent infinite loops.
     }
   }
 }

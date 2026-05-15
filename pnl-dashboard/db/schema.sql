@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 CREATE TABLE IF NOT EXISTS positions (
-    order_id        TEXT PRIMARY KEY,
-    symbol          TEXT NOT NULL,
+    symbol          TEXT PRIMARY KEY,
+    order_id        TEXT NOT NULL,
     side            TEXT NOT NULL,
     qty             DOUBLE PRECISION NOT NULL,
     entry_price     DOUBLE PRECISION NOT NULL,
