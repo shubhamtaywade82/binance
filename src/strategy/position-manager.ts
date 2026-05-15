@@ -6,6 +6,7 @@ import type { CloseReason, Position, Side, TrendBias } from '../types';
 import type { RiskManager } from './risk';
 import type { ExecutionAdapter, TradeAttribution } from '../execution/types';
 import type { AssetTierConfig } from '../config/asset-tiers';
+import type { PgWriter } from '../persistence/pg-writer';
 
 export interface PositionLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -24,6 +25,7 @@ export type TrackedPosition = Position & {
   symbol: string;
   tier?: AssetTierConfig['tier'];
   leverage?: number;
+  liqPrice?: number;
 };
 
 interface OpenLegacyArgs {
@@ -59,6 +61,7 @@ export class PositionManager {
     private readonly adapter: ExecutionAdapter,
     private readonly risk: RiskManager,
     private readonly log: PositionLogger,
+    private readonly pgWriter?: PgWriter,
   ) {}
 
   /** Legacy getter — returns *some* open position (first inserted), or null. */
@@ -215,8 +218,33 @@ export class PositionManager {
       symbol: symbolKey,
       tier: tier?.tier,
       leverage,
+      liqPrice: result.positionId ? 0 : 0, // Placeholder for calculated liq if needed
     };
     this.positions.set(symbolKey, pos);
+
+    this.pgWriter?.upsertPosition({
+      orderId: pos.orderId,
+      symbol: pos.symbol,
+      side: pos.side,
+      quantity: pos.quantity,
+      entryPrice: pos.entryPrice,
+      leverage: pos.leverage ?? 1,
+      marginUsdt: pos.notionalUsdt / (pos.leverage ?? 1),
+      liqPrice: 0,
+      openedAt: pos.openedAt,
+      tier: pos.tier,
+    }).catch(() => {});
+    this.pgWriter?.writeOrder({
+      orderId: pos.orderId,
+      symbol: pos.symbol,
+      side: pos.side,
+      quantity: pos.quantity,
+      price: pos.entryPrice,
+      status: 'FILLED',
+      fillPrice: pos.entryPrice,
+      feeUsdt: 0, // Fee logic is encapsulated in result, but we log fill price
+    }).catch(() => {});
+
     this.attributions.set(symbolKey, args.attribution);
     this.log.info(this.adapter.name === 'live' ? 'live_open' : 'paper_open', {
       side: args.side, price: pos.entryPrice, qty: pos.quantity, tp: takeProfit, sl: stopLoss,
@@ -311,6 +339,30 @@ export class PositionManager {
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
     const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
     this.appendCsv(key, event);
+
+    this.pgWriter?.writeTrade({
+      ...pos,
+      exitPrice,
+      reason,
+      grossUsdt: pnl.grossUsdt,
+      feesUsdt: pnl.feesUsdt,
+      fundingUsdt: pnl.fundingUsdt,
+      netUsdt: pnl.netUsdt,
+      closedAt: Date.now(),
+      attribution: this.attributions.get(key),
+    } as any, key).catch(() => {});
+    this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+
+    this.pgWriter?.writeOrder({
+      orderId: pos.orderId,
+      symbol: key,
+      side: pos.side === 'LONG' ? 'SHORT' : 'LONG', // Exit side
+      quantity: pos.quantity,
+      price: exitPrice,
+      status: 'CLOSED',
+      fillPrice: exitPrice,
+    }).catch(() => {});
+
     this.attributions.delete(key);
     this.log.info('position_closed', {
       symbol: key,
@@ -356,6 +408,20 @@ export class PositionManager {
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
     const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
     this.appendCsv(symbol, event);
+
+    this.pgWriter?.writeTrade({
+      ...pos,
+      exitPrice,
+      reason,
+      grossUsdt: pnl.grossUsdt,
+      feesUsdt: pnl.feesUsdt,
+      fundingUsdt: pnl.fundingUsdt,
+      netUsdt: pnl.netUsdt,
+      closedAt: Date.now(),
+      attribution: this.attributions.get(symbol),
+    } as any, symbol).catch(() => {});
+    this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+
     this.attributions.delete(symbol);
     this.log.info('position_closed', {
       symbol,
@@ -386,6 +452,7 @@ export class PositionManager {
     notionalUsdt: number;
     symbol?: string;
     leverage?: number;
+    liqPrice?: number;
   }): void {
     const symbol = (params.symbol ?? params.pair).toUpperCase();
     if (this.positions.has(symbol)) return;
@@ -402,7 +469,20 @@ export class PositionManager {
       orderId: params.orderId,
       symbol,
       leverage: params.leverage,
+      liqPrice: params.liqPrice,
     });
+
+    this.pgWriter?.upsertPosition({
+      orderId: params.orderId,
+      symbol,
+      side: params.side,
+      quantity: params.quantity,
+      entryPrice: params.entryPrice,
+      leverage: params.leverage ?? 1,
+      marginUsdt: params.notionalUsdt / (params.leverage ?? 1),
+      liqPrice: params.liqPrice ?? 0,
+      openedAt: params.openedAt,
+    }).catch(() => {});
     this.log.info('position_restored', {
       symbol,
       side: params.side,

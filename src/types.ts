@@ -26,3 +26,17 @@ export interface Position {
   notionalUsdt: number;
   marginInr: number;
 }
+
+export interface DashboardPosition {
+  orderId: string;
+  symbol: string;
+  side: Side;
+  entryPrice: number;
+  quantity: number;
+  leverage?: number;
+  openedAt: number;
+  unrealizedUsdt?: number;
+  mode?: 'paper' | 'live';
+  marginUsdt?: number;
+  liqPrice?: number;
+}

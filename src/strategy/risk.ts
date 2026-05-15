@@ -21,6 +21,7 @@ export interface TargetResult {
 export interface PnlResult {
   grossUsdt: number;
   feesUsdt: number;
+  fundingUsdt: number;
   netUsdt: number;
   netInr: number;
   pctOnMargin: number;
@@ -109,13 +110,13 @@ export class RiskManager {
     const entryNotional = entryPrice * qty;
     const exitNotional = exitPrice * qty;
     const taker = this.cfg.TAKER_FEE;
-    const funding = this.cfg.FUNDING_FEE_EST;
-    const feesUsdt = entryNotional * taker + exitNotional * taker + entryNotional * funding;
-    const netUsdt = grossUsdt - feesUsdt;
+    const fundingUsdt = entryNotional * this.cfg.FUNDING_FEE_EST;
+    const feesUsdt = entryNotional * taker + exitNotional * taker;
+    const netUsdt = grossUsdt - feesUsdt - fundingUsdt;
     const fx = this.inrPerUsdt();
     const netInr = netUsdt * fx;
     const marginUsdt = this.cfg.CAPITAL_PER_TRADE_INR / fx;
     const pctOnMargin = marginUsdt > 0 ? netUsdt / marginUsdt : 0;
-    return { grossUsdt, feesUsdt, netUsdt, netInr, pctOnMargin };
+    return { grossUsdt, feesUsdt, fundingUsdt, netUsdt, netInr, pctOnMargin };
   }
 }

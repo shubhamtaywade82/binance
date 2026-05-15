@@ -55,7 +55,7 @@ import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asse
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
-import type { Candle, Side, TrendBias } from './types';
+import type { Candle, Side, TrendBias, DashboardPosition } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { TradeAttribution } from './execution/types';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
@@ -248,7 +248,7 @@ export class HybridOrchestrator {
     });
     this.risk = new RiskManager(cfg, this.fxRate);
     this.execution.paperAdapter?.setFxRate(this.fxRate);
-    this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
+    this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log, this.execution.pgWriter);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
     this.fetchHistorical = deps.fetchHistorical ?? fetchHistoricalKlines;
@@ -696,17 +696,63 @@ export class HybridOrchestrator {
     const out: Array<{ symbol: string; unrealizedPct: number }> = [];
     for (const pos of this.positionManager.allPositions()) {
       const symU = pos.symbol;
-      const tick = this.book.latest(symU);
-      const lastTrade = this.book.lastTrade(symU);
-      const mark = tick
-        ? (tick.bestAsk + tick.bestBid) / 2
-        : (lastTrade ?? pos.entryPrice);
+      const mark = this.getMarkForSymbol(symU) ?? pos.entryPrice;
       if (!Number.isFinite(mark) || pos.entryPrice <= 0) continue;
       const dir = pos.side === 'LONG' ? 1 : -1;
       const pct = ((mark - pos.entryPrice) / pos.entryPrice) * 100 * dir;
       out.push({ symbol: symU, unrealizedPct: pct });
     }
     return out;
+  }
+
+  getDashboardPositions(): DashboardPosition[] {
+    return this.positionManager.allPositions().map((pos) => {
+      const mark = this.getMarkForSymbol(pos.symbol);
+      const dir = pos.side === 'LONG' ? 1 : -1;
+      const hasMark = mark !== null && Number.isFinite(mark);
+      const unrealizedUsdt = (hasMark && pos.entryPrice > 0)
+        ? ((mark as number) - pos.entryPrice) * pos.quantity * dir
+        : 0;
+      const leverage = pos.leverage ?? this.cfg.LEVERAGE;
+      const marginUsdt = leverage > 0 ? pos.notionalUsdt / leverage : undefined;
+      return {
+        orderId: pos.orderId,
+        symbol: pos.symbol,
+        side: pos.side,
+        entryPrice: pos.entryPrice,
+        quantity: pos.quantity,
+        leverage,
+        openedAt: pos.openedAt,
+        unrealizedUsdt,
+        mode: 'live',
+        marginUsdt,
+      };
+    });
+  }
+
+  private getMarkForSymbol(sym: string): number | null {
+    const symbol = sym.trim().toUpperCase();
+    if (!symbol) return null;
+
+    if (this.marketFeeds?.listSymbols().includes(symbol)) {
+      const mid = this.marketFeeds.book(symbol).midPrice();
+      if (Number.isFinite(mid)) return mid;
+      const tapeLast = this.marketFeeds.tape(symbol).lastPrice();
+      if (Number.isFinite(tapeLast)) return tapeLast;
+    }
+
+    const tick = this.book.latest(symbol);
+    if (tick && Number.isFinite(tick.bestBid) && Number.isFinite(tick.bestAsk)) {
+      return (tick.bestBid + tick.bestAsk) / 2;
+    }
+
+    const lastTrade = this.book.lastTrade(symbol);
+    if (Number.isFinite(lastTrade)) return lastTrade as number;
+
+    const tapeLast = this.tradeTape.lastPrice();
+    if (Number.isFinite(tapeLast)) return tapeLast;
+
+    return null;
   }
 
   private buildMlFeatureVector() {
@@ -1191,6 +1237,7 @@ export class HybridOrchestrator {
       const { takeProfit, stopLoss } = this.risk.targets(entryPrice, side);
 
       this.positionManager.restoreFromExchange({
+        symbol: sym,
         side,
         entryPrice,
         quantity: qty,
@@ -1200,6 +1247,8 @@ export class HybridOrchestrator {
         stopLoss,
         openedAt: pos.updateTime || Date.now(),
         notionalUsdt: entryPrice * qty,
+        leverage: Number(pos.leverage),
+        liqPrice: Number(pos.liquidationPrice),
       });
     } catch (e) {
       this.log.warn('startup_reconcile_failed', { err: (e as Error).message });

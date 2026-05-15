@@ -91,6 +91,7 @@ const appliesToActiveWatch = (msg) => {
 let lastPrice = null;
 /** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
 let lastLtpTarget = null;
+let lastOpenPositions = [];
 
 // ─── Format helpers ───────────────────────────────────────────────────────
 const flashPrice = (el, up) => {
@@ -206,6 +207,10 @@ const syncVwap1mRow = () => {
   gauge.updateVwap(null, null);
 }
 
+const refreshOpenPositionOverlay = () => {
+  chart.setOpenPositions(lastOpenPositions, activeWatchSymbol);
+}
+
 // ─── Message Dispatcher ───────────────────────────────────────────────────
 const dispatch = (msg) => {
   switch (msg.type) {
@@ -225,6 +230,8 @@ const dispatch = (msg) => {
         availableTimeframes: msg.availableTimeframes,
       });
       scripts?.onSnapshot();
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
 
       // Feed order book
       if (msg.depth) {
@@ -285,6 +292,7 @@ const dispatch = (msg) => {
       else if (Number.isFinite(msg.bestBid) && Number.isFinite(msg.bestAsk)) {
         chart.setBookTopLevels(msg.bestBid, msg.bestAsk);
       }
+      refreshOpenPositionOverlay();
 
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
@@ -299,6 +307,7 @@ const dispatch = (msg) => {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
       if (msg.isFinal === true) scripts?.onClosedBar(msg.tf, msg.candle);
       if (msg.tf === '1m') syncVwap1mRow();
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       if (msg.tf === chart.getCurrentTf()) {
         const target = chart.getLastCloseForTf(chart.getCurrentTf());
         if (target != null && Number.isFinite(target)) {
@@ -347,6 +356,14 @@ const dispatch = (msg) => {
       updateHeader({ mark: msg.price });
       if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
       chart.setMarkPrice(msg.price);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
+      break;
+    }
+
+    case 'paper_position_update':
+    case 'position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
       break;
     }
 
@@ -406,6 +423,7 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ bid: msg.bid, ask: msg.ask });
       chart.setBookTopLevels(msg.bid, msg.ask);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       break;
     }
 
@@ -499,6 +517,13 @@ const dispatch = (msg) => {
       if (msg.connected === false) setWsStatus('disconnected', 'Disconnected');
       if (msg.reconnecting) setWsStatus('connecting', `Reconnecting #${msg.attempt}…`);
       if (Array.isArray(msg.watchlist)) initWatchlistBar(msg.watchlist, msg.symbol);
+      break;
+    }
+
+    case 'position_update':
+    case 'paper_position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
       break;
     }
 

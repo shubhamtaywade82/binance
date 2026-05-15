@@ -40,6 +40,7 @@ import { createScriptsApi } from './scripts-api';
 import { createScriptsAi } from './scripts-ai';
 import { createScriptAlertRunner } from './script-alert-runner';
 import { Ollama } from 'ollama';
+import type { DashboardPosition } from '../types';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -63,12 +64,8 @@ export interface DashboardFeeds {
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
   paperWallet?: () => WalletState | null;
-  paperPositions?: () => Array<{
-    orderId: string; symbol: string; side: 'LONG' | 'SHORT';
-    entryPrice: number; quantity: number; leverage: number;
-    marginUsdt: number; liqPrice: number; openedAt: number;
-    unrealizedUsdt: number;
-  }>;
+  paperPositions?: () => DashboardPosition[] | null;
+  livePositions?: () => DashboardPosition[] | null;
 }
 
 export interface DashboardBridge {
@@ -173,6 +170,14 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const getSym = (client: WebSocket): string => {
         return watchSymbolByClient.get(client) ?? symbolUpper;
       }
+
+  const getOpenPositions = (): DashboardPosition[] => {
+    const paper = feeds.paperPositions?.();
+    if (Array.isArray(paper)) return paper;
+    const live = feeds.livePositions?.();
+    if (Array.isArray(live)) return live;
+    return [];
+  };
 
   const scriptsApi = createScriptsApi({
     filePath: process.env.NANOPINE_SCRIPTS_PATH || 'data/nanopine-scripts.json',
@@ -909,6 +914,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
           indicators: computeIndicatorsFromRows(rows, sym),
           signals,
+          positions: getOpenPositions(),
         };
       }
 
@@ -1218,12 +1224,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
         }, 10_000);
 
-        if (feeds.paperWallet || feeds.paperPositions) {
+        if (feeds.paperWallet || feeds.paperPositions || feeds.livePositions) {
           paperStateTimer = setInterval(() => {
             const wallet = feeds.paperWallet?.();
             if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
-            const positions = feeds.paperPositions?.();
-            if (positions) broadcast({ type: 'paper_position_update', positions });
+            const positions = getOpenPositions();
+            broadcast({ type: 'position_update', mode: feeds.paperPositions ? 'paper' : 'live', positions });
+            if (feeds.paperPositions) {
+              broadcast({ type: 'paper_position_update', positions });
+            }
           }, 2000);
         }
 

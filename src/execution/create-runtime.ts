@@ -27,6 +27,8 @@ export interface ExecutionRuntime {
   router?: ExecutionRouter;
   /** Present only when EXECUTION_MODE=paper. */
   paperAdapter?: PaperExecutionAdapter;
+  /** Shared database writer for dashboard persistence. */
+  pgWriter?: PgWriter;
 }
 
 const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
@@ -39,6 +41,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
     product: cfg.BINANCE_PRODUCT,
   });
+
+  let pgWriter: PgWriter | undefined;
+  if (cfg.POSTGRES_URL) {
+    pgWriter = new PgWriter({ connectionString: cfg.POSTGRES_URL });
+    pgWriter.connect().catch(() => {});
+  }
 
   if (cfg.EXECUTION_MODE === 'live') {
     if (cfg.READ_ONLY) {
@@ -80,7 +88,14 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         marginType: 'ISOLATED',
       });
       const router = new ExecutionRouter(cfg, cdcx, liveAdapter);
-      return { adapter: router, book, binanceRestClient, router };
+      return {
+        adapter: router,
+        book,
+        binanceRestClient,
+        router,
+        pgWriter,
+        stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
+      };
     }
 
     // ── CoinDCX live adapter (legacy) ─────────────────────────────────────
@@ -94,7 +109,13 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
       fundingFeeEst: cfg.FUNDING_FEE_EST,
     });
     const cdcxRouter = new ExecutionRouter(cfg, cdcx, cdcxAdapter);
-    return { adapter: cdcxRouter, book, router: cdcxRouter };
+    return {
+      adapter: cdcxRouter,
+      book,
+      router: cdcxRouter,
+      pgWriter,
+      stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
+    };
   }
 
   // ── Paper adapter ─────────────────────────────────────────────────────
@@ -108,12 +129,6 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     pollSec: cfg.PAPER_FUNDING_POLL_SEC,
   });
   funding.start();
-
-  let pgWriter: PgWriter | undefined;
-  if (cfg.POSTGRES_URL) {
-    pgWriter = new PgWriter({ connectionString: cfg.POSTGRES_URL });
-    pgWriter.connect().catch(() => {});
-  }
 
   const paperAdapter = new PaperExecutionAdapter({
     wallet,
@@ -129,7 +144,6 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     symbolFor: (pair) => symbolFromPair(cfg, pair),
     partialFills: cfg.PAPER_PARTIAL_FILLS,
     maxSlippageBps: cfg.PAPER_MAX_SLIPPAGE_BPS,
-    pgWriter,
   });
   const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 
@@ -138,6 +152,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     book,
     router: paperRouter,
     paperAdapter,
+    pgWriter,
     stopFunding: () => funding.stop(),
     stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
   };

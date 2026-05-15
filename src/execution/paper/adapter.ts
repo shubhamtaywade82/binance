@@ -14,7 +14,6 @@ import { computeFee } from './fees';
 import { FundingEngine } from './funding';
 import { Ledger, type OpenSnapshot } from './ledger';
 import { BookTickerFeed } from './book-ticker-feed';
-import type { PgWriter } from '../../persistence/pg-writer';
 
 export interface PaperAdapterOptions {
   wallet: PaperWallet;
@@ -31,7 +30,6 @@ export interface PaperAdapterOptions {
   partialFills?: boolean;
   maxSlippageBps?: number;
   onTradeClose?: (trade: ClosedPosition) => void;
-  pgWriter?: PgWriter;
   /** Optional FX rate provider for INR-aware equity snapshots. */
   fxRate?: { getInrPerUsdt(): number };
 }
@@ -123,20 +121,6 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     };
     this.positions.set(orderId, pos);
 
-    this.opts.pgWriter?.upsertPosition({
-      orderId, symbol, side: req.side, quantity: req.quantity,
-      entryPrice: fillPrice, leverage: req.leverage,
-      marginUsdt: margin, liqPrice, openedAt,
-      tier: req.tier,
-    }).catch(() => {});
-
-    this.opts.pgWriter?.writeOrder({
-      orderId, symbol, side: req.side, quantity: req.quantity,
-      price: fillPrice, status: 'FILLED',
-      fillPrice, feeUsdt: fee, slippageUsdt: slip * req.quantity,
-      latencyMs: this.opts.latencyMs,
-    }).catch(() => {});
-
     this.opts.funding.trackPosition({
       positionId: orderId,
       symbol,
@@ -199,13 +183,6 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
         };
       });
       this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
-
-      this.opts.pgWriter?.writeEquitySnapshot(
-        this.opts.wallet.state(),
-        0,
-        this.positions.size,
-        this.opts.fxRate?.getInrPerUsdt(),
-      ).catch(() => {});
 
       this.opts.wallet.flushToDisk();
     }
@@ -270,15 +247,6 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     };
     this.opts.ledger.appendTrade(closed);
     this.opts.onTradeClose?.(closed);
-
-    this.opts.pgWriter?.writeTrade(closed, pos.symbol).catch(() => {});
-    this.opts.pgWriter?.removePosition(orderId).catch(() => {});
-    this.opts.pgWriter?.writeOrder({
-      orderId, symbol: pos.symbol, side: pos.side, quantity: pos.quantity,
-      price: exitPrice, status: 'CLOSED',
-      fillPrice: exitPrice, feeUsdt: exitFee,
-      slippageUsdt: slip * pos.quantity, latencyMs: this.opts.latencyMs,
-    }).catch(() => {});
 
     this.opts.wallet.flushToDisk();
     return closed;

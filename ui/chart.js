@@ -243,6 +243,9 @@ export class ChartManager {
     this._smcSignalPriceLines = [];
     /** SMC markers (separate from liquidation markers, merged via _paintAllMarkers). */
     this._lastSmcMarkers = [];
+    /** Open-position markers and entry lines. */
+    this._positionMarkers = [];
+    this._openPositionLines = new Map();
     /** Shaded OB / FVG zones (LWC series primitive). */
     this._smcZonePrimitive = null;
     this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
@@ -1068,12 +1071,101 @@ export class ChartManager {
     if (!this.candleSeries) return;
     const smcMarkers = this._lastSmcMarkers ?? [];
     const liqMarkers = this._liquidationsEnabled ? this._liquidationMarkers : [];
-    const all = [...smcMarkers, ...liqMarkers].sort((a, b) => a.time - b.time);
+    const posMarkers = this._positionMarkers ?? [];
+    const all = [...smcMarkers, ...liqMarkers, ...posMarkers].sort((a, b) => a.time - b.time);
     try {
       this.candleSeries.setMarkers(all);
     } catch (e) {
       console.warn('[chart] setMarkers failed', e);
     }
+  }
+
+  _currentPositionRefPrice() {
+    if (Number.isFinite(this._lastMarkPrice)) return this._lastMarkPrice;
+    if (Number.isFinite(this._lastBookBid) && Number.isFinite(this._lastBookAsk)) {
+      return (this._lastBookBid + this._lastBookAsk) / 2;
+    }
+    const close = this.getLastCloseForTf(this.currentTf);
+    return Number.isFinite(close) ? close : null;
+  }
+
+  _positionPnlText(pos, currentPrice) {
+    const entry = Number(pos.entryPrice);
+    const qty = Number(pos.quantity);
+    const side = String(pos.side || '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    const dir = side === 'LONG' ? 1 : -1;
+    const provided = Number(pos.unrealizedUsdt);
+    const pnl = Number.isFinite(provided) && String(pos.mode || '').toLowerCase() !== 'live'
+      ? provided
+      : (Number.isFinite(currentPrice) && Number.isFinite(entry) && Number.isFinite(qty)
+          ? (currentPrice - entry) * qty * dir
+          : 0);
+    const leverage = Number(pos.leverage);
+    const margin = Number.isFinite(pos.marginUsdt) && pos.marginUsdt > 0
+      ? pos.marginUsdt
+      : (Number.isFinite(leverage) && leverage > 0 && Number.isFinite(entry) && Number.isFinite(qty)
+          ? (entry * qty) / leverage
+          : null);
+    const pct = margin && margin > 0 ? (pnl / margin) * 100 : null;
+    return {
+      pnl,
+      pct,
+      text:
+        `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT` +
+        (pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : ''),
+    };
+  }
+
+  setOpenPositions(positions, symbolFilter = null) {
+    if (!this.candleSeries || !this._partialLinesPrimitive) return;
+    const filter = symbolFilter ? String(symbolFilter).trim().toUpperCase() : null;
+    const list = Array.isArray(positions) ? positions : [];
+    const currentPrice = this._currentPositionRefPrice();
+    const nextMarkers = [];
+    const nextIds = new Set();
+
+    for (const pos of list) {
+      if (!pos || typeof pos !== 'object') continue;
+      const symbol = String(pos.symbol || '').trim().toUpperCase();
+      if (!symbol) continue;
+      if (filter && symbol !== filter) continue;
+      const orderId = String(pos.orderId || `${symbol}:${pos.openedAt ?? ''}:${pos.entryPrice ?? ''}`);
+      const entryPrice = Number(pos.entryPrice);
+      if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+      const openedAt = Number(pos.openedAt);
+      const startTimeSec = Number.isFinite(openedAt) ? Math.floor(openedAt / 1000) : this._latestCandleTimeSec();
+      const side = String(pos.side || '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const sideColor = side === 'LONG' ? COLORS.ltpBull : COLORS.bear;
+      const pnlInfo = this._positionPnlText(pos, currentPrice);
+      nextIds.add(orderId);
+      this._openPositionLines.set(orderId, { ...pos });
+      this._partialLinesPrimitive.setLine(`pos-${orderId}`, {
+        startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+        price: entryPrice,
+        color: sideColor,
+        lineWidth: 1,
+        title: `${side} ENTRY ${fmtLtpDisplay(entryPrice)} | ${pnlInfo.text}`,
+        axisLabelColor: sideColor,
+      });
+      nextMarkers.push({
+        time: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+        position: side === 'LONG' ? 'belowBar' : 'aboveBar',
+        shape: side === 'LONG' ? 'arrowUp' : 'arrowDown',
+        color: sideColor,
+        text: `${side} ENTRY`,
+        size: 1,
+        id: `pos-${orderId}`,
+      });
+    }
+
+    for (const [orderId] of this._openPositionLines) {
+      if (nextIds.has(orderId)) continue;
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}`);
+      this._openPositionLines.delete(orderId);
+    }
+
+    this._positionMarkers = nextMarkers;
+    this._paintAllMarkers();
   }
 
   // ── Mark Price Line ─────────────────────────────────────────────────
@@ -2305,6 +2397,8 @@ export class ChartManager {
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
       this._partialLinesPrimitive?.clear();
+      this._openPositionLines.clear();
+      this._positionMarkers = [];
       if (this._oiRegimePriceLine && this.candleSeries) {
         try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
         this._oiRegimePriceLine = null;

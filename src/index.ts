@@ -87,7 +87,10 @@ const main = async (): Promise<void> => {
       orderBookSnapshotRing,
       precisionBySymbol,
       paperWallet: paperAdapter ? () => paperAdapter.getWalletState() : undefined,
-      paperPositions: paperAdapter ? () => paperAdapter.getOpenPositions() : undefined,
+      paperPositions: paperAdapter
+        ? () => paperAdapter.getOpenPositions().map((p) => ({ ...p, mode: 'paper' as const }))
+        : undefined,
+      livePositions: () => orch?.getDashboardPositions() ?? null,
     });
 
     if (paperAdapter) {
