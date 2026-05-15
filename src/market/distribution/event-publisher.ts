@@ -62,6 +62,20 @@ export class MarketEventPublisher {
           }
         });
       },
+      onMarkPrice: (u) => {
+        this.eventBus.publish({
+          id: `mark-${u.symbol}-${u.eventTime}`,
+          type: 'market.mark',
+          ts: u.eventTime ?? Date.now(),
+          source: 'binance-ws',
+          symbol: u.symbol,
+          payload: {
+            markPrice: u.markPrice,
+            fundingRate: (u as any).fundingRate ?? 0,
+            timestamp: u.eventTime ?? Date.now(),
+          },
+        });
+      },
       onDepthDiff: (diff) => {
         this.eventBus.publish({
           id: `depthDiff-${diff.s}-${diff.u}`,
