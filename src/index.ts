@@ -29,7 +29,6 @@ const main = async (): Promise<void> => {
         'SHADOW_MODE=true: PositionManager logs open/close intent but does not call the execution adapter (no exchange orders). Strategy and market data still run. Flatten real exchange positions before using on a funded account.',
     });
   }
-
   if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') {
     log.warn('binance_futures_testnet_liquidity', {
       hint:
