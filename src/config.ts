@@ -79,10 +79,10 @@ export const AppConfigSchema = z.object({
   }, boolFromString(true)),
 
   /**
-   * When true, `PositionManager` records open/close **intent** but never calls the execution
-   * adapter for `placeOrder` / `closePosition` (no exchange REST orders). Feeds, strategy, and
-   * paper wallet logic still run — for Phase 3 rehearsal on real market data. Do not enable
-   * on an account with unmanaged live positions (closes would not hit the exchange).
+   * Global shadow mode: connect to live data but suppress all order placement at the adapter level.
+   * Unlike `READ_ONLY`, shadow mode still runs the full signal/strategy pipeline and logs what
+   * would have been sent — useful for pre-deployment validation against real market conditions.
+   * Do not enable on an account with unmanaged live positions (closes would not hit the exchange).
    */
   SHADOW_MODE: boolFromString(false),
 
@@ -509,12 +509,7 @@ export const AppConfigSchema = z.object({
   /** Directory for prediction logs. */
   ML_PREDICTION_DIR: z.string().default('./data/predictions'),
 
-  /**
-   * Global shadow mode: connect to live data but suppress all order placement at the adapter level.
-   * Unlike `READ_ONLY`, shadow mode still runs the full signal/strategy pipeline and logs what
-   * would have been sent — useful for pre-deployment validation against real market conditions.
-   */
-  SHADOW_MODE: boolFromString(false),
+
 
   /** HTTP port for the Prometheus /metrics + /health endpoint (0 = disabled). */
   PROMETHEUS_PORT: z

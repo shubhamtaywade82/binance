@@ -1733,6 +1733,7 @@ WS API testnet URL). The gaps below are safety and workflow items.
 | ✅ | **Max notional cap for Phase 4** | `src/safety/notional-cap.ts` — `applyNotionalCap()`, `MAX_NOTIONAL_USDT` in config (default 0 = disabled) |
 | ✅ | **`demo-fapi.binance.com` support** | `BINANCE_PRODUCT=usdm_demo` wired in config — REST `demo-fapi.binance.com`, WS `demo-fstream.binance.com` |
 | ✅ | **Testnet liquidity warning** | `index.ts` logs `binance_futures_testnet_liquidity` when `BINANCE_FUTURES_TESTNET=true` — `src/safety/env-validator.ts` |
+| ✅ | **Live Trading Guard** | `CONFIRMED_LIVE_TRADING` + `CONFIRMED_LIVE` alias + startup warn if missing (`config.ts`, `index.ts`, `create-runtime.ts`) |
 
 ### 20.3 Four-Phase Deployment Checklist
 
@@ -1759,8 +1760,6 @@ Phase 4 — Live trading (small capital)
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
   ✔ MAX_NOTIONAL_USDT cap (`config.ts`, `risk.ts`, `.env.example`)
   ✔ CONFIRMED_LIVE_TRADING + `CONFIRMED_LIVE` alias + startup warn if missing (`config.ts`, `index.ts`, `create-runtime.ts`)
-  Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
-```
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```
 
