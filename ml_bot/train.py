@@ -25,6 +25,7 @@ FEATURE_COLS: list[str] = [
     "trade_imbalance_1s", "trade_imbalance_5s", "trade_imbalance_30s", "trade_intensity_1s",
     "signed_volume_5s", "burstiness", "last_trade_direction_streak", "large_trade_flag",
     "ofi_cumulative", "rv_1s", "rv_5s", "rv_1m",
+    "micro_bar_1s_close_ret", "micro_bar_1s_volume", "micro_bar_5s_close_ret", "micro_bar_5s_volume",
     "ret_1m", "ret_5m", "vol_1m", "candle_body_1m", "wick_ratio_upper_1m",
     "volume_zscore_1m", "range_expansion", "trend_slope", "momentum_5m",
     "oi", "oi_delta_1m", "oi_delta_5m", "oi_zscore", "oi_divergence", "oi_spike",
@@ -172,6 +173,144 @@ def train_volatility(
 
 
 # ---------------------------------------------------------------------------
+# Execution quality models
+# ---------------------------------------------------------------------------
+
+def train_fill_probability(
+    df: pd.DataFrame,
+    available: list[str],
+    horizon: int = 30,
+    output: str | None = None,
+) -> lgb.LGBMClassifier | None:
+    """Train a binary classifier: will a limit order at BBO fill within horizon?"""
+    y_col = f"y_fill_prob_{horizon}s"
+    if y_col not in df.columns:
+        print(f"  Label {y_col} not found, skipping fill probability model.")
+        return None
+
+    subset = df.dropna(subset=available + [y_col])
+    if len(subset) < 200:
+        print(f"  Not enough rows ({len(subset)}) for fill probability model.")
+        return None
+
+    split = int(len(subset) * 0.8)
+    X_train, X_val = subset[available].iloc[:split], subset[available].iloc[split:]
+    y_train, y_val = subset[y_col].iloc[:split], subset[y_col].iloc[split:]
+
+    print(f"\n--- Fill Probability {horizon}s ---")
+    print(f"  Train: {len(X_train)}, Val: {len(X_val)}")
+
+    model = lgb.LGBMClassifier(
+        n_estimators=500, max_depth=5, learning_rate=0.03,
+        num_leaves=31, subsample=0.8, colsample_bytree=0.8, verbose=-1,
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        callbacks=[lgb.early_stopping(30), lgb.log_evaluation(100)],
+    )
+
+    print("\n  Validation report:")
+    print(classification_report(y_val, model.predict(X_val), zero_division=0))
+
+    if output:
+        joblib.dump(model, output)
+        print(f"  Saved to {output}")
+
+    return model
+
+
+def train_slippage(
+    df: pd.DataFrame,
+    available: list[str],
+    horizon: int = 30,
+    output: str | None = None,
+) -> lgb.LGBMRegressor | None:
+    """Train a regressor predicting expected slippage in bps."""
+    y_col = f"y_slippage_bps_{horizon}s"
+    if y_col not in df.columns:
+        print(f"  Label {y_col} not found, skipping slippage model.")
+        return None
+
+    subset = df.dropna(subset=available + [y_col])
+    if len(subset) < 200:
+        print(f"  Not enough rows ({len(subset)}) for slippage model.")
+        return None
+
+    split = int(len(subset) * 0.8)
+    X_train, X_val = subset[available].iloc[:split], subset[available].iloc[split:]
+    y_train, y_val = subset[y_col].iloc[:split], subset[y_col].iloc[split:]
+
+    print(f"\n--- Slippage {horizon}s ---")
+    print(f"  Train: {len(X_train)}, Val: {len(X_val)}")
+
+    model = lgb.LGBMRegressor(
+        n_estimators=500, max_depth=5, learning_rate=0.03,
+        num_leaves=31, subsample=0.8, colsample_bytree=0.8, verbose=-1,
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        callbacks=[lgb.early_stopping(30), lgb.log_evaluation(100)],
+    )
+
+    preds = model.predict(X_val)
+    mae = mean_absolute_error(y_val, preds)
+    r2 = r2_score(y_val, preds)
+    print(f"  MAE: {mae:.4f} bps, R²: {r2:.4f}")
+
+    if output:
+        joblib.dump(model, output)
+        print(f"  Saved to {output}")
+
+    return model
+
+
+def train_adverse_move(
+    df: pd.DataFrame,
+    available: list[str],
+    horizon: int = 30,
+    output: str | None = None,
+) -> lgb.LGBMClassifier | None:
+    """Train a binary classifier: P(price moves against entry within horizon)."""
+    y_col = f"y_adverse_move_{horizon}s"
+    if y_col not in df.columns:
+        print(f"  Label {y_col} not found, skipping adverse move model.")
+        return None
+
+    subset = df.dropna(subset=available + [y_col])
+    if len(subset) < 200:
+        print(f"  Not enough rows ({len(subset)}) for adverse move model.")
+        return None
+
+    split = int(len(subset) * 0.8)
+    X_train, X_val = subset[available].iloc[:split], subset[available].iloc[split:]
+    y_train, y_val = subset[y_col].iloc[:split], subset[y_col].iloc[split:]
+
+    print(f"\n--- Adverse Move {horizon}s ---")
+    print(f"  Train: {len(X_train)}, Val: {len(X_val)}")
+
+    model = lgb.LGBMClassifier(
+        n_estimators=500, max_depth=5, learning_rate=0.03,
+        num_leaves=31, subsample=0.8, colsample_bytree=0.8, verbose=-1,
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        callbacks=[lgb.early_stopping(30), lgb.log_evaluation(100)],
+    )
+
+    print("\n  Validation report:")
+    print(classification_report(y_val, model.predict(X_val), zero_division=0))
+
+    if output:
+        joblib.dump(model, output)
+        print(f"  Saved to {output}")
+
+    return model
+
+
+# ---------------------------------------------------------------------------
 # SHAP analysis
 # ---------------------------------------------------------------------------
 
@@ -300,6 +439,9 @@ def train(
     feature_dir: str = "../data/features",
     direction_output: str = "model_direction_30s.pkl",
     vol_output: str = "model_vol_60s.pkl",
+    fill_output: str = "model_fill_prob_30s.pkl",
+    slippage_output: str = "model_slippage_30s.pkl",
+    adverse_output: str = "model_adverse_move_30s.pkl",
 ) -> None:
     print("Loading features...")
     df = load_features(feature_dir)
@@ -312,20 +454,18 @@ def train(
     if missing:
         print(f"  WARNING: Missing feature columns ({len(missing)}): {missing[:10]}...")
 
-    # Leakage guard
     violations = validate_no_leakage(df, available, max_horizon=max(HORIZONS_SEC))
     if violations:
         print("  LEAKAGE WARNINGS:")
         for v in violations:
             print(f"    - {v}")
 
-    # --- Direction classifier (30s) ---
     dir_model = train_direction(df, available, horizon=30, output=direction_output)
-
-    # --- Volatility regressor (60s) ---
     vol_model = train_volatility(df, available, horizon=60, output=vol_output)
+    train_fill_probability(df, available, horizon=30, output=fill_output)
+    train_slippage(df, available, horizon=30, output=slippage_output)
+    train_adverse_move(df, available, horizon=30, output=adverse_output)
 
-    # --- SHAP for direction model ---
     if dir_model is not None:
         tradeable_col = "y_tradeable_30s"
         shap_subset = df.copy()
@@ -335,16 +475,13 @@ def train(
         if len(shap_subset) >= 100:
             shap_analysis(dir_model, shap_subset[available], output_path="shap_direction_30s.csv")
 
-    # --- SHAP for volatility model ---
     if vol_model is not None:
         vol_shap_subset = df.dropna(subset=available)
         if len(vol_shap_subset) >= 100:
             shap_analysis(vol_model, vol_shap_subset[available], output_path="shap_vol_60s.csv")
 
-    # --- Walk-forward ---
     walk_forward_validation(df, available, horizon=30, train_months=3, test_months=1)
 
-    # --- Feature importance (built-in, quick) ---
     if dir_model is not None:
         print("\nLightGBM feature importance (top 15):")
         imp = pd.Series(dir_model.feature_importances_, index=available).sort_values(ascending=False)

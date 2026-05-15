@@ -74,7 +74,7 @@ describe('!forceOrder@arr global stream', () => {
     product: 'usdm',
     useBookTicker: false,
     useAggTrade: false,
-    depthLevels: 0 as 0,
+    depthLevels: 0 as const,
     depthSpeed: '100ms',
     useMarkPrice: false,
     useForceOrder: false,

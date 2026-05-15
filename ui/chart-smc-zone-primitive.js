@@ -8,15 +8,10 @@ const MIN_ZONE_WIDTH_PX = 56;
 
 export class SmcZoneBoxesPrimitive {
   constructor() {
-    /** @type {{ t1: number; t2: number; top: number; bottom: number; fill: string; stroke?: string; text?: string; textColor?: string }[]} */
     this.zones = [];
-    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number }[]} */
     this.lines = [];
-    /** @type {import('lightweight-charts').IChartApi | null} */
     this._chart = null;
-    /** @type {import('lightweight-charts').ISeriesApi<'Candlestick'> | null} */
     this._series = null;
-    /** @type {(() => void) | null} */
     this._requestUpdate = null;
     this._paneView = new SmcZonesPaneView(this);
     this._onRange = () => {
@@ -24,13 +19,11 @@ export class SmcZoneBoxesPrimitive {
     };
   }
 
-  /** @param {typeof this.zones} zones */
   setZones(zones) {
     this.zones = Array.isArray(zones) ? zones : [];
     this._requestUpdate?.();
   }
 
-  /** @param {typeof this.lines} lines */
   setLines(lines) {
     this.lines = Array.isArray(lines) ? lines : [];
     this._requestUpdate?.();
@@ -60,7 +53,6 @@ export class SmcZoneBoxesPrimitive {
 }
 
 class SmcZonesPaneView {
-  /** @param {SmcZoneBoxesPrimitive} host */
   constructor(host) {
     this._host = host;
   }
@@ -74,70 +66,130 @@ class SmcZonesPaneView {
     const lines = this._host.lines;
     const series = this._host._series;
     const chart = this._host._chart;
-    if ((!zones.length && !lines.length) || !series || !chart) return null;
+    if (!series || !chart) return null;
+    if (!zones.length && !lines.length) return null;
+    
     const timeScale = chart.timeScale();
+    
     return {
       draw: (target) => {
-        target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
-          for (const z of zones) {
-            const x1 = timeScale.timeToCoordinate(z.t1);
-            const x2 = timeScale.timeToCoordinate(z.t2);
-            if (x1 == null || x2 == null) continue;
-            const yTop = series.priceToCoordinate(z.top);
-            const yBot = series.priceToCoordinate(z.bottom);
-            if (yTop == null || yBot == null) continue;
-            let left = Math.min(x1, x2);
-            let right = Math.max(x1, x2);
-            const top = Math.min(yTop, yBot);
-            const bottom = Math.max(yTop, yBot);
-            if (right - left < MIN_ZONE_WIDTH_PX) {
-              right = left + MIN_ZONE_WIDTH_PX;
-            }
-            right = Math.min(right, mediaSize.width - 4);
-            if (left >= mediaSize.width - 2) continue;
-            const w = Math.max(1, right - left);
-            const h = Math.max(1, bottom - top);
-            ctx.fillStyle = z.fill;
-            ctx.fillRect(left, top, w, h);
-            if (z.stroke) {
-              ctx.strokeStyle = z.stroke;
-              ctx.lineWidth = 1;
-              ctx.strokeRect(left, top, w, h);
-            }
-            if (z.text) {
-              ctx.font = "11px 'JetBrains Mono', ui-monospace, monospace";
-              ctx.fillStyle = z.textColor || 'rgba(197,202,233,0.95)';
-              ctx.fillText(z.text, left + 4, top + 14);
-            }
-          }
+        try {
+          target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hRp, verticalPixelRatio: vRp }) => {
+            const getVisibleRange = () => {
+              const r = timeScale.getVisibleRange();
+              if (!r) return null;
+              const from = (typeof r.from === 'number') ? r.from : (r.from.year ? new Date(r.from.year, r.from.month - 1, r.from.day).getTime() / 1000 : null);
+              const to = (typeof r.to === 'number') ? r.to : (r.to.year ? new Date(r.to.year, r.to.month - 1, r.to.day).getTime() / 1000 : null);
+              if (from === null || to === null) return null;
+              return { from, to };
+            };
 
-          for (const ln of lines) {
-            const x1 = timeScale.timeToCoordinate(ln.t1);
-            const x2 = timeScale.timeToCoordinate(ln.t2);
-            const y = series.priceToCoordinate(ln.price);
-            if (x1 == null || x2 == null || y == null) continue;
-            const left = Math.min(x1, x2);
-            const right = Math.max(x1, x2);
-            if (right <= left || left >= mediaSize.width - 1) continue;
-            ctx.strokeStyle = ln.color;
-            ctx.lineWidth = ln.lineWidth ?? 2;
-            ctx.setLineDash([]);
-            ctx.beginPath();
-            ctx.moveTo(left, y);
-            ctx.lineTo(Math.min(right, mediaSize.width - 1), y);
-            ctx.stroke();
-            if (ln.label) {
-              const pad = 4;
-              const lx = Math.min(right - 2, mediaSize.width - pad * 2);
-              ctx.font = "11px 'JetBrains Mono', ui-monospace, monospace";
-              ctx.fillStyle = ln.color;
-              const metrics = ctx.measureText(ln.label);
-              let tx = lx - metrics.width;
-              if (tx < left + pad) tx = left + pad;
-              ctx.fillText(ln.label, tx, y - 5);
+            const vRange = getVisibleRange();
+            if (!vRange) return;
+
+            const getX = (t) => {
+              const xCss = timeScale.timeToCoordinate(t);
+              if (xCss !== null) return xCss * hRp;
+              
+              if (t > vRange.to) return bitmapSize.width + (100 * hRp);
+              if (t < vRange.from) return -100 * hRp;
+              
+              const totalTime = vRange.to - vRange.from;
+              if (totalTime <= 0) return null;
+              const ratio = (t - vRange.from) / totalTime;
+              return ratio * bitmapSize.width;
+            };
+
+            const getY = (p) => {
+              const yCss = series.priceToCoordinate(p);
+              return yCss !== null ? yCss * vRp : null;
+            };
+
+            for (const z of zones) {
+              const x1 = getX(z.t1);
+              const x2 = getX(z.t2);
+              const y1 = getY(z.top);
+              const y2 = getY(z.bottom);
+              
+              if (x1 === null || x2 === null || y1 === null || y2 === null) continue;
+              
+              const left = Math.min(x1, x2);
+              const right = Math.max(x1, x2);
+              const top = Math.min(y1, y2);
+              const bottom = Math.max(y1, y2);
+              
+              const w = Math.max(1, right - left);
+              const h = Math.max(1, bottom - top);
+
+              ctx.fillStyle = z.fill;
+              ctx.fillRect(left, top, w, h);
+              
+              if (typeof z.tankRatio === 'number' && z.tankRatio >= 0) {
+                const ratio = Math.min(1.0, z.tankRatio);
+                ctx.fillStyle = z.stroke || z.fill; 
+                ctx.save();
+                ctx.globalAlpha = 0.5;
+                ctx.fillRect(left, top, w * ratio, h);
+                ctx.restore();
+              }
+
+              if (z.stroke) {
+                ctx.strokeStyle = z.stroke;
+                ctx.lineWidth = Math.max(1, hRp);
+                ctx.strokeRect(left, top, w, h);
+              }
+
+              if (z.text) {
+                const fontSize = 11 * vRp;
+                ctx.font = `bold ${fontSize}px 'JetBrains Mono', ui-monospace, monospace`;
+                ctx.fillStyle = z.textColor || 'rgba(255,255,255,0.9)';
+                const metrics = ctx.measureText(z.text);
+                let tx = left + (4 * hRp);
+                if (z.labelAlign === 'right') tx = right - metrics.width - (4 * hRp);
+                else if (z.labelAlign === 'center') tx = left + w / 2 - metrics.width / 2;
+                tx = Math.max(4 * hRp, Math.min(bitmapSize.width - metrics.width - (4 * hRp), tx));
+                ctx.fillText(z.text, tx, top + (14 * vRp));
+              }
             }
-          }
-        });
+
+            for (const ln of lines) {
+              const x1 = getX(ln.t1);
+              const x2 = getX(ln.t2);
+              const y = getY(ln.price);
+              if (x1 === null || x2 === null || y === null) continue;
+              
+              const left = Math.min(x1, x2);
+              const right = Math.max(x1, x2);
+              
+              ctx.strokeStyle = ln.color;
+              ctx.lineWidth = (ln.lineWidth ?? 1.5) * hRp;
+              
+              ctx.save();
+              if (ln.lineStyle === 1) ctx.setLineDash([6 * hRp, 4 * hRp]);
+              else if (ln.lineStyle === 2) ctx.setLineDash([2 * hRp, 2 * hRp]);
+              else ctx.setLineDash([]);
+
+              ctx.beginPath();
+              ctx.moveTo(left, y);
+              ctx.lineTo(right, y);
+              ctx.stroke();
+              ctx.restore();
+
+              if (ln.label) {
+                const fontSize = 11 * vRp;
+                ctx.font = `bold ${fontSize}px 'JetBrains Mono', ui-monospace, monospace`;
+                ctx.fillStyle = ln.color;
+                const metrics = ctx.measureText(ln.label);
+                let tx = (left + right) / 2 - metrics.width / 2;
+                tx = Math.max(left + (4 * hRp), Math.min(right - metrics.width - (4 * hRp), tx));
+                const ty = ln.position === 'bottom' ? y + (14 * vRp) : y - (5 * vRp);
+                ctx.fillText(ln.label, tx, ty);
+              }
+            }
+          });
+        } catch (e) {
+          console.error('[SmcZonesPaneView] draw error:', e);
+        }
       },
     };
   }

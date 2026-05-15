@@ -11,6 +11,10 @@ import {
   rollingRealizedVol,
   spreadBps,
   snapshotMicrostructure,
+  tradesToOhlcvBars,
+  ohlcvBarsChronological,
+  microBarCloseRet,
+  microOhlcvBarsFromTape,
 } from '../src/binance/microstructure';
 
 const buildTape = (): AggTradeTape => {
@@ -244,5 +248,47 @@ describe('snapshotMicrostructure', () => {
     expect(s.rv1s).toBeDefined();
     expect(s.rv5s).toBeDefined();
     expect(s.rv1m).toBeDefined();
+    expect(Array.isArray(s.microBars1s)).toBe(true);
+    expect(Array.isArray(s.microBars5s)).toBe(true);
+  });
+});
+
+describe('tradesToOhlcvBars', () => {
+  it('builds OHLCV for trades in the same 1s bucket', () => {
+    const t0 = 1_700_000_000_000;
+    const bucket = Math.floor(t0 / 1000) * 1000;
+    const trades = [
+      { price: 100, qty: 1, ts: bucket + 100, makerSide: true },
+      { price: 101, qty: 2, ts: bucket + 500, makerSide: false },
+    ];
+    const bars = ohlcvBarsChronological(tradesToOhlcvBars(trades, 1000));
+    expect(bars).toHaveLength(1);
+    expect(bars[0].o).toBe(100);
+    expect(bars[0].c).toBe(101);
+    expect(bars[0].h).toBe(101);
+    expect(bars[0].l).toBe(100);
+    expect(bars[0].v).toBe(3);
+    expect(bars[0].buyV).toBe(1);
+    expect(bars[0].sellV).toBe(2);
+  });
+
+  it('computes close-to-close return on last two bars', () => {
+    const bars = [
+      { t: 0, o: 10, h: 10, l: 10, c: 10, v: 1, buyV: 1, sellV: 0, n: 1 },
+      { t: 1000, o: 11, h: 12, l: 11, c: 12, v: 2, buyV: 2, sellV: 0, n: 1 },
+    ];
+    expect(microBarCloseRet(bars)).toBeCloseTo(Math.log(1.2), 6);
+  });
+});
+
+describe('microOhlcvBarsFromTape', () => {
+  it('returns 1s and 5s bar arrays from tape', () => {
+    const tape = new AggTradeTape(50);
+    const now = Date.now();
+    tape.push({ price: 50, qty: 1, ts: now - 2500, makerSide: true });
+    tape.push({ price: 51, qty: 1, ts: now - 1500, makerSide: false });
+    const { bars1s, bars5s } = microOhlcvBarsFromTape(tape, 30);
+    expect(bars1s.length).toBeGreaterThanOrEqual(1);
+    expect(bars5s.length).toBeGreaterThanOrEqual(1);
   });
 });

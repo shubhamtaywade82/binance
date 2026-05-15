@@ -1,4 +1,4 @@
-import type { ModelOutput } from './model-types';
+import type { ModelOutput, ExtendedModelOutput } from './model-types';
 
 export interface InferenceClientConfig {
   url: string;
@@ -27,7 +27,7 @@ export class InferenceClient {
     this.cfg = { ...DEFAULT_CONFIG, ...config };
   }
 
-  async predict(features: Record<string, number>): Promise<ModelOutput | null> {
+  async predict(features: Record<string, number>): Promise<ExtendedModelOutput | null> {
     if (this.isCircuitOpen()) return null;
 
     for (let attempt = 0; attempt <= this.cfg.maxRetries; attempt++) {
@@ -64,7 +64,7 @@ export class InferenceClient {
     return this.consecutiveFailures;
   }
 
-  private async fetchPrediction(features: Record<string, number>): Promise<ModelOutput> {
+  private async fetchPrediction(features: Record<string, number>): Promise<ExtendedModelOutput> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
 
@@ -79,14 +79,17 @@ export class InferenceClient {
       if (!res.ok) throw new Error(`inference HTTP ${res.status}`);
 
       const data = (await res.json()) as Record<string, unknown>;
-      const output: ModelOutput = {
+      const output: ExtendedModelOutput = {
         p_up: Number(data.p_up) || 0,
         p_down: Number(data.p_down) || 0,
         p_flat: Number(data.p_flat) || 0,
       };
-      if (typeof data.model_version === 'string' && data.model_version) {
-        output.model_version = data.model_version;
-      }
+      if (typeof data.model_version === 'string') output.model_version = data.model_version;
+      if (typeof data.regime === 'string') output.regime = data.regime as ExtendedModelOutput['regime'];
+      if (typeof data.expected_volatility === 'number') output.expected_volatility = data.expected_volatility;
+      if (typeof data.expected_slippage === 'number') output.expected_slippage = data.expected_slippage;
+      if (typeof data.fill_probability === 'number') output.fill_probability = data.fill_probability;
+      if (typeof data.adverse_move_probability === 'number') output.adverse_move_probability = data.adverse_move_probability;
       return output;
     } finally {
       clearTimeout(timer);
