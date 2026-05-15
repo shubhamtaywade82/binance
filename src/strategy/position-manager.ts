@@ -210,13 +210,13 @@ export class PositionManager {
 
     if (this.cfg.SHADOW_MODE) {
       this.log.info('shadow_would_place_order', {
-        pair,
-        side,
-        referencePrice: price,
+        pair: args.pair,
+        side: args.side,
+        referencePrice: args.price,
         quantity: sized.quantity,
         takeProfit,
         stopLoss,
-        leverage: this.cfg.LEVERAGE,
+        leverage,
         marginCurrency: this.cfg.MARGIN_CURRENCY,
         notionalUsdt: sized.notionalUsdt,
         hint: 'SHADOW_MODE=true: order not sent to the adapter.',
