@@ -25,6 +25,7 @@ export const KlineClosedPayloadSchema = z.object({
   volume: z.number(),
   quoteVolume: z.number(),
   trades: z.number(),
+  timeframe: z.string().optional(),
 });
 export type KlineClosedPayload = z.infer<typeof KlineClosedPayloadSchema>;
 

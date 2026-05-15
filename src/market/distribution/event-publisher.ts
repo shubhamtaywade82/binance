@@ -24,6 +24,7 @@ export class MarketEventPublisher {
               volume: candle.volume,
               quoteVolume: (candle as any).quoteVolume ?? 0,
               trades: (candle as any).trades ?? 0,
+              timeframe: interval,
             }
           });
         }

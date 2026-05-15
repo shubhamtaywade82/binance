@@ -20,6 +20,9 @@ import { MarketEventPublisher } from './market/distribution/event-publisher';
 import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 
 import { ActorSystem } from './core/actors/actor-system';
+import { SignalToOrderBridge } from './core/execution/signal-to-order-bridge';
+import { ExecutionBridge } from './core/execution/execution-bridge';
+import type { DomainEvent } from '@coindcx/contracts';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
@@ -93,6 +96,30 @@ const main = async (): Promise<void> => {
   const allSymbols = multiplexBinanceSymbols(cfg);
   for (const sym of allSymbols) {
     actorSystem.spawnSymbolActor(sym);
+  }
+
+  if (cfg.EVENT_BUS_EXECUTION_ENABLED) {
+    const adapter = execution.paperAdapter ?? execution.adapter;
+    if (!adapter) {
+      log.warn('event_bus_execution_no_adapter', {
+        hint: 'EVENT_BUS_EXECUTION_ENABLED=true but no execution adapter resolved. Bridges not wired.',
+      });
+    } else {
+      const lastPriceBySymbol = new Map<string, number>();
+      defaultEventBus.subscribe('market.kline.closed', (e: DomainEvent<any>) => {
+        if (e.symbol && e.payload?.close) lastPriceBySymbol.set(e.symbol, e.payload.close);
+      });
+      defaultEventBus.subscribe('market.bookticker', (e: DomainEvent<any>) => {
+        if (e.symbol && e.payload?.bestBidPrice && e.payload?.bestAskPrice) {
+          lastPriceBySymbol.set(e.symbol, (e.payload.bestBidPrice + e.payload.bestAskPrice) / 2);
+        }
+      });
+      new SignalToOrderBridge(cfg, defaultEventBus, {
+        lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
+      }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
+      new ExecutionBridge(cfg, defaultEventBus, adapter);
+      log.info('event_bus_execution_wired', { adapter: adapter.name });
+    }
   }
 
   if (cfg.DASHBOARD_ENABLED) {

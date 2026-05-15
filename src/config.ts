@@ -468,6 +468,20 @@ export const AppConfigSchema = z.object({
   MAX_OPEN_SYMBOLS: numFromString(5),
 
   /**
+   * Route strategy signals through the event-bus path
+   *   actor → strategy.signal → SignalToOrderBridge → RiskEngine → ExecutionBridge → adapter.
+   * Default false to avoid double-firing alongside the legacy orchestrator.
+   * Recommended for paper-trading and replay; keep false in live until cutover.
+   */
+  EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+
+  /** Min signal confidence for SignalToOrderBridge to emit an order request. */
+  MIN_SIGNAL_CONFIDENCE: numFromString(0.5),
+
+  /** Cooldown between consecutive event-bus orders per symbol (ms). */
+  EVENT_BUS_ORDER_COOLDOWN_MS: numFromString(60_000),
+
+  /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
    * Pipe `|` separates clusters; comma separates symbols that should not share same-direction risk.
