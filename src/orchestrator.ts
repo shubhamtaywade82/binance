@@ -232,6 +232,9 @@ export class HybridOrchestrator {
   /** Set by runMlGate when extended model output is available. */
   private mlHoldTimeMs: number | null = null;
 
+  /** Throttled DB updates for position PnL (prevents excessive Postgres writes). */
+  private readonly lastDbUpdateBySymbol = new Map<string, number>();
+
   constructor(
     private readonly cfg: AppConfig,
     private readonly log: OrchestratorLogger = consoleLogger,
@@ -1043,22 +1046,22 @@ export class HybridOrchestrator {
     const symU = u.symbol.toUpperCase();
     if (symU === this.pairs.binanceSymbol.toUpperCase()) {
       this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
-      return;
     }
     if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
       this.applyMarkForSymbol(symU, u.markPrice);
     }
+    this.syncPositionPnLToDb(symU, u.markPrice);
   }
 
   private onTickerLtp(u: TickerLtpUpdate): void {
     const symU = u.symbol.toUpperCase();
     if (symU === this.pairs.binanceSymbol.toUpperCase()) {
       this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
-      return;
     }
     if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
       this.applyMarkForSymbol(symU, u.lastPrice);
     }
+    this.syncPositionPnLToDb(symU, u.lastPrice);
   }
 
   /**
@@ -1810,5 +1813,33 @@ export class HybridOrchestrator {
     } catch (e) {
       this.log.warn('drawdown_cancel_failed', { err: (e as Error).message });
     }
+  }
+
+  private syncPositionPnLToDb(symbol: string, currentMark: number): void {
+    if (!this.execution.pgWriter) return;
+    const pos = this.positionManager.getPosition(symbol);
+    if (!pos) return;
+
+    const now = Date.now();
+    const lastUpdate = this.lastDbUpdateBySymbol.get(symbol) ?? 0;
+    if (now - lastUpdate < 5000) return; // Throttled to 5s
+
+    this.lastDbUpdateBySymbol.set(symbol, now);
+    const unrealizedPnl = (currentMark - pos.entryPrice) * pos.quantity * (pos.side === 'LONG' ? 1 : -1);
+
+    void this.execution.pgWriter.upsertPosition({
+      orderId: pos.orderId,
+      symbol: pos.symbol,
+      side: pos.side,
+      quantity: pos.quantity,
+      entryPrice: pos.entryPrice,
+      leverage: pos.leverage ?? 5,
+      marginUsdt: (pos.quantity * pos.entryPrice) / (pos.leverage ?? 5),
+      liqPrice: pos.liqPrice ?? 0,
+      openedAt: pos.openedAt,
+      unrealizedPnl,
+      markPrice: currentMark,
+      tier: pos.tier,
+    });
   }
 }
