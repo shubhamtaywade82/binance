@@ -109,6 +109,77 @@ export const atr = (candles: Candle[], period = 14): number[] => {
   return out;
 }
 
+export interface AdxResult {
+  adx: number[];
+  plusDi: number[];
+  minusDi: number[];
+}
+
+/**
+ * Wilder ADX / DMI.
+ * Returns three series aligned to `candles`. Values are NaN until
+ * 2*period bars have been processed (DI smoothing + ADX smoothing).
+ */
+export const adx = (candles: Candle[], period = 14): AdxResult => {
+  const n = candles.length;
+  const plusDi = new Array(n).fill(NaN);
+  const minusDi = new Array(n).fill(NaN);
+  const adxArr = new Array(n).fill(NaN);
+  if (n <= period * 2) return { adx: adxArr, plusDi, minusDi };
+
+  const tr: number[] = new Array(n).fill(0);
+  const plusDm: number[] = new Array(n).fill(0);
+  const minusDm: number[] = new Array(n).fill(0);
+
+  for (let i = 1; i < n; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
+    plusDm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
+    const prevClose = candles[i - 1].close;
+    tr[i] = Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - prevClose),
+      Math.abs(candles[i].low - prevClose),
+    );
+  }
+
+  // Wilder smoothing
+  let trSum = 0, plusSum = 0, minusSum = 0;
+  for (let i = 1; i <= period; i++) {
+    trSum += tr[i];
+    plusSum += plusDm[i];
+    minusSum += minusDm[i];
+  }
+  let smTr = trSum, smPlus = plusSum, smMinus = minusSum;
+  const dx: number[] = new Array(n).fill(NaN);
+  plusDi[period] = smTr === 0 ? 0 : (100 * smPlus) / smTr;
+  minusDi[period] = smTr === 0 ? 0 : (100 * smMinus) / smTr;
+  const sum = plusDi[period] + minusDi[period];
+  dx[period] = sum === 0 ? 0 : (100 * Math.abs(plusDi[period] - minusDi[period])) / sum;
+
+  for (let i = period + 1; i < n; i++) {
+    smTr = smTr - smTr / period + tr[i];
+    smPlus = smPlus - smPlus / period + plusDm[i];
+    smMinus = smMinus - smMinus / period + minusDm[i];
+    plusDi[i] = smTr === 0 ? 0 : (100 * smPlus) / smTr;
+    minusDi[i] = smTr === 0 ? 0 : (100 * smMinus) / smTr;
+    const s = plusDi[i] + minusDi[i];
+    dx[i] = s === 0 ? 0 : (100 * Math.abs(plusDi[i] - minusDi[i])) / s;
+  }
+
+  // ADX = Wilder average of DX over `period`
+  let adxStart = period * 2;
+  if (adxStart >= n) return { adx: adxArr, plusDi, minusDi };
+  let dxSum = 0;
+  for (let i = period + 1; i <= adxStart; i++) dxSum += dx[i];
+  adxArr[adxStart] = dxSum / period;
+  for (let i = adxStart + 1; i < n; i++) {
+    adxArr[i] = (adxArr[i - 1] * (period - 1) + dx[i]) / period;
+  }
+  return { adx: adxArr, plusDi, minusDi };
+};
+
 export interface SupertrendResult {
   value: number[];
   dir: ('LONG' | 'SHORT')[];

@@ -481,6 +481,28 @@ export const AppConfigSchema = z.object({
   /** Cooldown between consecutive event-bus orders per symbol (ms). */
   EVENT_BUS_ORDER_COOLDOWN_MS: numFromString(60_000),
 
+  // ── Seykota trend-follower strategy (event-bus path) ────────────────────
+  /** Attach SeykotaTrendModule to each SymbolActor (event-bus path only). */
+  SEYKOTA_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** HTF for bias filter. */
+  SEYKOTA_HTF: z.string().default('1h'),
+  SEYKOTA_FAST_EMA: numFromString(20),
+  SEYKOTA_SLOW_EMA: numFromString(50),
+  SEYKOTA_ADX_PERIOD: numFromString(14),
+  /** Below this ADX = chop, skip entry. Typical 20–25 for crypto. */
+  SEYKOTA_ADX_THRESHOLD: numFromString(20),
+  SEYKOTA_ATR_PERIOD: numFromString(14),
+  /** Stop = entry ± atrMult × atr; trailing manager uses same multiplier. */
+  SEYKOTA_ATR_MULT: numFromString(3),
+  /** Min ATR / price ratio; below this market is too dead to trade. */
+  SEYKOTA_MIN_ATR_PCT: numFromString(0.003),
+  /** Risk per trade as fraction of equity. 0.005 = 0.5%. */
+  SEYKOTA_RISK_PCT: numFromString(0.005),
+  /** Account equity used for sizing math. Sync with PAPER_INITIAL_BALANCE_USDT. */
+  SEYKOTA_EQUITY_USDT: numFromString(10_000),
+  /** Min bars in history before strategy can fire. */
+  SEYKOTA_MIN_BARS: numFromString(80),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).

@@ -2,6 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply bg-bg-base text-gray-200 antialiased;
+    background-image: radial-gradient(circle at 50% -20%, #1e1b4b 0%, #080b14 80%);
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-bg-panel/40 backdrop-blur-md border border-white/5 rounded-xl;
+  }
+  
+  .glass-card {
+    @apply bg-white/[0.03] backdrop-blur-sm border border-white/5 rounded-lg transition-all duration-300;
+  }
+
+  .glass-card:hover {
+    @apply bg-white/[0.05] border-white/10;
+  }
+
+  .text-glow-bull {
+    text-shadow: 0 0 12px rgba(0, 230, 118, 0.4);
+  }
+
+  .text-glow-bear {
+    text-shadow: 0 0 12px rgba(255, 23, 68, 0.4);
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Recharts overrides */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: rgba(255, 255, 255, 0.05);
+}
+
 body {
   background: #080b14;
   color: #e6edf3;

@@ -22,6 +22,8 @@ import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 import { ActorSystem } from './core/actors/actor-system';
 import { SignalToOrderBridge } from './core/execution/signal-to-order-bridge';
 import { ExecutionBridge } from './core/execution/execution-bridge';
+import { TrailingStopManager } from './core/execution/trailing-stop-manager';
+import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import type { DomainEvent } from '@coindcx/contracts';
 
 let orch: HybridOrchestrator | null = null;
@@ -118,6 +120,20 @@ const main = async (): Promise<void> => {
         lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
       }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
       new ExecutionBridge(cfg, defaultEventBus, adapter);
+      new PositionCloseBridge(defaultEventBus, adapter);
+      if ((cfg as any).SEYKOTA_ENABLED) {
+        new TrailingStopManager(defaultEventBus, {
+          atrMult: (cfg as any).SEYKOTA_ATR_MULT,
+          defaultAtrPct: (cfg as any).SEYKOTA_MIN_ATR_PCT,
+          klineOnly: true,
+        });
+        log.info('seykota_trend_follower_wired', {
+          htf: (cfg as any).SEYKOTA_HTF,
+          adxThreshold: (cfg as any).SEYKOTA_ADX_THRESHOLD,
+          atrMult: (cfg as any).SEYKOTA_ATR_MULT,
+          riskPct: (cfg as any).SEYKOTA_RISK_PCT,
+        });
+      }
       log.info('event_bus_execution_wired', { adapter: adapter.name });
     }
   }
