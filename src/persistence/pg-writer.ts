@@ -91,8 +91,15 @@ export class PgWriter {
       await this.pool.query(
         `INSERT INTO positions (order_id, symbol, side, qty, entry_price, leverage, margin_usdt, liq_price, opened_at, updated_at, unrealized_pnl, tier)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         ON CONFLICT (order_id) DO UPDATE SET
+         ON CONFLICT (symbol) DO UPDATE SET
+           order_id = EXCLUDED.order_id,
+           side = EXCLUDED.side,
            qty = EXCLUDED.qty,
+           entry_price = EXCLUDED.entry_price,
+           leverage = EXCLUDED.leverage,
+           margin_usdt = EXCLUDED.margin_usdt,
+           liq_price = EXCLUDED.liq_price,
+           opened_at = EXCLUDED.opened_at,
            unrealized_pnl = EXCLUDED.unrealized_pnl,
            updated_at = EXCLUDED.updated_at,
            tier = EXCLUDED.tier`,
@@ -112,6 +119,15 @@ export class PgWriter {
       await this.pool.query('DELETE FROM positions WHERE order_id = $1', [orderId]);
     } catch (err) {
       console.warn('[pg-writer] removePosition failed:', (err as Error).message);
+    }
+  }
+
+  async removePositionBySymbol(symbol: string): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query('DELETE FROM positions WHERE symbol = $1', [symbol]);
+    } catch (err) {
+      console.warn('[pg-writer] removePositionBySymbol failed:', (err as Error).message);
     }
   }
 

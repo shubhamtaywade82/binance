@@ -60,6 +60,16 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
     const symbol = this.opts.symbolFor(req.pair).toUpperCase();
+    
+    // One-way mode enforcement: close opposite side, or return if same side
+    for (const [id, p] of this.positions.entries()) {
+      if (p.symbol === symbol) {
+        if (p.side === req.side) return { ok: true, orderId: id, fill: { price: p.entryPrice, quantity: p.quantity, feeUsdt: 0, slippageUsdt: 0, timestamp: p.openedAt, latencyMs: 0 } };
+        // Opposite side: close it first (market close)
+        await this.closePosition(id, 'REVERSAL');
+      }
+    }
+
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
     const tick = this.opts.book.latest(symbol);
     const lastTrade = this.opts.book.lastTrade(symbol);

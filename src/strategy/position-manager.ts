@@ -64,31 +64,43 @@ export class PositionManager {
     private readonly pgWriter?: PgWriter,
   ) {}
 
+  private getBaseAsset(s: string): string {
+    return s.toUpperCase()
+      .replace('B-', '')
+      .replace('_USDT', '')
+      .replace('USDT', '')
+      .replace('PERP', '')
+      .replace('-', '')
+      .trim();
+  }
+
   /** Legacy getter — returns *some* open position (first inserted), or null. */
   get position(): Position | null {
     const first = this.positions.values().next().value;
     return first ?? null;
   }
 
-  hasPosition(symbol?: string): boolean {
+  hasOpenPosition(symbol?: string): boolean {
     if (!symbol) return this.positions.size > 0;
-    return this.positions.has(symbol.toUpperCase());
+    const key = this.getBaseAsset(symbol);
+    return this.positions.has(key);
   }
 
-  openCount(): number {
+  getOpenPositionCount(): number {
     return this.positions.size;
   }
 
-  openSymbols(): string[] {
+  getOpenSymbols(): string[] {
     return Array.from(this.positions.keys());
   }
 
-  allPositions(): TrackedPosition[] {
+  getOpenPositions(): TrackedPosition[] {
     return Array.from(this.positions.values());
   }
 
-  positionFor(symbol: string): TrackedPosition | null {
-    return this.positions.get(symbol.toUpperCase()) ?? null;
+  getPosition(symbol: string): TrackedPosition | null {
+    const key = this.getBaseAsset(symbol);
+    return this.positions.get(key) ?? null;
   }
 
   /**
@@ -161,8 +173,17 @@ export class PositionManager {
       return null;
     }
 
-    const symbolKey = args.symbol.toUpperCase();
-    if (this.positions.has(symbolKey)) return this.positions.get(symbolKey)!;
+    const base = this.getBaseAsset(args.symbol);
+    const symbolKey = base; // Force key to be the base asset (e.g. SOL)
+
+    // Force cleanup of any existing positions for the same base asset
+    for (const [key, pos] of this.positions.entries()) {
+      if (this.getBaseAsset(key) === base || pos.pair === args.pair) {
+        this.log.info('open_clobber_existing', { symbol: key, newSide: args.side });
+        this.positions.delete(key);
+        this.pgWriter?.removePositionBySymbol(key).catch(() => {});
+      }
+    }
 
     const maxPos = this.cfg.MAX_OPEN_POSITIONS;
     if (maxPos > 0 && this.positions.size >= maxPos) {
@@ -282,7 +303,7 @@ export class PositionManager {
   }
 
   private async onMarkForSymbol(symbol: string, price: number, htfTrend: TrendBias): Promise<CloseEvent | null> {
-    const key = symbol.toUpperCase();
+    const key = this.getBaseAsset(symbol);
     const pos = this.positions.get(key);
     if (!pos || !Number.isFinite(price)) return null;
 
@@ -319,7 +340,7 @@ export class PositionManager {
   }
 
   private async closeBySymbol(symbol: string, exitPrice: number, reason: CloseReason): Promise<CloseEvent | null> {
-    const key = symbol.toUpperCase();
+    const key = this.getBaseAsset(symbol);
     if (this.closingInProgress.has(key)) return null;
     const pos = this.positions.get(key);
     if (!pos) return null;
@@ -400,11 +421,13 @@ export class PositionManager {
       reason = b as CloseReason;
     }
     if (!symbol) return null;
-    const pos = this.positions.get(symbol);
+    const base = this.getBaseAsset(symbol);
+    const pos = this.positions.get(base);
     if (!pos) return null;
-
-    this.positions.delete(symbol);
-    this.closingInProgress.delete(symbol);
+    
+    // We use the original symbol for the trade record but the base for the Map cleanup
+    this.positions.delete(base);
+    this.closingInProgress.delete(base);
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
     const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
     this.appendCsv(symbol, event);
@@ -420,8 +443,7 @@ export class PositionManager {
       closedAt: Date.now(),
       attribution: this.attributions.get(symbol),
     } as any, symbol).catch(() => {});
-    this.pgWriter?.removePosition(pos.orderId).catch(() => {});
-
+    this.pgWriter?.removePositionBySymbol(symbol).catch(() => {});
     this.attributions.delete(symbol);
     this.log.info('position_closed', {
       symbol,
@@ -434,6 +456,14 @@ export class PositionManager {
       source: 'exchange',
     });
     return event;
+  }
+
+  /** Clear all positions (Hard Reset) */
+  clearAllPositions(): void {
+    this.positions.clear();
+    this.attributions.clear();
+    this.closingInProgress.clear();
+    this.log.info('positions_hard_reset', { reason: 'bot_startup' });
   }
 
   /**
@@ -454,9 +484,16 @@ export class PositionManager {
     leverage?: number;
     liqPrice?: number;
   }): void {
-    const symbol = (params.symbol ?? params.pair).toUpperCase();
-    if (this.positions.has(symbol)) return;
-    this.positions.set(symbol, {
+    const displaySymbol = params.symbol ?? params.pair;
+    const base = this.getBaseAsset(displaySymbol);
+    const symbolKey = base;
+    
+    // Clean up anything that might have been there
+    this.positions.delete(symbolKey);
+    this.pgWriter?.removePositionBySymbol(displaySymbol).catch(() => {});
+
+    const pos: TrackedPosition = {
+      symbol: displaySymbol,
       side: params.side,
       entryPrice: params.entryPrice,
       quantity: params.quantity,
@@ -467,14 +504,15 @@ export class PositionManager {
       notionalUsdt: params.notionalUsdt,
       marginInr: 0,
       orderId: params.orderId,
-      symbol,
       leverage: params.leverage,
       liqPrice: params.liqPrice,
-    });
+    };
+
+    this.positions.set(symbolKey, pos);
 
     this.pgWriter?.upsertPosition({
       orderId: params.orderId,
-      symbol,
+      symbol: displaySymbol,
       side: params.side,
       quantity: params.quantity,
       entryPrice: params.entryPrice,
@@ -483,8 +521,9 @@ export class PositionManager {
       liqPrice: params.liqPrice ?? 0,
       openedAt: params.openedAt,
     }).catch(() => {});
+
     this.log.info('position_restored', {
-      symbol,
+      symbol: displaySymbol,
       side: params.side,
       entry: params.entryPrice,
       qty: params.quantity,

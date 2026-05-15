@@ -53,7 +53,7 @@ import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-s
 import { evaluateSwingSignal } from './strategy/swing-strategy';
 import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
-import { PositionManager } from './strategy/position-manager';
+import { PositionManager, type TrackedPosition } from './strategy/position-manager';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
 import type { Candle, Side, TrendBias, DashboardPosition } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
@@ -367,8 +367,10 @@ export class HybridOrchestrator {
       this.staleGuard = null;
     }
   }
-
   async start(): Promise<void> {
+    // Hard reset: clear any stale UI/memory labels before reconciliation
+    this.positionManager.clearAllPositions();
+
     await this.seedCandles();
     await this.loadPrecision();
     void this.fxRate.start();
@@ -383,6 +385,9 @@ export class HybridOrchestrator {
       }
       const live = this.binanceLiveAdapter();
       if (live) await this.reconcileExchangePosition(live);
+    } else if (this.execution.router) {
+      // Paper or generic router reconciliation
+      await this.reconcileGenericPosition();
     }
 
     this.scheduleDeadmanAndOrderRatePolling();
@@ -641,9 +646,9 @@ export class HybridOrchestrator {
       execTf: this.ltfTf,
       barsExec: this.c15.length,
       barsHTF: this.c1h.length,
-      inPosition: this.positionManager.hasPosition(),
-      positions: this.positionManager.openCount(),
-      openSymbols: this.positionManager.openSymbols(),
+      inPosition: this.positionManager.hasOpenPosition(),
+      positions: this.positionManager.getOpenPositionCount(),
+      openSymbols: this.positionManager.getOpenSymbols(),
       tfi1s: +micro.tfi1s.tfi.toFixed(4),
       weightedObi5: +micro.weightedObi5.weightedObi.toFixed(4),
       microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
@@ -673,7 +678,7 @@ export class HybridOrchestrator {
     this.currentDrawdownPct = this.sessionPeakEquity > 0
       ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
       : 0;
-    const openPositions = this.positionManager.openCount();
+    const openPositions = this.positionManager.getOpenPositionCount();
     const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
     const line = formatStatusLine({
       equityUsdt: w.equityUsdt,
@@ -694,7 +699,7 @@ export class HybridOrchestrator {
    */
   private computePerSymbolPnls(): Array<{ symbol: string; unrealizedPct: number }> {
     const out: Array<{ symbol: string; unrealizedPct: number }> = [];
-    for (const pos of this.positionManager.allPositions()) {
+    for (const pos of this.positionManager.getOpenPositions()) {
       const symU = pos.symbol;
       const mark = this.getMarkForSymbol(symU) ?? pos.entryPrice;
       if (!Number.isFinite(mark) || pos.entryPrice <= 0) continue;
@@ -706,7 +711,7 @@ export class HybridOrchestrator {
   }
 
   getDashboardPositions(): DashboardPosition[] {
-    return this.positionManager.allPositions().map((pos) => {
+    return this.positionManager.getOpenPositions().map((pos: TrackedPosition) => {
       const mark = this.getMarkForSymbol(pos.symbol);
       const dir = pos.side === 'LONG' ? 1 : -1;
       const hasMark = mark !== null && Number.isFinite(mark);
@@ -877,7 +882,7 @@ export class HybridOrchestrator {
   }
 
   hasPosition(): boolean {
-    return this.positionManager.hasPosition();
+    return this.positionManager.hasOpenPosition();
   }
 
   /** Returns the ExecutionRouter wrapping the current adapter, or null when the execution
@@ -1027,7 +1032,7 @@ export class HybridOrchestrator {
     if (!Number.isFinite(price)) return;
     const symU = symbol.toUpperCase();
     this.execution.adapter.onMark?.(symU, price);
-    if (!this.positionManager.hasPosition(symU)) return;
+    if (!this.positionManager.hasOpenPosition(symU)) return;
     const tier = tierFor(symU);
     const htfBias = tier
       ? biasFromCandles(this.store.getSeries(symU, tier.htf))
@@ -1182,6 +1187,37 @@ export class HybridOrchestrator {
   }
 
   /** Fetch open positions and algo orders from Binance on startup; restore state if found. */
+  private async reconcileGenericPosition(): Promise<void> {
+    if (!this.execution.router) return;
+    try {
+      const positions = (this.execution.router as any).getOpenPositions?.() ?? [];
+      for (const pos of positions) {
+        if (!pos || Math.abs(Number(pos.quantity)) <= 0) continue;
+        
+        const side: Side = pos.side.toUpperCase() === 'LONG' ? 'LONG' : 'SHORT';
+        const entryPrice = Number(pos.entryPrice);
+        const qty = Math.abs(Number(pos.quantity));
+        
+        this.positionManager.restoreFromExchange({
+          symbol: pos.symbol,
+          side,
+          entryPrice,
+          quantity: qty,
+          pair: pos.pair || this.pairs.coindcxPair,
+          orderId: pos.orderId,
+          takeProfit: pos.takeProfit || 0,
+          stopLoss: pos.stopLoss || 0,
+          openedAt: pos.openedAt || Date.now(),
+          notionalUsdt: entryPrice * qty,
+          leverage: Number(pos.leverage || 1),
+          liqPrice: Number(pos.liqPrice || 0),
+        });
+      }
+    } catch (e) {
+      this.log.warn('reconcile_generic_failed', { err: (e as Error).message });
+    }
+  }
+
   private async reconcileExchangePosition(adapter: BinanceLiveExecutionAdapter): Promise<void> {
     if (!this.execution.binanceRestClient) return;
     const client = this.execution.binanceRestClient;
@@ -1285,13 +1321,13 @@ export class HybridOrchestrator {
 
   private async evaluate(ltfBar: Candle): Promise<void> {
     const primary = this.pairs.binanceSymbol.toUpperCase();
-    if (this.positionManager.hasPosition(primary)) return;
+    if (this.positionManager.hasOpenPosition(primary)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
 
     const maxPos = this.cfg.MAX_OPEN_POSITIONS;
-    if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;
+    if (maxPos > 0 && this.positionManager.getOpenPositionCount() >= maxPos) return;
 
     const maxSpread = this.cfg.MAX_ENTRY_SPREAD_BPS;
     if (maxSpread > 0) {
@@ -1441,12 +1477,12 @@ export class HybridOrchestrator {
    */
   private async evaluateForSymbol(symbol: string, tier: AssetTierConfig, ltfBar: Candle): Promise<void> {
     const symU = symbol.toUpperCase();
-    if (this.positionManager.hasPosition(symU)) return;
+    if (this.positionManager.hasOpenPosition(symU)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
 
     const maxPos = this.cfg.MAX_OPEN_POSITIONS;
-    if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;
+    if (maxPos > 0 && this.positionManager.getOpenPositionCount() >= maxPos) return;
 
     // Don't double-evaluate the primary symbol — `evaluate()` already covers it.
     if (symU === this.pairs.binanceSymbol.toUpperCase()) return;

@@ -5,7 +5,7 @@ pool: asyncpg.Pool | None = None
 
 async def init_pool():
     global pool
-    dsn = os.getenv("POSTGRES_URL", "postgresql://postgres:postgres@localhost:5432/bot")
+    dsn = os.getenv("POSTGRES_URL", "postgresql://postgres:postgres@localhost:5434/bot")
     pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
 
 async def close_pool():
