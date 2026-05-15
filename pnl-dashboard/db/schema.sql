@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS trades (
     timestamp_ms    BIGINT NOT NULL,
     symbol          TEXT NOT NULL,
     side            TEXT NOT NULL,
+    leverage        INTEGER,
     qty             DOUBLE PRECISION NOT NULL,
     entry_price     DOUBLE PRECISION NOT NULL,
     exit_price      DOUBLE PRECISION NOT NULL,

@@ -43,6 +43,8 @@ export interface TradeAttribution {
 export interface ClosedPosition {
   orderId: string;
   side: 'LONG' | 'SHORT';
+  /** Cross margin / isolated leverage at entry (1 = spot-style). */
+  leverage: number;
   entryPrice: number;
   exitPrice: number;
   quantity: number;

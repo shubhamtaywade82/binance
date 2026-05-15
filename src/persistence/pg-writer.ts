@@ -1,4 +1,5 @@
 import { Pool, type PoolConfig } from 'pg';
+import type { ClosedPosition } from '../execution/types';
 
 export interface PgWriterOptions {
   connectionString: string;
@@ -41,28 +42,31 @@ export class PgWriter {
     return this.connected;
   }
 
-  async writeTrade(t: {
-    orderId: string;
-    side: string;
-    entryPrice: number;
-    exitPrice: number;
-    quantity: number;
-    reason: string;
-    grossUsdt: number;
-    feesUsdt: number;
-    fundingUsdt: number;
-    netUsdt: number;
-    openedAt: number;
-    closedAt: number;
-    attribution?: object;
-  }, symbol: string): Promise<void> {
+  async writeTrade(t: ClosedPosition, symbol: string): Promise<void> {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO trades (order_id, timestamp_ms, symbol, side, qty, entry_price, exit_price, gross_pnl, fees, funding, net_pnl, close_reason, opened_at, closed_at, attribution)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        `INSERT INTO trades (order_id, timestamp_ms, symbol, side, leverage, qty, entry_price, exit_price, gross_pnl, fees, funding, net_pnl, close_reason, opened_at, closed_at, attribution)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          ON CONFLICT (order_id) DO NOTHING`,
-        [t.orderId, t.closedAt, symbol, t.side, t.quantity, t.entryPrice, t.exitPrice, t.grossUsdt, t.feesUsdt, t.fundingUsdt, t.netUsdt, t.reason, t.openedAt, t.closedAt, t.attribution ? JSON.stringify(t.attribution) : null]
+        [
+          t.orderId,
+          t.closedAt,
+          symbol,
+          t.side,
+          t.leverage,
+          t.quantity,
+          t.entryPrice,
+          t.exitPrice,
+          t.grossUsdt,
+          t.feesUsdt,
+          t.fundingUsdt,
+          t.netUsdt,
+          t.reason,
+          t.openedAt,
+          t.closedAt,
+          t.attribution ? JSON.stringify(t.attribution) : null,
+        ]
       );
     } catch (err) {
       console.warn('[pg-writer] writeTrade failed:', (err as Error).message);

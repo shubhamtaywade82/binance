@@ -88,6 +88,7 @@ const makeAdapter = (): ExecutionAdapter => {
       return {
         orderId,
         side: 'LONG',
+        leverage: 1,
         entryPrice: 100,
         exitPrice: 100,
         quantity: 0.1,

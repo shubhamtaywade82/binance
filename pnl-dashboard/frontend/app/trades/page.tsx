@@ -9,6 +9,7 @@ interface Trade {
   timestamp_ms: number;
   symbol: string;
   side: string;
+  leverage: number | null;
   qty: number;
   entry_price: number;
   exit_price: number;
@@ -29,7 +30,7 @@ export default function TradesPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/10 text-left text-gray-500">
-              {['Time', 'Symbol', 'Side', 'Qty', 'Entry', 'Exit', 'Gross', 'Fees', 'Funding', 'Net PnL', 'Reason'].map(h => (
+              {['Time', 'Symbol', 'Side', 'Lev', 'Qty', 'Entry', 'Exit', 'Gross', 'Fees', 'Funding', 'Net PnL', 'Reason'].map(h => (
                 <th key={h} className="px-3 py-2 font-medium">{h}</th>
               ))}
             </tr>
@@ -40,6 +41,7 @@ export default function TradesPage() {
                 <td className="px-3 py-2 font-mono text-xs">{new Date(t.timestamp_ms).toLocaleString()}</td>
                 <td className="px-3 py-2">{t.symbol}</td>
                 <td className={`px-3 py-2 font-medium ${t.side === 'LONG' ? 'text-bull' : 'text-bear'}`}>{t.side}</td>
+                <td className="px-3 py-2 font-mono text-gray-400">{t.leverage != null ? `${t.leverage}x` : '—'}</td>
                 <td className="px-3 py-2 font-mono">{t.qty.toFixed(4)}</td>
                 <td className="px-3 py-2 font-mono">{t.entry_price.toFixed(2)}</td>
                 <td className="px-3 py-2 font-mono">{t.exit_price.toFixed(2)}</td>

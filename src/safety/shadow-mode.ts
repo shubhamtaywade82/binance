@@ -55,6 +55,7 @@ export class ShadowMode implements ExecutionAdapter {
     return {
       orderId,
       side: 'LONG',
+      leverage: 1,
       entryPrice: 0,
       exitPrice: 0,
       quantity: 0,
