@@ -74,6 +74,8 @@ import { volatilitySizedPosition } from './ai/volatility-sizer';
 import { optimalHoldTimeMs } from './ai/hold-time-optimizer';
 import type { ExtendedModelOutput } from './ai/model-types';
 import { StaleGuard } from './ai/stale-guard';
+import { FxRateService } from './services/fx-rate';
+import { formatStatusLine } from './orchestrator/format-status-line';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -200,6 +202,10 @@ export class HybridOrchestrator {
   private orderRatePauseActive = false;
   private drawdownHaltLogged = false;
   private sessionPeakUsdt = 0;
+  /** Tracks session peak equity (balance + unrealized) for the paper heartbeat status line. */
+  private sessionPeakEquity = 0;
+  private currentDrawdownPct = 0;
+  private readonly fxRate: FxRateService;
   /** ioredis client — null when REDIS_URL is not configured (all publish calls are no-ops). */
   private readonly redis: ReturnType<typeof getRedisClient>;
 
@@ -229,7 +235,13 @@ export class HybridOrchestrator {
     });
     this.execution = deps.execution ?? createExecutionRuntime(cfg, this.cdcx);
     this.book = this.execution.book;
-    this.risk = new RiskManager(cfg);
+    this.fxRate = new FxRateService({
+      source: cfg.INR_RATE_SOURCE,
+      refreshSec: cfg.INR_RATE_REFRESH_SEC,
+      fallbackInrPerUsdt: cfg.INR_PER_USDT,
+    });
+    this.risk = new RiskManager(cfg, this.fxRate);
+    this.execution.paperAdapter?.setFxRate(this.fxRate);
     this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
@@ -353,6 +365,7 @@ export class HybridOrchestrator {
   async start(): Promise<void> {
     await this.seedCandles();
     await this.loadPrecision();
+    void this.fxRate.start();
 
     // Push exchange precision into the Binance adapter and reconcile any open position.
     if (this.cfg.BINANCE_EXECUTION_ADAPTER && this.execution.binanceRestClient) {
@@ -409,6 +422,7 @@ export class HybridOrchestrator {
 
   stop(): void {
     this.clearHeartbeat();
+    this.fxRate.stop();
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
     this.clearDeadmanTimer();
@@ -615,6 +629,8 @@ export class HybridOrchestrator {
       microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
     });
 
+    this.emitPaperStatusLine();
+
     if (this.mlRecorder && this.mlNormalizer) {
       if (this.staleGuard?.anyStale()) {
         this.log.info('ml_feature_skipped_stale', { staleSources: this.staleGuard.staleSources() });
@@ -626,6 +642,26 @@ export class HybridOrchestrator {
         }
       }
     }
+  }
+
+  private emitPaperStatusLine(): void {
+    if (this.cfg.EXECUTION_MODE !== 'paper') return;
+    const paper = this.execution.paperAdapter;
+    if (!paper) return;
+    const w = paper.getWalletState();
+    if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+    this.currentDrawdownPct = this.sessionPeakEquity > 0
+      ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+      : 0;
+    const line = formatStatusLine({
+      equityUsdt: w.equityUsdt,
+      balanceUsdt: w.balanceUsdt,
+      unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+      realizedPnlUsdt: w.realizedPnlUsdt,
+      drawdownPct: this.currentDrawdownPct,
+      inrPerUsdt: this.fxRate.getInrPerUsdt(),
+    });
+    console.log(line);
   }
 
   private buildMlFeatureVector() {

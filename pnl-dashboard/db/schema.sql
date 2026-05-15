@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
     unrealized_pnl  DOUBLE PRECISION NOT NULL,
     realized_pnl    DOUBLE PRECISION NOT NULL,
     drawdown        DOUBLE PRECISION NOT NULL,
-    open_positions  INTEGER NOT NULL
+    open_positions  INTEGER NOT NULL,
+    inr_per_usdt    DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS orders (

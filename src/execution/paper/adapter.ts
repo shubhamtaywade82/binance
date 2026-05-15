@@ -32,6 +32,8 @@ export interface PaperAdapterOptions {
   maxSlippageBps?: number;
   onTradeClose?: (trade: ClosedPosition) => void;
   pgWriter?: PgWriter;
+  /** Optional FX rate provider for INR-aware equity snapshots. */
+  fxRate?: { getInrPerUsdt(): number };
 }
 
 interface OpenPaperPosition {
@@ -187,6 +189,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
         this.opts.wallet.state(),
         0,
         this.positions.size,
+        this.opts.fxRate?.getInrPerUsdt(),
       ).catch(() => {});
 
       this.opts.wallet.flushToDisk();
@@ -297,6 +300,10 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
   setOnTradeClose(cb: (trade: ClosedPosition) => void): void {
     this.opts.onTradeClose = cb;
+  }
+
+  setFxRate(fx: { getInrPerUsdt(): number }): void {
+    this.opts.fxRate = fx;
   }
 
   async setLeverage(_pair: string, _lev: number): Promise<void> {

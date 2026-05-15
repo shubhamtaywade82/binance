@@ -110,14 +110,14 @@ export class PgWriter {
     usedMarginUsdt: number;
     unrealizedPnlUsdt: number;
     realizedPnlUsdt: number;
-  }, drawdown: number, openPositionCount: number): Promise<void> {
+  }, drawdown: number, openPositionCount: number, inrPerUsdt?: number): Promise<void> {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO equity_snapshots (ts, balance, equity, used_margin, unrealized_pnl, realized_pnl, drawdown, open_positions)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO equity_snapshots (ts, balance, equity, used_margin, unrealized_pnl, realized_pnl, drawdown, open_positions, inr_per_usdt)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (ts) DO NOTHING`,
-        [Date.now(), s.balanceUsdt, s.equityUsdt, s.usedMarginUsdt, s.unrealizedPnlUsdt, s.realizedPnlUsdt, drawdown, openPositionCount]
+        [Date.now(), s.balanceUsdt, s.equityUsdt, s.usedMarginUsdt, s.unrealizedPnlUsdt, s.realizedPnlUsdt, drawdown, openPositionCount, inrPerUsdt ?? null]
       );
     } catch (err) {
       console.warn('[pg-writer] writeEquitySnapshot failed:', (err as Error).message);

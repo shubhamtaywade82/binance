@@ -128,6 +128,17 @@ export const AppConfigSchema = z.object({
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),
   INR_PER_USDT: numFromString(85),
+  /** Live INR/USDT FX rate source: `binance` (USDTINR), `coindcx` (USDTINR), or `fixed` (use INR_PER_USDT). */
+  INR_RATE_SOURCE: z
+    .union([z.enum(['binance', 'coindcx', 'fixed']), z.string()])
+    .default('coindcx')
+    .transform((v) => {
+      const s = String(v).toLowerCase();
+      return s === 'coindcx' || s === 'fixed' ? s : 'binance';
+    })
+    .pipe(z.enum(['binance', 'coindcx', 'fixed'])),
+  /** Seconds between INR/USDT FX rate polls (min 15 enforced at runtime). */
+  INR_RATE_REFRESH_SEC: numFromString(300),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
   /** Take-profit distance as underlying price move (default 1.5% capture profile). */
