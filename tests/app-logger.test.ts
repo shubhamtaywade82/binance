@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { createAppLogger } from '../src/logging/app-logger';
 import type { AppConfig } from '../src/config';
 
@@ -39,6 +39,7 @@ const cfgWithLog = (file: string): AppConfig => {
     TRADES_CSV_PATH: './logs/trades.csv',
     TRADE_LOG_PATH: './logs/trades.csv',
     APP_LOG_PATH: file,
+    LOG_JSON_CONSOLE: false,
     EXECUTION_MODE: 'paper',
     PAPER_INITIAL_BALANCE_USDT: 10_000,
     PAPER_MAINT_MARGIN: 0.005,
@@ -67,5 +68,19 @@ describe('createAppLogger', () => {
     expect(row.level).toBe('info');
     expect(row.msg).toBe('test_event');
     expect(row.x).toBe(1);
+  });
+
+  it('writes NDJSON to stdout when LOG_JSON_CONSOLE is true', () => {
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    tmp = path.join(os.tmpdir(), `app-json-${Date.now()}.ndjson`);
+    const log = createAppLogger({ ...cfgWithLog(tmp), LOG_JSON_CONSOLE: true } as AppConfig);
+    log.info('json_console_event', { n: 2 });
+    expect(spy).toHaveBeenCalled();
+    const written = String(spy.mock.calls[0][0]);
+    const row = JSON.parse(written.trim()) as { level: string; msg: string; n: number };
+    expect(row.level).toBe('info');
+    expect(row.msg).toBe('json_console_event');
+    expect(row.n).toBe(2);
+    spy.mockRestore();
   });
 });

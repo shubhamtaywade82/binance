@@ -155,7 +155,66 @@ def _cost_adjusted_labels(
 
 
 # ---------------------------------------------------------------------------
-# 7. Public entry point — single-pass multi-horizon labeling
+# 7. Execution quality labels (fill probability, slippage, adverse move)
+# ---------------------------------------------------------------------------
+
+def _execution_quality_labels(
+    df: pd.DataFrame,
+    horizons: Sequence[int],
+    slippage_baseline_bps: float = 1.0,
+) -> pd.DataFrame:
+    """Build execution-focused labels from mid_price and spread.
+
+    - ``y_fill_prob_{h}s``: Simulated fill probability — a limit order placed at
+      the best bid/ask fills if price crosses within the horizon. Approximated as
+      ``1`` when ``abs(future_return) > spread_bps / 2``, else ``0``.
+    - ``y_slippage_bps_{h}s``: Estimated slippage — half the spread plus a
+      volatility-scaled component. This is a *label* for training a slippage
+      predictor, not a live estimate.
+    - ``y_adverse_move_{h}s``: Probability proxy — ``1`` if price moves *against*
+      the dominant direction by more than ``spread_bps`` within the horizon,
+      else ``0``.
+    """
+    spread_bps = df.get("spread_bps", pd.Series(0.0, index=df.index))
+    half_spread = spread_bps / 2 / 10_000
+
+    for h in horizons:
+        ret_col = f"y_return_{h}s"
+        if ret_col not in df.columns:
+            continue
+
+        abs_ret = df[ret_col].abs()
+
+        df[f"y_fill_prob_{h}s"] = (abs_ret > half_spread).astype(int)
+
+        rv_col = df.get("rv_1m", pd.Series(0.0, index=df.index))
+        df[f"y_slippage_bps_{h}s"] = (
+            spread_bps / 2 + rv_col * 10_000 * slippage_baseline_bps
+        ).clip(0, 50)
+
+        future_high_col = f"_adverse_high_{h}s"
+        future_low_col = f"_adverse_low_{h}s"
+
+        rolling_high = df["mid_price"].shift(-1).rolling(h).max().shift(-(h - 1))
+        rolling_low = df["mid_price"].shift(-1).rolling(h).min().shift(-(h - 1))
+
+        mid = df["mid_price"].replace(0, np.nan)
+        high_move = (rolling_high - mid) / mid
+        low_move = (mid - rolling_low) / mid
+
+        direction = df.get(f"y_direction_{h}s", pd.Series(0, index=df.index))
+        adverse = np.where(
+            direction >= 0,
+            low_move > spread_bps / 10_000,
+            high_move > spread_bps / 10_000,
+        )
+        df[f"y_adverse_move_{h}s"] = adverse.astype(int)
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 8. Public entry point — single-pass multi-horizon labeling
 # ---------------------------------------------------------------------------
 
 def build_labels(
@@ -175,6 +234,7 @@ def build_labels(
     df = _volatility_labels(df, horizons)
     df = _regime_labels(df)
     df = _cost_adjusted_labels(df, horizons, taker_fee_bps, slippage_bps)
+    df = _execution_quality_labels(df, horizons, slippage_bps)
 
     return df
 

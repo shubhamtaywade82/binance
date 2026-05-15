@@ -1,71 +1,86 @@
 services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports:
-      - "6379:6379"
+      - "5434:5432"
     volumes:
-      - redis_data:/data
-    command: redis-server --save 60 1 --loglevel warning
+      - pgdata:/var/lib/postgresql/data
+      - ./pnl-dashboard/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
       timeout: 3s
-      retries: 3
+      retries: 5
 
-  bot:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.bot
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-  ws-gateway:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.ws
-    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:latest
     ports:
-      - "4000:4000"
-    environment:
-      REDIS_URL: redis://redis:6379
-      GATEWAY_PORT: "4000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('net').connect(4000,'localhost').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
+      - "9091:9090"
+    volumes:
+      - ./pnl-dashboard/prometheus.yml:/etc/prometheus/prometheus.yml
+      - promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # Uncomment to add Prometheus + Grafana monitoring:
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   volumes:
-  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
-  #   ports:
-  #     - "9090:9090"
-  #
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   ports:
-  #     - "3001:3000"
-  #   environment:
-  #     GF_SECURITY_ADMIN_PASSWORD: admin
-  #   volumes:
-  #     - grafana_data:/var/lib/grafana
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/trading.json
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./pnl-dashboard/grafana/provisioning:/etc/grafana/provisioning
+      - ./pnl-dashboard/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+
+  # MCP server bridging Binance + CoinDCX public market data to MCP clients
+  # (incl. the bot's in-app AI tool-calling loop). FastMCP `streamable-http`
+  # mounts under /mcp/ and does not expose a `/health` endpoint, so no
+  # healthcheck is configured. On the host bot: AI_MCP_ENABLED=true,
+  # AI_MCP_URL=http://localhost:4003 (or http://mcp-server:4003 from another container).
+  mcp-server:
+    build:
+      context: ./mcp-server
+    ports:
+      - "4003:4003"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 4003
+      MCP_TRANSPORT: http
+      LOG_LEVEL: INFO
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./pnl-dashboard
+      dockerfile: api/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/bot
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./pnl-dashboard/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8001
+    depends_on:
+      - api
 
 volumes:
-  redis_data:
-  # grafana_data:
+  pgdata:
+  promdata:
+  grafanadata:

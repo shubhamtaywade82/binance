@@ -64,6 +64,7 @@ interface OpenLiveTrade {
   slStrategyId: number | null;
   side: 'LONG' | 'SHORT';
   symbol: string;
+  leverage: number;
   entryPrice: number;
   /** Full position quantity (before any partial TP fills). */
   quantity: number;
@@ -195,6 +196,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
       slStrategyId: null,
       side: req.side,
       symbol: sym,
+      leverage: Math.max(1, Math.floor(req.leverage) || 1),
       entryPrice: fillPrice,
       quantity: qty,
       remainingQty: qty,
@@ -311,6 +313,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         slStrategyId: null,
         side: req.side,
         symbol: sym,
+        leverage: Math.max(1, Math.floor(req.leverage) || 1),
         entryPrice: fillPrice,
         quantity: qty,
         remainingQty: qty,
@@ -458,6 +461,8 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     const sym = pos.symbol.toUpperCase();
     const internalId = randomUUID();
     const { stepSize, tickSize } = this.precision;
+    const lev = Number(pos.leverage);
+    const leverage = Number.isFinite(lev) && lev >= 1 ? Math.round(lev) : 1;
 
     const trade: OpenLiveTrade = {
       internalId,
@@ -467,6 +472,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
       slStrategyId: null,
       side,
       symbol: sym,
+      leverage,
       entryPrice,
       quantity: qty,
       remainingQty: qty,
@@ -714,6 +720,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     return {
       orderId: trade.internalId,
       side: trade.side,
+      leverage: trade.leverage,
       entryPrice: trade.entryPrice,
       exitPrice,
       quantity: trade.quantity,
