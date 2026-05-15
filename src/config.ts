@@ -511,12 +511,35 @@ export const AppConfigSchema = z.object({
    * `paper:updates:*` pubsub channels for push notifications without polling.
    */
   PAPER_STATE_REDIS: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** Redis key namespace. All keys/streams/pubsub channels prefixed `${ns}:paper:*`. */
+  REDIS_NAMESPACE: z.string().default('binance'),
   /**
    * Throttle for JSONL equity log writes. Default 12 = one JSONL line per
    * 12 onMark snapshots (~60s when PAPER_EQUITY_SNAPSHOT_SEC=5). 0 disables.
    * Redis stream remains the high-frequency record.
    */
   PAPER_EQUITY_JSONL_EVERY_N: numFromString(12),
+
+  // ── Signal allocator (best-of-bar) ──────────────────────────────────────
+  /**
+   * Buffer simultaneous strategy candidates per 5m close, score by ADX × ATR
+   * strength, allocate slots to top N until MAX_OPEN_SYMBOLS hit. Required
+   * for fair multi-symbol selection — without this, first-come-first-served.
+   */
+  SIGNAL_ALLOCATOR_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** ms to wait after first candidate before flushing the bucket. 1500ms covers
+   *  WS arrival jitter for klines that closed at the same wall-clock minute. */
+  SIGNAL_ALLOCATOR_FLUSH_MS: numFromString(1500),
+
+  // ── Correlation guard ───────────────────────────────────────────────────
+  /**
+   * JSON array of pairwise correlations to enforce. Same-direction opens on
+   * pairs with corr > threshold are blocked. Example value:
+   *   [{"symbolA":"BTCUSDT","symbolB":"ETHUSDT","correlation":0.85},
+   *    {"symbolA":"BTCUSDT","symbolB":"SOLUSDT","correlation":0.75}]
+   */
+  CORRELATION_PAIRS_JSON: z.string().default(''),
+  CORRELATION_THRESHOLD: numFromString(0.7),
 
   /**
   /**

@@ -19,17 +19,25 @@ import type { WalletState } from '../execution/paper/wallet';
  * with whatever Redis has if Redis is fresher (newer updatedAt).
  */
 export class RedisPaperStateStore {
-  private static readonly WALLET_KEY = 'paper:wallet';
-  private static readonly POSITIONS_KEY = 'paper:positions';
-  private static readonly EQUITY_STREAM = 'paper:equity';
-  private static readonly MARKS_KEY = 'paper:last_marks';
+  private readonly walletKey: string;
+  private readonly positionsKey: string;
+  private readonly equityStream: string;
+  private readonly marksKey: string;
+  private readonly pubsubPrefix: string;
   private static readonly STREAM_MAX_LEN = 10_000;
 
-  constructor(private readonly redis: Redis) {}
+  constructor(private readonly redis: Redis, namespace = 'binance') {
+    const ns = namespace.replace(/:+$/, '');
+    this.walletKey = `${ns}:paper:wallet`;
+    this.positionsKey = `${ns}:paper:positions`;
+    this.equityStream = `${ns}:paper:equity`;
+    this.marksKey = `${ns}:paper:last_marks`;
+    this.pubsubPrefix = `${ns}:paper:updates`;
+  }
 
   async setWallet(state: WalletState): Promise<void> {
     try {
-      await this.redis.hset(RedisPaperStateStore.WALLET_KEY, {
+      await this.redis.hset(this.walletKey, {
         balanceUsdt: state.balanceUsdt,
         availableUsdt: state.availableUsdt,
         usedMarginUsdt: state.usedMarginUsdt,
@@ -45,7 +53,7 @@ export class RedisPaperStateStore {
 
   async getWallet(): Promise<Partial<WalletState> | null> {
     try {
-      const row = await this.redis.hgetall(RedisPaperStateStore.WALLET_KEY);
+      const row = await this.redis.hgetall(this.walletKey);
       if (!row || Object.keys(row).length === 0) return null;
       return {
         balanceUsdt: Number(row.balanceUsdt),
@@ -63,7 +71,7 @@ export class RedisPaperStateStore {
 
   async upsertPosition(orderId: string, payload: object): Promise<void> {
     try {
-      await this.redis.hset(RedisPaperStateStore.POSITIONS_KEY, orderId, JSON.stringify(payload));
+      await this.redis.hset(this.positionsKey, orderId, JSON.stringify(payload));
     } catch {
       // best-effort
     }
@@ -71,7 +79,7 @@ export class RedisPaperStateStore {
 
   async removePosition(orderId: string): Promise<void> {
     try {
-      await this.redis.hdel(RedisPaperStateStore.POSITIONS_KEY, orderId);
+      await this.redis.hdel(this.positionsKey, orderId);
     } catch {
       // best-effort
     }
@@ -79,7 +87,7 @@ export class RedisPaperStateStore {
 
   async getPositions(): Promise<Array<Record<string, unknown>>> {
     try {
-      const row = await this.redis.hgetall(RedisPaperStateStore.POSITIONS_KEY);
+      const row = await this.redis.hgetall(this.positionsKey);
       return Object.values(row || {}).map((v) => {
         try { return JSON.parse(String(v)); } catch { return {}; }
       });
@@ -91,7 +99,7 @@ export class RedisPaperStateStore {
   async appendEquity(point: { ts: number; equityUsdt: number; balanceUsdt: number; unrealizedPnlUsdt: number; realizedPnlUsdt: number; usedMarginUsdt: number; inrPerUsdt?: number }): Promise<void> {
     try {
       await this.redis.xadd(
-        RedisPaperStateStore.EQUITY_STREAM,
+        this.equityStream,
         'MAXLEN', '~', String(RedisPaperStateStore.STREAM_MAX_LEN),
         '*',
         'ts', String(point.ts),
@@ -110,7 +118,7 @@ export class RedisPaperStateStore {
   /** Publish a NOTIFY-like pubsub channel for external listeners (FastAPI / UI). */
   async publishUpdate(kind: 'wallet' | 'position' | 'equity', payload: object): Promise<void> {
     try {
-      await this.redis.publish(`paper:updates:${kind}`, JSON.stringify({ kind, ts: Date.now(), ...payload }));
+      await this.redis.publish(`${this.pubsubPrefix}:${kind}`, JSON.stringify({ kind, ts: Date.now(), ...payload }));
     } catch {
       // best-effort
     }
@@ -118,7 +126,7 @@ export class RedisPaperStateStore {
 
   async setMark(symbol: string, price: number): Promise<void> {
     try {
-      await this.redis.hset(RedisPaperStateStore.MARKS_KEY, symbol.toUpperCase(), String(price));
+      await this.redis.hset(this.marksKey, symbol.toUpperCase(), String(price));
     } catch {
       // best-effort
     }

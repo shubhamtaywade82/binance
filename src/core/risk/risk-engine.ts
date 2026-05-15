@@ -6,6 +6,7 @@ import {
 } from '@coindcx/contracts';
 import { AppConfig } from '../../config';
 import { marketClock } from '../time/market-clock';
+import { CorrelationGuard, type CorrelationPair } from '../../risk/correlation-guard';
 
 interface PositionExposure {
   side: 'LONG' | 'SHORT';
@@ -30,12 +31,33 @@ export class RiskEngine {
   private totalNotional = 0;
   private positions = new Map<string, PositionExposure>();
   private seq = 0;
+  private readonly correlationGuard?: CorrelationGuard;
 
   constructor(
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
   ) {
+    const pairs = this.parseCorrelationPairs((cfg as any).CORRELATION_PAIRS_JSON);
+    if (pairs.length > 0) {
+      this.correlationGuard = new CorrelationGuard(pairs, {
+        threshold: Number((cfg as any).CORRELATION_THRESHOLD) || 0.7,
+      });
+    }
     this.subscribe();
+  }
+
+  private parseCorrelationPairs(raw: unknown): CorrelationPair[] {
+    if (typeof raw !== 'string' || !raw.trim()) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (p): p is CorrelationPair =>
+          p && typeof p.symbolA === 'string' && typeof p.symbolB === 'string' && typeof p.correlation === 'number',
+      );
+    } catch {
+      return [];
+    }
   }
 
   public getExposure(): { total: number; symbols: number; positions: Map<string, PositionExposure> } {
@@ -43,7 +65,14 @@ export class RiskEngine {
   }
 
   private subscribe(): void {
-    this.eventBus.subscribe<OrderRequestedPayload>('execution.order.requested', (e) => this.validate(e));
+    // When SignalAllocator is wired it republishes accepted candidates onto
+    // `execution.order.requested.allocated`. Subscribing only to that channel
+    // would break the strategies that don't go through the allocator (no
+    // score field). Subscribe to both; the allocator forwards short-circuit
+    // for unscored payloads, so we'll never see the same payload twice.
+    const useAllocated = Boolean((this.cfg as any).SIGNAL_ALLOCATOR_ENABLED);
+    const channel = useAllocated ? 'execution.order.requested.allocated' : 'execution.order.requested';
+    this.eventBus.subscribe<OrderRequestedPayload>(channel, (e) => this.validate(e));
     this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => this.onFilled(e.payload));
     this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => this.onClosed(e.payload));
   }
@@ -83,6 +112,17 @@ export class RiskEngine {
     if (existing && existing.side !== payload.side) {
       this.reject(payload, 'OPPOSITE_SIDE_OPEN_POSITION');
       return;
+    }
+
+    // Correlation guard: prevent stacked exposure on assets that move together.
+    if (this.correlationGuard) {
+      const openMap = new Map<string, 'LONG' | 'SHORT'>();
+      for (const [sym, exposure] of this.positions) openMap.set(sym, exposure.side);
+      const verdict = this.correlationGuard.wouldViolate(symbol, payload.side, openMap);
+      if (verdict.blocked) {
+        this.reject(payload, `CORRELATION_BLOCKED:${verdict.reason}`);
+        return;
+      }
     }
 
     const ts = marketClock.now();

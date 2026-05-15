@@ -75,6 +75,12 @@ export const OrderRequestedPayloadSchema = z.object({
   stopLoss: z.number().optional(),
   strategyId: z.string(),
   correlationId: z.string().optional(),
+  /** Optional per-signal score components for best-of-bar allocator. */
+  score: z.object({
+    adx: z.number(),
+    atrPct: z.number(),
+    closeTime: z.number(),
+  }).optional(),
 });
 export type OrderRequestedPayload = z.infer<typeof OrderRequestedPayloadSchema>;
 

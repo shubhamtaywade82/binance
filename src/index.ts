@@ -25,6 +25,7 @@ import { ExecutionBridge } from './core/execution/execution-bridge';
 import { TrailingStopManager } from './core/execution/trailing-stop-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
+import { SignalAllocator } from './core/execution/signal-allocator';
 import type { DomainEvent } from '@coindcx/contracts';
 
 let orch: HybridOrchestrator | null = null;
@@ -120,6 +121,14 @@ const main = async (): Promise<void> => {
       new SignalToOrderBridge(cfg, defaultEventBus, {
         lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
       }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
+      if ((cfg as any).SIGNAL_ALLOCATOR_ENABLED) {
+        new SignalAllocator(cfg, defaultEventBus, actorSystem.getRiskEngine(), {
+          flushDelayMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
+        });
+        log.info('signal_allocator_wired', {
+          flushMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
+        });
+      }
       new ExecutionBridge(cfg, defaultEventBus, adapter);
       new PositionCloseBridge(defaultEventBus, adapter);
       if (execution.pgWriter) {

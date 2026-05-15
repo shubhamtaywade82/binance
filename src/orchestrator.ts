@@ -710,6 +710,26 @@ export class HybridOrchestrator {
         openPositions,
         this.fxRate.getInrPerUsdt(),
       );
+
+      // Refresh positions.unrealized_pnl per heartbeat so the FastAPI
+      // /positions endpoint shows current unrealized instead of the 0 stamped
+      // at fill time. PnL dashboard's WS push already covers fast updates;
+      // this keeps the DB in sync for analytics + cold-load.
+      const writer = this.execution.pgWriter;
+      for (const p of paper.getOpenPositions()) {
+        void writer.upsertPosition({
+          orderId: p.orderId,
+          symbol: p.symbol,
+          side: p.side,
+          quantity: p.quantity,
+          entryPrice: p.entryPrice,
+          leverage: p.leverage,
+          marginUsdt: p.marginUsdt,
+          liqPrice: p.liqPrice,
+          openedAt: p.openedAt,
+          unrealizedPnl: p.unrealizedUsdt,
+        });
+      }
     }
   }
 

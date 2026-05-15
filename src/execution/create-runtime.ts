@@ -167,7 +167,8 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   let redisState: RedisPaperStateStore | undefined;
   if ((cfg as any).PAPER_STATE_REDIS && cfg.REDIS_URL) {
     const client = getRedisClient(cfg.REDIS_URL);
-    if (client) redisState = new RedisPaperStateStore(client);
+    const ns = String((cfg as any).REDIS_NAMESPACE || 'binance');
+    if (client) redisState = new RedisPaperStateStore(client, ns);
   }
 
   const paperAdapter = new PaperExecutionAdapter({

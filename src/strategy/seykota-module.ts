@@ -121,6 +121,11 @@ export class SeykotaTrendModule extends StrategyModule {
       price: candle.close,
       stopLoss,
       strategyId: this.getName(),
+      score: {
+        adx: adxLast,
+        atrPct: atrLast / candle.close,
+        closeTime: candle.closeTime ?? candle.openTime,
+      },
     };
   }
 
