@@ -23,6 +23,13 @@ const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const log = createAppLogger(cfg);
 
+  if (cfg.SHADOW_MODE) {
+    log.warn('shadow_mode_active', {
+      hint:
+        'SHADOW_MODE=true: PositionManager logs open/close intent but does not call the execution adapter (no exchange orders). Strategy and market data still run. Flatten real exchange positions before using on a funded account.',
+    });
+  }
+
   if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') {
     log.warn('binance_testnet_liquidity_notice', {
       hint:

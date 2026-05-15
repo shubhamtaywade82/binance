@@ -1749,7 +1749,7 @@ Phase 2 — Testnet paper trading
   Action: run full pipeline, verify execution latency, fill logic, risk controls
 
 Phase 3 — Shadow mode on mainnet
-  ✘ SHADOW_MODE flag not built (see §20.2)
+  ✔ SHADOW_MODE flag (`config.ts`, `position-manager.ts`, `index.ts`, `.env.example`)
   ✔ BINANCE_FUTURES_TESTNET=false  (real market data)
   Action: SHADOW_MODE=true, compare model signals vs actual market moves for N days
 
