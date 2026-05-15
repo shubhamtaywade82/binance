@@ -699,6 +699,18 @@ export class HybridOrchestrator {
       positionPnls,
     });
     console.log(line);
+
+    // Persist equity snapshot to Postgres so the PnL dashboard + Grafana can
+    // render the equity curve in both USDT and INR. PaperLedger writes JSONL
+    // locally; this adds the SQL row with the current FX rate.
+    if (this.execution.pgWriter?.isConnected) {
+      void this.execution.pgWriter.writeEquitySnapshot(
+        w,
+        this.currentDrawdownPct,
+        openPositions,
+        this.fxRate.getInrPerUsdt(),
+      );
+    }
   }
 
   /**

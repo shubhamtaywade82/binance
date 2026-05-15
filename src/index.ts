@@ -24,6 +24,7 @@ import { SignalToOrderBridge } from './core/execution/signal-to-order-bridge';
 import { ExecutionBridge } from './core/execution/execution-bridge';
 import { TrailingStopManager } from './core/execution/trailing-stop-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
+import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
 import type { DomainEvent } from '@coindcx/contracts';
 
 let orch: HybridOrchestrator | null = null;
@@ -121,6 +122,9 @@ const main = async (): Promise<void> => {
       }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
       new ExecutionBridge(cfg, defaultEventBus, adapter);
       new PositionCloseBridge(defaultEventBus, adapter);
+      if (execution.pgWriter) {
+        new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
+      }
       if ((cfg as any).SEYKOTA_ENABLED) {
         new TrailingStopManager(defaultEventBus, {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
