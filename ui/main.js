@@ -541,6 +541,42 @@ const dispatch = (msg) => {
   }
 }
 
+const SIDEBAR_STORAGE_KEY = 'qt_sidebar_hidden';
+
+const initSidebarToggle = () => {
+  const btn = document.getElementById('btn-toggle-sidebar');
+  const grid = document.getElementById('main-grid');
+  if (!btn || !grid) return;
+
+  const setHidden = (hidden) => {
+    grid.classList.toggle('sidebar-hidden', hidden);
+    btn.classList.toggle('active', hidden);
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, hidden ? '1' : '0');
+    } catch {}
+  };
+
+  // Restore state
+  try {
+    const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (stored === '1') setHidden(true);
+  } catch {}
+
+  btn.addEventListener('click', () => {
+    const isHidden = grid.classList.contains('sidebar-hidden');
+    setHidden(!isHidden);
+  });
+
+  // Shortcut Ctrl+B
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      btn.click();
+    }
+  });
+};
+
 // ─── Imbalance helper ─────────────────────────────────────────────────────
 const imbalanceRatio = (bids = [], asks = []) => {
   const bidVol = bids.slice(0, 10).reduce((s, r) => s + r.qty * r.price, 0);
@@ -609,6 +645,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     scripts?.onTfChange(tf);
   });
+  initSidebarToggle();
   initSidebarTabs();
 
   scripts = new ScriptManager(chart);
