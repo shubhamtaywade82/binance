@@ -50,11 +50,14 @@ import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
 import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
+import { evaluateSwingSignal } from './strategy/swing-strategy';
+import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
 import { PositionManager } from './strategy/position-manager';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
 import type { Candle, Side, TrendBias } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
+import type { TradeAttribution } from './execution/types';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
 import type { OrderTradeUpdate, AccountUpdate } from './binance/private-ws';
 import { getRedisClient } from './services/redis';
@@ -227,6 +230,9 @@ export class HybridOrchestrator {
     deps: OrchestratorDeps = {},
   ) {
     this.pairs = resolvePairMap(cfg);
+    if (cfg.ENABLE_MULTI_ASSET) {
+      applyTierOverrides(cfg.ASSET_TIER_OVERRIDES_JSON);
+    }
     this.cdcx = deps.cdcx ?? new CoinDcxFuturesClient({
       apiKey: cfg.COINDCX_API_KEY,
       apiSecret: cfg.COINDCX_API_SECRET,
@@ -485,21 +491,31 @@ export class HybridOrchestrator {
     const symU = symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
     const accepted = this.store.applyKline(symbol, tf, candle, isFinal);
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
-    if (tf === this.ltfTf) {
-      const series = this.store.getSeries(symbol, this.ltfTf);
-      this.c15.splice(0, this.c15.length, ...series);
-    } else if (tf === this.htfTf) {
-      const series = this.store.getSeries(symbol, this.htfTf);
-      this.c1h.splice(0, this.c1h.length, ...series);
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (isPrimary) {
+      if (tf === this.ltfTf) {
+        const series = this.store.getSeries(symbol, this.ltfTf);
+        this.c15.splice(0, this.c15.length, ...series);
+      } else if (tf === this.htfTf) {
+        const series = this.store.getSeries(symbol, this.htfTf);
+        this.c1h.splice(0, this.c1h.length, ...series);
+      }
     }
-    if (accepted && isFinal && tf === this.ltfTf) void this.evaluate(candle);
+    if (!accepted || !isFinal) return;
+    if (isPrimary && tf === this.ltfTf) void this.evaluate(candle);
+    if (this.cfg.ENABLE_MULTI_ASSET) {
+      const tier = tierFor(symU);
+      if (tier && tf === tier.ltf) {
+        void this.evaluateForSymbol(symU, tier, candle);
+      }
+    }
   }
 
   private onBookTicker(t: BookTickerEvent): void {
     const symU = t.symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (!isPrimary && !this.cfg.ENABLE_MULTI_ASSET) return;
     const tick = {
       symbol: symU,
       bestBid: t.bestBid,
@@ -514,9 +530,11 @@ export class HybridOrchestrator {
     const symU = t.symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
     this.tapeFor(symU).push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
-    this.book.ingestTrade(symU, t.price);
-    this.staleGuard?.markFresh('trade');
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (isPrimary || this.cfg.ENABLE_MULTI_ASSET) {
+      this.book.ingestTrade(symU, t.price);
+    }
+    if (isPrimary) this.staleGuard?.markFresh('trade');
   }
 
   private onDepthDiffEvent(d: import('./binance/orderbook').DepthDiff & { s: string }): void {
@@ -624,6 +642,8 @@ export class HybridOrchestrator {
       barsExec: this.c15.length,
       barsHTF: this.c1h.length,
       inPosition: this.positionManager.hasPosition(),
+      positions: this.positionManager.openCount(),
+      openSymbols: this.positionManager.openSymbols(),
       tfi1s: +micro.tfi1s.tfi.toFixed(4),
       weightedObi5: +micro.weightedObi5.weightedObi.toFixed(4),
       microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
@@ -653,6 +673,8 @@ export class HybridOrchestrator {
     this.currentDrawdownPct = this.sessionPeakEquity > 0
       ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
       : 0;
+    const openPositions = this.positionManager.openCount();
+    const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
     const line = formatStatusLine({
       equityUsdt: w.equityUsdt,
       balanceUsdt: w.balanceUsdt,
@@ -660,8 +682,31 @@ export class HybridOrchestrator {
       realizedPnlUsdt: w.realizedPnlUsdt,
       drawdownPct: this.currentDrawdownPct,
       inrPerUsdt: this.fxRate.getInrPerUsdt(),
+      openPositions,
+      positionPnls,
     });
     console.log(line);
+  }
+
+  /**
+   * For each open position, compute unrealized PnL pct relative to entry, using
+   * the latest mark from the per-symbol book/tape (or entry price as a fallback).
+   */
+  private computePerSymbolPnls(): Array<{ symbol: string; unrealizedPct: number }> {
+    const out: Array<{ symbol: string; unrealizedPct: number }> = [];
+    for (const pos of this.positionManager.allPositions()) {
+      const symU = pos.symbol;
+      const tick = this.book.latest(symU);
+      const lastTrade = this.book.lastTrade(symU);
+      const mark = tick
+        ? (tick.bestAsk + tick.bestBid) / 2
+        : (lastTrade ?? pos.entryPrice);
+      if (!Number.isFinite(mark) || pos.entryPrice <= 0) continue;
+      const dir = pos.side === 'LONG' ? 1 : -1;
+      const pct = ((mark - pos.entryPrice) / pos.entryPrice) * 100 * dir;
+      out.push({ symbol: symU, unrealizedPct: pct });
+    }
+    return out;
   }
 
   private buildMlFeatureVector() {
@@ -907,13 +952,54 @@ export class HybridOrchestrator {
   }
 
   private onMark(u: MarkPriceUpdate): void {
-    if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
+    const symU = u.symbol.toUpperCase();
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) {
+      this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
+      return;
+    }
+    if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
+      this.applyMarkForSymbol(symU, u.markPrice);
+    }
   }
 
   private onTickerLtp(u: TickerLtpUpdate): void {
-    if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
+    const symU = u.symbol.toUpperCase();
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) {
+      this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
+      return;
+    }
+    if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
+      this.applyMarkForSymbol(symU, u.lastPrice);
+    }
+  }
+
+  /**
+   * Non-primary symbol mark update. Routes to the paper adapter (for unrealized PnL
+   * roll-up) and triggers `positionManager.onMark(symbol, …)` for that symbol only.
+   */
+  private applyMarkForSymbol(symbol: string, price: number): void {
+    if (!Number.isFinite(price)) return;
+    const symU = symbol.toUpperCase();
+    this.execution.adapter.onMark?.(symU, price);
+    if (!this.positionManager.hasPosition(symU)) return;
+    const tier = tierFor(symU);
+    const htfBias = tier
+      ? biasFromCandles(this.store.getSeries(symU, tier.htf))
+      : ('NONE' as TrendBias);
+    void this.positionManager.onMark(symU, price, htfBias).then((closeEvent) => {
+      if (!closeEvent) return;
+      clearPosition(this.redis, symU);
+      publish(this.redis, CHANNELS.POSITIONS, {
+        event: 'close',
+        symbol: symU,
+        side: closeEvent.position.side,
+        entryPrice: closeEvent.position.entryPrice,
+        exitPrice: closeEvent.exitPrice,
+        reason: closeEvent.reason,
+        netUsdt: closeEvent.pnl.netUsdt,
+        ts: Date.now(),
+      });
+    }).catch(() => undefined);
   }
 
   private applyMarkReference(
@@ -933,7 +1019,7 @@ export class HybridOrchestrator {
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
     publish(this.redis, CHANNELS.TICKS, { symbol: sym, price, ts: Date.now() });
-    this.positionManager.onMark(price, this.reversalTrendBias()).then((closeEvent) => {
+    this.positionManager.onMark(sym, price, this.reversalTrendBias()).then((closeEvent) => {
       if (!closeEvent) return;
       clearPosition(this.redis, sym);
       publish(this.redis, CHANNELS.POSITIONS, {
@@ -1043,7 +1129,7 @@ export class HybridOrchestrator {
             source: 'exchange_algo',
             ts: Date.now(),
           });
-          void this.positionManager.notifyExchangeClose(result.closed.exitPrice, result.closed.reason);
+          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason);
         }
       }
     }
@@ -1149,7 +1235,8 @@ export class HybridOrchestrator {
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {
-    if (this.positionManager.hasPosition()) return;
+    const primary = this.pairs.binanceSymbol.toUpperCase();
+    if (this.positionManager.hasPosition(primary)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
@@ -1224,7 +1311,7 @@ export class HybridOrchestrator {
       }
       publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'sol_mtf', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
-      const opened = await this.positionManager.open(smcSide, refPrice, prec, this.pairs.coindcxPair);
+      const opened = await this.positionManager.open(smcSide, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
       if (opened) {
         setPosition(this.redis, sym, { side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
         publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
@@ -1289,10 +1376,103 @@ export class HybridOrchestrator {
       symbol: sym, direction: side, htfBias, ltfConfidence: ltf.confidence, smcScore: smc.score, source: 'htf_ltf', ts: Date.now(),
     });
     const prec = this.precision ?? extractPrecisionFromInstrument(null);
-    const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+    const opened = await this.positionManager.open(side, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
     if (opened) {
       setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
       publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+    }
+  }
+
+  /**
+   * Multi-asset evaluation entry point. Fires on LTF kline close for any
+   * symbol that has an `AssetTierConfig` in the registry.
+   *
+   * - scalp tier: SOL-MTF stack + SMC confluence + microstructure-aware refPrice.
+   * - swing tier: lighter `evaluateSwingSignal` (HTF bias + displacement + zone).
+   */
+  private async evaluateForSymbol(symbol: string, tier: AssetTierConfig, ltfBar: Candle): Promise<void> {
+    const symU = symbol.toUpperCase();
+    if (this.positionManager.hasPosition(symU)) return;
+    if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
+    if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
+
+    const maxPos = this.cfg.MAX_OPEN_POSITIONS;
+    if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;
+
+    // Don't double-evaluate the primary symbol — `evaluate()` already covers it.
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) return;
+
+    const ltfCandles = this.store.getSeries(symU, tier.ltf);
+    const htfCandles = this.store.getSeries(symU, tier.htf);
+    if (ltfCandles.length === 0 || htfCandles.length === 0) return;
+
+    const refPrice = ltfBar.close;
+    const prec = this.precisionBySymbol?.get(symU) ?? this.precision ?? extractPrecisionFromInstrument(null);
+
+    let side: Side | null = null;
+    let attribution: TradeAttribution | undefined;
+
+    if (tier.tier === 'swing') {
+      const sig = evaluateSwingSignal({
+        symbol: symU,
+        candlesLtf: ltfCandles,
+        candlesHtf: htfCandles,
+        refPrice,
+        minConfidence: tier.minConfidence,
+      });
+      this.log.info('swing_signal_evaluated', {
+        symbol: symU,
+        pass: sig !== null,
+        confidence: sig?.confidence ?? null,
+      });
+      if (!sig) return;
+      side = sig.side;
+      attribution = sig.attribution;
+    } else {
+      // scalp tier — SMC confluence on the configured LTF/HTF.
+      const htfBias: TrendBias = biasFromCandles(htfCandles);
+      if (htfBias === 'NONE') return;
+      const confluence = evaluateSmcConfluence(ltfCandles, htfCandles, htfBias, refPrice, {
+        enabled: this.cfg.USE_SMC_CONFLUENCE,
+        mode: this.cfg.SMC_CONFLUENCE_MODE,
+        standardMinScore: this.cfg.SMC_CONFLUENCE_MIN_STANDARD,
+        sniperMinScore: this.cfg.SMC_CONFLUENCE_MIN_SNIPER,
+        targetPct: this.cfg.SMC_CONFLUENCE_TARGET_PCT,
+      });
+      this.log.info('scalp_signal_evaluated', {
+        symbol: symU,
+        htfBias,
+        pass: confluence.pass,
+        score: Number(confluence.score.toFixed(2)),
+        threshold: confluence.threshold,
+      });
+      if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
+      side = htfBias === 'LONG' ? 'LONG' : 'SHORT';
+      attribution = {
+        entrySignal: 'scalp_mtf',
+        htfBias,
+        confidence: Number((confluence.score / Math.max(confluence.threshold, 1)).toFixed(3)),
+      };
+    }
+
+    if (!side) return;
+
+    if (await isKillSwitchActive(this.redis)) {
+      this.log.warn('kill_switch_active', { symbol: symU });
+      return;
+    }
+
+    publish(this.redis, CHANNELS.SIGNALS, {
+      symbol: symU, direction: side, source: `tier_${tier.tier}`, ts: Date.now(),
+    });
+    const opened = await this.positionManager.open(side, refPrice, prec, symU, symU, tier, attribution);
+    if (opened) {
+      setPosition(this.redis, symU, {
+        side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt,
+      });
+      publish(this.redis, CHANNELS.POSITIONS, {
+        event: 'open', symbol: symU, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now(),
+      });
     }
   }
 

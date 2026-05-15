@@ -14,6 +14,7 @@ interface Position {
   unrealized_pnl: number;
   liq_price: number;
   opened_at: number;
+  tier?: string | null;
 }
 
 export default function PositionsPage() {
@@ -37,6 +38,11 @@ export default function PositionsPage() {
                     {p.side}
                   </span>
                   <span className="text-sm text-gray-500">{p.leverage}x</span>
+                  {p.tier ? (
+                    <span className="text-xs font-medium px-2 py-0.5 rounded bg-white/5 text-gray-300 uppercase tracking-wide">
+                      {p.tier}
+                    </span>
+                  ) : null}
                 </div>
                 <div className={`text-lg font-mono font-medium ${p.unrealized_pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
                   {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toFixed(4)} USDT

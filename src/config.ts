@@ -427,6 +427,21 @@ export const AppConfigSchema = z.object({
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
 
+  /**
+   * When true, the orchestrator evaluates and trades every symbol in `ASSET_TIERS`
+   * that is also present in the active multiplex feed (BINANCE_SYMBOL + BINANCE_WATCHLIST).
+   * When false, the orchestrator falls back to the legacy single-symbol path on
+   * `BINANCE_SYMBOL` only.
+   */
+  ENABLE_MULTI_ASSET: boolFromString(true),
+
+  /**
+   * Optional JSON map of per-symbol tier overrides applied on top of ASSET_TIERS.
+   * Example: `{"SOLUSDT":{"leverage":3,"marginUsdt":1000},"DOGEUSDT":{"tier":"swing","ltf":"15m","htf":"4h","leverage":3,"tpPct":0.02,"slPct":0.012,"marginUsdt":600,"minConfidence":0.7}}`.
+   * Empty string = no overrides.
+   */
+  ASSET_TIER_OVERRIDES_JSON: z.string().default(''),
+
   /** Scale position size inversely with realized volatility. */
   VOL_ADJUSTED_SIZING: boolFromString(false),
   /** Baseline realized volatility (annualized %). Position scales down when rv > baseline. */

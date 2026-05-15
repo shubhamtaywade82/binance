@@ -9,6 +9,8 @@ export interface OrderRequest {
   referencePrice: number;
   takeProfit?: number;
   stopLoss?: number;
+  /** Optional strategy tier ('scalp' | 'swing') for persistence/dashboard tagging. */
+  tier?: string;
 }
 
 export interface Fill {

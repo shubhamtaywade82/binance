@@ -79,16 +79,18 @@ export class PgWriter {
     marginUsdt: number;
     liqPrice: number;
     openedAt: number;
+    tier?: string;
   }): Promise<void> {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO positions (order_id, symbol, side, qty, entry_price, leverage, margin_usdt, liq_price, opened_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `INSERT INTO positions (order_id, symbol, side, qty, entry_price, leverage, margin_usdt, liq_price, opened_at, updated_at, tier)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (order_id) DO UPDATE SET
            unrealized_pnl = EXCLUDED.unrealized_pnl,
-           updated_at = EXCLUDED.updated_at`,
-        [p.orderId, p.symbol, p.side, p.quantity, p.entryPrice, p.leverage, p.marginUsdt, p.liqPrice, p.openedAt, Date.now()]
+           updated_at = EXCLUDED.updated_at,
+           tier = EXCLUDED.tier`,
+        [p.orderId, p.symbol, p.side, p.quantity, p.entryPrice, p.leverage, p.marginUsdt, p.liqPrice, p.openedAt, Date.now(), p.tier ?? null]
       );
     } catch (err) {
       console.warn('[pg-writer] upsertPosition failed:', (err as Error).message);

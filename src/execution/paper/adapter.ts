@@ -127,6 +127,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       orderId, symbol, side: req.side, quantity: req.quantity,
       entryPrice: fillPrice, leverage: req.leverage,
       marginUsdt: margin, liqPrice, openedAt,
+      tier: req.tier,
     }).catch(() => {});
 
     this.opts.pgWriter?.writeOrder({
@@ -154,13 +155,22 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId, fill };
   }
 
+  /** Latest mark per symbol — used to refresh unrealized for other symbols' positions. */
+  private lastMarkBySymbol = new Map<string, number>();
+
   onMark(symbol: string, markPrice: number): void {
     const symU = symbol.toUpperCase();
+    if (Number.isFinite(markPrice)) this.lastMarkBySymbol.set(symU, markPrice);
+
+    // Recompute unrealized PnL for *every* open position, using the latest mark we
+    // have for each position's symbol. The mark just received is the freshest.
     let totalUnrealized = 0;
     for (const pos of this.positions.values()) {
-      if (pos.symbol !== symU) continue;
+      const refMark = pos.symbol === symU
+        ? markPrice
+        : (this.lastMarkBySymbol.get(pos.symbol) ?? pos.entryPrice);
       const sideMul = pos.side === 'LONG' ? 1 : -1;
-      const unrealized = (markPrice - pos.entryPrice) * pos.quantity * sideMul;
+      const unrealized = (refMark - pos.entryPrice) * pos.quantity * sideMul;
       this.unrealizedByOrder.set(pos.orderId, unrealized);
       totalUnrealized += unrealized;
     }
@@ -176,13 +186,18 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const now = Date.now();
     if (now - this.lastSnapshotTs >= this.opts.equitySnapshotMs) {
       this.lastSnapshotTs = now;
-      const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => ({
-        orderId: p.orderId,
-        side: p.side,
-        entryPrice: p.entryPrice,
-        quantity: p.quantity,
-        unrealizedUsdt: ((markPrice - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
-      }));
+      const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => {
+        const refMark = p.symbol === symU
+          ? markPrice
+          : (this.lastMarkBySymbol.get(p.symbol) ?? p.entryPrice);
+        return {
+          orderId: p.orderId,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          unrealizedUsdt: ((refMark - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
+        };
+      });
       this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
 
       this.opts.pgWriter?.writeEquitySnapshot(

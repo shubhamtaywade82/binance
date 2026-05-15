@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS positions (
     unrealized_pnl  DOUBLE PRECISION NOT NULL DEFAULT 0,
     liq_price       DOUBLE PRECISION,
     opened_at       BIGINT NOT NULL,
-    updated_at      BIGINT NOT NULL
+    updated_at      BIGINT NOT NULL,
+    tier            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS equity_snapshots (

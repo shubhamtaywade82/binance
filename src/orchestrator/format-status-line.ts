@@ -21,6 +21,13 @@ export interface StatusLineInput {
   drawdownPct: number;
   /** INR per USDT FX rate. */
   inrPerUsdt: number;
+  /** Total count of open positions (omit / 0 = don't render the POS segment). */
+  openPositions?: number;
+  /**
+   * Optional per-symbol unrealized PnL summary. The first 4 entries (in array order)
+   * are appended after `POS:` as ` SOL +0.42% │ BTC -0.08%`; remainder rendered as `…`.
+   */
+  positionPnls?: Array<{ symbol: string; unrealizedPct: number }>;
 }
 
 const fmtInr = (usdt: number, inrPerUsdt: number): string => {
@@ -43,6 +50,28 @@ export const riskTierFor = (drawdownPct: number): RiskTier => {
   return 'CRIT';
 };
 
+const shortenSymbol = (sym: string): string => {
+  const u = sym.toUpperCase();
+  return u.endsWith('USDT') ? u.slice(0, -4) : u;
+};
+
+const formatPositionSegment = (
+  count: number | undefined,
+  pnls: Array<{ symbol: string; unrealizedPct: number }> | undefined,
+): string => {
+  if (!count || count <= 0) return '';
+  const head = ` │ POS: ${count}`;
+  if (!pnls || pnls.length === 0) return head;
+  const max = 4;
+  const shown = pnls.slice(0, max);
+  const parts = shown.map((p) => {
+    const sign = p.unrealizedPct >= 0 ? '+' : '';
+    return ` │ ${shortenSymbol(p.symbol)} ${sign}${p.unrealizedPct.toFixed(2)}%`;
+  });
+  const overflow = pnls.length > max ? ' │ …' : '';
+  return `${head}${parts.join('')}${overflow}`;
+};
+
 export const formatStatusLine = (s: StatusLineInput): string => {
   const fx = s.inrPerUsdt;
   const tier = riskTierFor(s.drawdownPct);
@@ -55,6 +84,7 @@ export const formatStatusLine = (s: StatusLineInput): string => {
     `NET: ${fmtInr(s.realizedPnlUsdt, fx)} │ ` +
     `UNREAL USDT: ${fmtUsdt(s.unrealizedPnlUsdt)} │ ` +
     `DD: ${dd} │ ` +
-    `RISK: ${tier}`
+    `RISK: ${tier}` +
+    formatPositionSegment(s.openPositions, s.positionPnls)
   );
 };
