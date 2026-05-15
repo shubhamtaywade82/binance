@@ -241,6 +241,8 @@ export class OrderBookManager {
     const askVol = aggA.slice(0, rows).map((r) => r.qty);
     const maxBid = bidVol.reduce((m, q) => Math.max(m, q), 0) || 1;
     const maxAsk = askVol.reduce((m, q) => Math.max(m, q), 0) || 1;
+    const bidAvg = bidVol.reduce((s, q) => s + q, 0) / (bidVol.length || 1);
+    const askAvg = askVol.reduce((s, q) => s + q, 0) / (askVol.length || 1);
 
     let bidCum = 0;
     const bidCums = aggB.slice(0, rows).map((r) => {
@@ -270,23 +272,22 @@ export class OrderBookManager {
       const showBid = this.filterSide !== 'ask';
       const showAsk = this.filterSide !== 'bid';
 
+      const isBidWall = b && b.qty > (bidAvg * 4) && b.qty > 0;
+      const isAskWall = a && a.qty > (askAvg * 4) && a.qty > 0;
+
       const bidAmt = b && showBid ? this._fmtAmt(bidQty) : '';
       const askAmt = a && showAsk ? this._fmtAmt(askQty) : '';
       const bidPrice = b && showBid ? this._fmtPrice(b.price) : '';
       const askPrice = a && showAsk ? this._fmtPrice(a.price) : '';
 
       parts.push(`
-      <div class="ob-mir-row">
-        <span class="ob-mir-amt bid ${showBid ? '' : 'is-muted'}">${bidAmt}</span>
-        <div class="ob-mir-bar-cell bid ${showBid ? '' : 'is-muted'}">
-          ${b && showBid ? `<div class="ob-mir-bar bid" style="width:${bidPct.toFixed(1)}%"></div>` : ''}
-        </div>
+      <div class="ob-mir-row" style="--bid-pct:${bidPct.toFixed(1)}%;--ask-pct:${askPct.toFixed(1)}%">
+        ${b && showBid ? `<div class="ob-mir-bg-bar bid ${showBid ? '' : 'is-muted'}"></div>` : ''}
+        ${a && showAsk ? `<div class="ob-mir-bg-bar ask ${showAsk ? '' : 'is-muted'}"></div>` : ''}
+        <span class="ob-mir-amt bid ${showBid ? '' : 'is-muted'} ${isBidWall ? 'is-wall' : ''}">${bidAmt}</span>
         <span class="ob-mir-price bid ${showBid ? '' : 'is-muted'}">${bidPrice}</span>
         <span class="ob-mir-price ask ${showAsk ? '' : 'is-muted'}">${askPrice}</span>
-        <div class="ob-mir-bar-cell ask ${showAsk ? '' : 'is-muted'}">
-          ${a && showAsk ? `<div class="ob-mir-bar ask" style="width:${askPct.toFixed(1)}%"></div>` : ''}
-        </div>
-        <span class="ob-mir-amt ask ${showAsk ? '' : 'is-muted'}">${askAmt}</span>
+        <span class="ob-mir-amt ask ${showAsk ? '' : 'is-muted'} ${isAskWall ? 'is-wall' : ''}">${askAmt}</span>
       </div>`);
     }
 

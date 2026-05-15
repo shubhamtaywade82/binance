@@ -86,6 +86,7 @@ describe('CoinDcxExecutionAdapter', () => {
     expect(closed.exitPrice).toBe(110);
     expect(closed.quantity).toBe(1);
     expect(closed.reason).toBe('TP');
+    expect(closed.leverage).toBe(10);
     expect(closed.grossUsdt).toBeCloseTo(10, 6);
     expect(closed.feesUsdt).toBeGreaterThan(0);
     expect(closed.netUsdt).toBeCloseTo(closed.grossUsdt - closed.feesUsdt - closed.fundingUsdt, 6);
