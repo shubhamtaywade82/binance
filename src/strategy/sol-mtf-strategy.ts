@@ -44,8 +44,8 @@ const setupHits = (candles: Candle[], refPrice: number, dir: TrendBias): number 
   if (candles.length < MIN_STACK) return 0;
   const smc = analyzeSmc(candles, refPrice, dir);
   let hits = 0;
-  if (dir === 'LONG' && smc.orderBlock?.type === 'BULLISH') hits++;
-  if (dir === 'SHORT' && smc.orderBlock?.type === 'BEARISH') hits++;
+  if (dir === 'LONG' && smc.orderBlocks.some(ob => ob.type === 'BULLISH')) hits++;
+  if (dir === 'SHORT' && smc.orderBlocks.some(ob => ob.type === 'BEARISH')) hits++;
   const sweepOk =
     (dir === 'LONG' && smc.liquiditySweep === 'SHORT') ||
     (dir === 'SHORT' && smc.liquiditySweep === 'LONG');
