@@ -54,6 +54,11 @@ import { evaluateSwingSignal } from './strategy/swing-strategy';
 import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
 import { PositionManager, type TrackedPosition } from './strategy/position-manager';
+import {
+  correlationGuardConflict,
+  findCorrelationCluster,
+  type PositionRiskLike,
+} from './strategy/correlation-guard';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
 import type { Candle, Side, TrendBias, DashboardPosition } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
@@ -205,6 +210,9 @@ export class HybridOrchestrator {
   private orderRatePauseActive = false;
   private drawdownHaltLogged = false;
   private sessionPeakUsdt = 0;
+  /** Short TTL cache for `GET /fapi/v2/positionRisk` (all symbols) used by the correlation guard. */
+  private correlationPositionCache: { atMs: number; rows: PositionRiskLike[] } | null = null;
+  private static readonly CORRELATION_POSITION_TTL_MS = 5000;
   /** Tracks session peak equity (balance + unrealized) for the paper heartbeat status line. */
   private sessionPeakEquity = 0;
   private currentDrawdownPct = 0;
@@ -1319,6 +1327,44 @@ export class HybridOrchestrator {
     }
   }
 
+  /**
+   * When `BINANCE_CORRELATION_SYMBOL_GROUPS` is set and a Binance REST client exists, blocks new
+   * entries that would duplicate same-direction exposure on another symbol in the same cluster
+   * (per live `positionRisk` snapshot, cached briefly).
+   */
+  private async correlationGuardAllowsEntry(intendedSide: Side): Promise<boolean> {
+    const groups = this.cfg.BINANCE_CORRELATION_SYMBOL_GROUPS ?? [];
+    if (!groups.length) return true;
+    const client = this.execution.binanceRestClient;
+    if (!client) return true;
+
+    const primary = this.pairs.binanceSymbol.toUpperCase();
+    const cluster = findCorrelationCluster(groups, primary);
+    if (!cluster || cluster.length < 2) return true;
+
+    const now = Date.now();
+    let rows: PositionRiskLike[];
+    const cached = this.correlationPositionCache;
+    if (cached && now - cached.atMs < HybridOrchestrator.CORRELATION_POSITION_TTL_MS) {
+      rows = cached.rows;
+    } else {
+      rows = await getPositionRisk(client).catch(() => []);
+      this.correlationPositionCache = { atMs: now, rows };
+    }
+
+    const { blocked, conflictSymbol } = correlationGuardConflict({
+      cluster,
+      primarySymbol: primary,
+      intendedSide,
+      rows,
+    });
+    if (blocked) {
+      this.log.info('correlation_guard_reject', { primary, intendedSide, conflictSymbol, cluster });
+      return false;
+    }
+    return true;
+  }
+
   private async evaluate(ltfBar: Candle): Promise<void> {
     const primary = this.pairs.binanceSymbol.toUpperCase();
     if (this.positionManager.hasOpenPosition(primary)) return;
@@ -1394,6 +1440,7 @@ export class HybridOrchestrator {
         this.log.warn('kill_switch_active', { symbol: sym });
         return;
       }
+      if (!(await this.correlationGuardAllowsEntry(smcSide))) return;
       publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'sol_mtf', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
       const opened = await this.positionManager.open(smcSide, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
@@ -1456,6 +1503,7 @@ export class HybridOrchestrator {
       this.log.warn('kill_switch_active', { symbol: sym });
       return;
     }
+    if (!(await this.correlationGuardAllowsEntry(side))) return;
 
     publish(this.redis, CHANNELS.SIGNALS, {
       symbol: sym, direction: side, htfBias, ltfConfidence: ltf.confidence, smcScore: smc.score, source: 'htf_ltf', ts: Date.now(),
