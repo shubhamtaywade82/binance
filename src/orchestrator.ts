@@ -774,9 +774,6 @@ export class HybridOrchestrator {
     const lastTrade = this.book.lastTrade(symbol);
     if (Number.isFinite(lastTrade)) return lastTrade as number;
 
-    const tapeLast = this.tradeTape.lastPrice();
-    if (Number.isFinite(tapeLast)) return tapeLast;
-
     return null;
   }
 
