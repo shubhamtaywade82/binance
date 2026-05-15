@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import type { Candle } from '../types';
+import { isBinanceUsdmProduct } from '../config';
 import { normalizeBinanceKlineRow } from './rest-klines';
 import type { DepthDiff } from './orderbook';
 import {
@@ -59,6 +60,10 @@ export interface Ticker24hrEvent {
   priceChangePercent?: number;
   /** 24h open (`o`). */
   openPrice?: number;
+  /** 24h high (`h`). */
+  highPrice?: number;
+  /** 24h low (`l`). */
+  lowPrice?: number;
 }
 
 /** Liquidation order (forceOrder stream). */
@@ -176,20 +181,20 @@ export const buildStreamList = (opts: MultiplexOptions): string[] => {
     const lower = s.toLowerCase();
     for (const tf of opts.timeframes) out.push(`${lower}@kline_${tf}`);
     /** Last traded price (`c`) — USD-M needs this for LTP; mark stream alone is not last. */
-    if (opts.product === 'spot' || opts.product === 'usdm') out.push(`${lower}@ticker`);
+    if (opts.product === 'spot' || isBinanceUsdmProduct(opts.product)) out.push(`${lower}@ticker`);
     if (opts.useBookTicker) out.push(`${lower}@bookTicker`);
     if (opts.depthLevels > 0) out.push(`${lower}@depth${opts.depthLevels}@${opts.depthSpeed}`);
     else out.push(`${lower}@depth@${opts.depthSpeed}`);
     if (opts.useAggTrade) out.push(`${lower}@aggTrade`);
-    if (opts.useMarkPrice && opts.product === 'usdm') out.push(`${lower}@markPrice@1s`);
-    if (opts.useForceOrder && opts.product === 'usdm') out.push(`${lower}@forceOrder`);
+    if (opts.useMarkPrice && isBinanceUsdmProduct(opts.product)) out.push(`${lower}@markPrice@1s`);
+    if (opts.useForceOrder && isBinanceUsdmProduct(opts.product)) out.push(`${lower}@forceOrder`);
     if (opts.useMiniTicker) out.push(`${lower}@miniTicker`);
   }
-  if (opts.useGlobalForceOrder && opts.product === 'usdm') out.push('!forceOrder@arr');
+  if (opts.useGlobalForceOrder && isBinanceUsdmProduct(opts.product)) out.push('!forceOrder@arr');
   if (opts.useGlobalTicker) out.push('!ticker@arr');
   if (opts.useGlobalMiniTicker) out.push('!miniTicker@arr');
   if (opts.useGlobalBookTicker) out.push('!bookTicker');
-  if (opts.useContractInfo && opts.product === 'usdm') out.push('!contractInfo');
+  if (opts.useContractInfo && isBinanceUsdmProduct(opts.product)) out.push('!contractInfo');
   return out;
 }
 
@@ -494,10 +499,14 @@ export class BinanceMultiplexWs {
     const priceChange = Number(data.p);
     const priceChangePercent = Number(data.P);
     const openPrice = Number(data.o);
+    const highPrice = Number(data.h);
+    const lowPrice = Number(data.l);
     const out: Ticker24hrEvent = { symbol, lastPrice, eventTime };
     if (Number.isFinite(priceChange)) out.priceChange = priceChange;
     if (Number.isFinite(priceChangePercent)) out.priceChangePercent = priceChangePercent;
     if (Number.isFinite(openPrice)) out.openPrice = openPrice;
+    if (Number.isFinite(highPrice)) out.highPrice = highPrice;
+    if (Number.isFinite(lowPrice)) out.lowPrice = lowPrice;
     this.cb.on24hrTicker?.(out);
   }
 

@@ -1,12 +1,13 @@
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
 import { normalizeTradingAsset, TRADING_ASSET_PRESETS } from './config/asset-presets';
+import { parseCorrelationSymbolGroups } from './strategy/correlation-guard';
 
 loadDotenv();
 
 export type { TradingAsset } from './config/asset-presets';
 
-const BinanceProduct = z.enum(['usdm', 'spot']);
+const BinanceProduct = z.enum(['usdm', 'usdm_demo', 'spot']);
 const ExecutionModeEnum = z.enum(['paper', 'live']);
 
 const numFromString = (def: number) =>
@@ -35,6 +36,11 @@ export const AppConfigSchema = z.object({
     .string()
     .default('sol')
     .transform((s) => normalizeTradingAsset(s)),
+  /**
+   * `usdm` — live USD-M REST `fapi.binance.com` (or testnet when `BINANCE_FUTURES_TESTNET=true`).
+   * `usdm_demo` — Binance **demo** USD-M REST `demo-fapi.binance.com` (virtual balances; not mainnet).
+   * `spot` — spot market.
+   */
   BINANCE_PRODUCT: BinanceProduct.default('usdm'),
   BINANCE_REST_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
   BINANCE_WS_BASE: z.preprocess(emptyToUndefined, z.string().url().optional()),
@@ -46,7 +52,7 @@ export const AppConfigSchema = z.object({
    */
   BINANCE_WATCHLIST: z
     .string()
-    .default('')
+    .default('ETHUSDT,BTCUSDT,XRPUSDT')
     .transform((s) =>
       [...new Set(s.split(',').map((p) => p.trim().toUpperCase()).filter((p) => p.length > 0))],
     ),
@@ -76,6 +82,14 @@ export const AppConfigSchema = z.object({
     }
     return 'true';
   }, boolFromString(true)),
+
+  /**
+   * Global shadow mode: connect to live data but suppress all order placement at the adapter level.
+   * Unlike `READ_ONLY`, shadow mode still runs the full signal/strategy pipeline and logs what
+   * would have been sent — useful for pre-deployment validation against real market conditions.
+   * Do not enable on an account with unmanaged live positions (closes would not hit the exchange).
+   */
+  SHADOW_MODE: boolFromString(false),
 
   /** Seconds between heartbeat logs (mark + biases). 0 = disable. */
   LOG_HEARTBEAT_SEC: z
@@ -115,6 +129,11 @@ export const AppConfigSchema = z.object({
 
   LEVERAGE: numFromString(10),
   /**
+   * Hard cap on entry **notional** (USDT contract face ≈ price × qty). 0 = disabled.
+   * Applied after margin/leverage sizing; e.g. `50` during first live week (see TODO Phase 4).
+   */
+  MAX_NOTIONAL_USDT: numFromString(0),
+  /**
    * USDT margin per trade for Binance USDT-M Futures (preferred).
    * When set to a positive value, overrides the INR-based sizing path.
    * Example: 200 USDT margin × 10× leverage = 2000 USDT notional.
@@ -123,6 +142,17 @@ export const AppConfigSchema = z.object({
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),
   INR_PER_USDT: numFromString(85),
+  /** Live INR/USDT FX rate source: `binance` (USDTINR), `coindcx` (USDTINR), or `fixed` (use INR_PER_USDT). */
+  INR_RATE_SOURCE: z
+    .union([z.enum(['binance', 'coindcx', 'fixed']), z.string()])
+    .default('coindcx')
+    .transform((v) => {
+      const s = String(v).toLowerCase();
+      return s === 'coindcx' || s === 'fixed' ? s : 'binance';
+    })
+    .pipe(z.enum(['binance', 'coindcx', 'fixed'])),
+  /** Seconds between INR/USDT FX rate polls (min 15 enforced at runtime). */
+  INR_RATE_REFRESH_SEC: numFromString(300),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
   /** Take-profit distance as underlying price move (default 1.5% capture profile). */
@@ -162,6 +192,11 @@ export const AppConfigSchema = z.object({
 
   /** Append NDJSON log lines (empty = stdout/stderr only). */
   APP_LOG_PATH: z.string().default('./logs/app.ndjson'),
+  /**
+   * When true, emit **info** / **warn** on stdout/stderr as NDJSON (same shape as `APP_LOG_PATH` file lines).
+   * Default keeps human-readable `msg {json}` lines for local dev; enable in Docker / log aggregators.
+   */
+  LOG_JSON_CONSOLE: boolFromString(false),
 
   EXECUTION_MODE: z
     .union([ExecutionModeEnum, z.string()])
@@ -178,6 +213,8 @@ export const AppConfigSchema = z.object({
   PAPER_LEDGER_DIR: z.string().default('./paper'),
   PAPER_FUNDING_POLL_SEC: numFromString(300),
   PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
+  PAPER_PARTIAL_FILLS: z.union([z.boolean(), z.string().transform(v => v === 'true' || v === '1')]).default(false),
+  PAPER_MAX_SLIPPAGE_BPS: numFromString(20),
 
   /** Comma-separated kline timeframes for the multiplex feed. First = execution (LTF) close. */
   BINANCE_TIMEFRAMES: z
@@ -211,6 +248,44 @@ export const AppConfigSchema = z.object({
   BINANCE_WS_RECONNECT_HOURS: numFromString(23),
 
   /**
+   * USD-M **testnet** (HMAC keys from testnet.binancefuture.com): REST `testnet.binancefuture.com`,
+   * WS `fstream.binancefuture.com`. Only applies when `BINANCE_PRODUCT=usdm`.
+   * For Binance **demo trading** REST (`demo-fapi.binance.com`) use `BINANCE_PRODUCT=usdm_demo` instead.
+   *
+   * Binance REST (`BinanceRestClient`): max HTTP attempts per call on 408/429/5xx and transport failures.
+   * 1 = no retries. Capped at 12.
+   */
+  BINANCE_REST_RETRY_MAX_ATTEMPTS: z
+    .string()
+    .optional()
+    .default('4')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 1) return 4;
+      return Math.min(12, n);
+    }),
+  /** Initial backoff cap (ms) before exponential growth; combined with full jitter. */
+  BINANCE_REST_RETRY_BASE_MS: z
+    .string()
+    .optional()
+    .default('400')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 50) return 400;
+      return Math.min(10_000, n);
+    }),
+  /** Upper bound (ms) on each wait, including when honoring `Retry-After`. */
+  BINANCE_REST_RETRY_MAX_MS: z
+    .string()
+    .optional()
+    .default('20000')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 100) return 20_000;
+      return Math.min(120_000, n);
+    }),
+
+  /**
    * USD-M Futures **testnet** (derivatives demo): REST `demo-fapi.binance.com`, WS `fstream.binancefuture.com`.
    * Ignored when `BINANCE_PRODUCT=spot`. Overrides ignored if `BINANCE_REST_BASE` / `BINANCE_WS_BASE` are set.
    * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
@@ -239,8 +314,14 @@ export const AppConfigSchema = z.object({
    * Must be set to `true` (or `"true"`) when `EXECUTION_MODE=live`,
    * `BINANCE_EXECUTION_ADAPTER=true`, and `BINANCE_FUTURES_TESTNET=false`.
    * Prevents accidental real-money orders during development.
+   * `CONFIRMED_LIVE` is read as a fallback when this key is unset or empty (same meaning).
    */
-  CONFIRMED_LIVE_TRADING: boolFromString(false),
+  CONFIRMED_LIVE_TRADING: z.preprocess((val: unknown) => {
+    if (val !== undefined && val !== '') return val;
+    const alt = process.env.CONFIRMED_LIVE;
+    if (alt !== undefined && alt !== '') return alt;
+    return val;
+  }, boolFromString(false)),
 
   /**
    * When true, live execution uses Binance FAPI directly (HMAC REST + private WS) instead of CoinDCX.
@@ -331,6 +412,16 @@ export const AppConfigSchema = z.object({
    * When true (and dashboard enabled), periodically asks Ollama for SuperTrend `atrPeriod` + `multiplier`;
    * the chart still uses deterministic {@link supertrend} math with those parameters.
    */
+  /**
+   * When true, the in-app AI market-brief / chat loop can call MCP tools served
+   * by `mcp-server` (Binance + CoinDCX public market data). Off by default;
+   * leaving it disabled preserves the current Ollama-only behavior.
+   */
+  AI_MCP_ENABLED: boolFromString(false),
+  /** URL of the MCP server's streamable-http endpoint. */
+  AI_MCP_URL: z.string().default('http://localhost:4003'),
+  /** Maximum number of tool-call iterations the chat loop may take per request. */
+  AI_MCP_MAX_TOOL_ITER: numFromString(4),
   AI_SUPERTREND_TUNING_ENABLED: boolFromString(false),
   /** Minimum seconds between SuperTrend tuning Ollama calls per symbol. */
   AI_SUPERTREND_TUNING_INTERVAL_SEC: z
@@ -370,6 +461,33 @@ export const AppConfigSchema = z.object({
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
 
+  /**
+  /**
+   * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
+   * Pipe `|` separates clusters; comma separates symbols that should not share same-direction risk.
+   * Example: `BTCUSDT,ETHUSDT|SOLUSDT,AVAXUSDT` — blocks a new SOLUSDT long while ETHUSDT has an open long in the same cluster.
+   * Empty = disabled.
+   */
+  BINANCE_CORRELATION_SYMBOL_GROUPS: z
+    .string()
+    .default('')
+    .transform((s) => parseCorrelationSymbolGroups(s)),
+
+  /**
+   * When true, the orchestrator evaluates and trades every symbol in `ASSET_TIERS`
+   * that is also present in the active multiplex feed (BINANCE_SYMBOL + BINANCE_WATCHLIST).
+   * When false, the orchestrator falls back to the legacy single-symbol path on
+   * `BINANCE_SYMBOL` only.
+   */
+  ENABLE_MULTI_ASSET: boolFromString(true),
+
+  /**
+   * Optional JSON map of per-symbol tier overrides applied on top of ASSET_TIERS.
+   * Example: `{"SOLUSDT":{"leverage":3,"marginUsdt":1000},"DOGEUSDT":{"tier":"swing","ltf":"15m","htf":"4h","leverage":3,"tpPct":0.02,"slPct":0.012,"marginUsdt":600,"minConfidence":0.7}}`.
+   * Empty string = no overrides.
+   */
+  ASSET_TIER_OVERRIDES_JSON: z.string().default(''),
+
   /** Scale position size inversely with realized volatility. */
   VOL_ADJUSTED_SIZING: boolFromString(false),
   /** Baseline realized volatility (annualized %). Position scales down when rv > baseline. */
@@ -382,6 +500,41 @@ export const AppConfigSchema = z.object({
   ENTRY_ORDER_TYPE: z.string().default('MARKET'),
   /** Trailing stop callback rate (%). 0 = use fixed SL instead. */
   TRAILING_STOP_CALLBACK_RATE: numFromString(0),
+
+  /** Enable ML inference pipeline (feature collection, inference client, ML gate). */
+  ML_ENABLED: boolFromString(false),
+  /** ML inference server URL (Python FastAPI). */
+  ML_INFERENCE_URL: z.string().default('http://localhost:8000/infer'),
+  /** Minimum model probability to act on a signal. */
+  ML_MIN_PROBABILITY: numFromString(0.65),
+  /** Minimum edge in bps after fees for ML to allow entry. */
+  ML_MIN_EDGE_BPS: numFromString(8),
+  /** When true, ML logs predictions but does not override SMC entry decisions. */
+  ML_SHADOW_MODE: boolFromString(true),
+  /** Inference timeout in ms. */
+  ML_INFERENCE_TIMEOUT_MS: numFromString(2000),
+  /** Directory for recorded feature vectors (training data). */
+  ML_FEATURE_DIR: z.string().default('./data/features'),
+  /** Directory for prediction logs. */
+  ML_PREDICTION_DIR: z.string().default('./data/predictions'),
+
+
+
+  /** HTTP port for the Prometheus /metrics + /health endpoint (0 = disabled). */
+  PROMETHEUS_PORT: z
+    .string()
+    .default('9090')
+    .transform((s) => {
+      const n = Number.parseInt(String(s).trim(), 10);
+      if (!Number.isFinite(n) || n < 0 || n > 65535) return 9090;
+      return n;
+    }),
+
+  /** When true, start the prom-client based Prometheus metrics HTTP server on PROMETHEUS_PORT. */
+  PROMETHEUS_ENABLED: boolFromString(false),
+
+  /** PostgreSQL connection URL for PnL dashboard persistence (empty = disabled). */
+  POSTGRES_URL: z.string().default(''),
 
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
@@ -462,16 +615,22 @@ export const binanceApiCredentials = (cfg: AppConfig): { apiKey: string; apiSecr
   };
 }
 
+/** True for USD-M perpetual products (`usdm` or Binance demo-fapi `usdm_demo`). */
+export const isBinanceUsdmProduct = (p: AppConfig['BINANCE_PRODUCT']): boolean =>
+  p === 'usdm' || p === 'usdm_demo';
+
 export const binanceRestBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_REST_BASE) return cfg.BINANCE_REST_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'https://api.binance.com';
-  if (cfg.BINANCE_FUTURES_TESTNET) return 'https://testnet.binancefuture.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'https://demo-fapi.binance.com';
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') return 'https://testnet.binancefuture.com';
   return 'https://fapi.binance.com';
 }
 
 export const binanceWsBase = (cfg: AppConfig): string => {
   if (cfg.BINANCE_WS_BASE) return cfg.BINANCE_WS_BASE;
   if (cfg.BINANCE_PRODUCT === 'spot') return 'wss://stream.binance.com:9443';
-  if (cfg.BINANCE_FUTURES_TESTNET) return 'wss://fstream.binancefuture.com';
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') return 'wss://fstream.binancefuture.com';
+  if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') return 'wss://fstream.binancefuture.com';
   return 'wss://fstream.binance.com';
 }

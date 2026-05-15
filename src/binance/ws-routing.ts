@@ -2,7 +2,7 @@
  * Routes USD-M Futures WebSocket streams to Binance `/public` vs `/market` hosts.
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
  */
-export type BinanceProductWs = 'usdm' | 'spot';
+export type BinanceProductWs = 'usdm' | 'usdm_demo' | 'spot';
 export type BinanceUsdmWsRoute = 'market' | 'public';
 export type BinanceWsRoute = BinanceUsdmWsRoute | 'spot';
 
@@ -11,7 +11,7 @@ const STREAM_SUFFIX = /\/(ws|stream)$/;
 
 export const normalizeWsRoot = (baseWsUrl: string, product: BinanceProductWs): string => {
   let root = baseWsUrl.replace(/\/$/, '');
-  if (product === 'usdm') {
+  if (product === 'usdm' || product === 'usdm_demo') {
     root = root.replace(ROUTED_SUFFIX, '');
   } else {
     root = root.replace(STREAM_SUFFIX, '');
@@ -47,15 +47,18 @@ export const groupStreamsByRoute = (product: BinanceProductWs, streams: Iterable
   return grouped;
 }
 
+const isUsdmLike = (product: BinanceProductWs): boolean =>
+  product === 'usdm' || product === 'usdm_demo';
+
 export const buildCombinedStreamUrl = (baseWsUrl: string, product: BinanceProductWs, route: BinanceWsRoute, streams: string[]): string => {
   const root = normalizeWsRoot(baseWsUrl, product);
   const joined = streams.join('/');
-  if (product === 'spot') return `${root}/stream?streams=${joined}`;
+  if (!isUsdmLike(product)) return `${root}/stream?streams=${joined}`;
   return `${root}/${route}/stream?streams=${joined}`;
 }
 
 export const buildRawStreamUrl = (baseWsUrl: string, product: BinanceProductWs, route: BinanceWsRoute, stream: string): string => {
   const root = normalizeWsRoot(baseWsUrl, product);
-  if (product === 'spot') return `${root}/ws/${stream}`;
+  if (!isUsdmLike(product)) return `${root}/ws/${stream}`;
   return `${root}/${route}/ws/${stream}`;
 }

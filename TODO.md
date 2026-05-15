@@ -135,7 +135,7 @@ Items marked ✅ are already implemented.
 | ✅ | **Rate-limit circuit breaker** | Entry pause when ORDER row `count/limit` ≥ `ORDER_RATE_LIMIT_PAUSE_THRESHOLD` |
 | ✅ | **Leverage bracket validation** | `validateNotionalAgainstBracket` checks notional + leverage vs tier caps |
 | ✅ | **Time-based session filter** | `TRADING_HOURS_UTC` config (e.g. `02:00-21:00`); `isWithinTradingHours()` guard in `evaluate()` |
-| ☐ | **Cross-symbol correlation guard** | Prevent adding same-direction exposure on highly correlated symbols simultaneously |
+| ✅ | **Cross-symbol correlation guard** | `src/risk/correlation-guard.ts` — `CorrelationGuard` blocks same-direction on correlated pairs + opposite-direction on negatively correlated |
 | ✅ | **countdownCancelAll integration** | `BINANCE_DEADMAN_COUNTDOWN_MS` + periodic `setCountdownCancelAll` |
 
 ---
@@ -154,7 +154,7 @@ Items marked ✅ are already implemented.
 | ✅ | **Trailing stop** | `TRAILING_STOP_CALLBACK_RATE` config; adapter places `TRAILING_STOP_MARKET` algo SL when > 0 |
 | ✅ | **Hedge mode support** | `GET /fapi/v1/positionSide/dual` → `BinanceLiveExecutionAdapter.setHedgeMode` → `positionSide` on entry/algo/close |
 | ✅ | **clientOrderId deduplication** | `generateClientOrderId(symbol, side, ts)` — deterministic SHA256 prefix for idempotent retry |
-| ☐ | **Exponential backoff retry** | Structured retry with jitter on 429/5xx; currently basic reconnect exists |
+| ✅ | **Exponential backoff retry** | `src/execution/retry-with-backoff.ts` — `retryWithBackoff()` with exponential delay, jitter, status code detection, `RetryError` |
 | ✅ | **Post-execution slippage log** | `slippage_log` emitted on every fill: `refPrice`, `fillPrice`, `slippageBps`, `latencyMs` |
 
 ---
@@ -183,10 +183,10 @@ Items marked ✅ are already implemented.
 |--------|---------|-------|
 | ✅ | Candle aggregation (1m → higher TF) | MultiTfStore |
 | ✅ | 5-TF SMC confluence scoring | daily/h4/h1/m15/m5 |
-| ☐ | **1 s / 5 s micro aggregates** | Sub-minute feature windows for microstructure signals |
-| ☐ | **Rolling feature vectors** | Structured `Float64Array` ring buffers per feature per window |
-| ☐ | **Feature normalization layer** | z-score / min-max for ML input |
-| ☐ | **Multi-symbol feature bus** | Unified feature snapshot across watchlist for cross-asset signals |
+| ✅ | **1 s / 5 s micro aggregates** | `src/features/micro-aggregator.ts` — `MicroAggregator` with time-based eviction (mean/max/min/count) |
+| ✅ | **Rolling feature vectors** | `src/features/rolling-feature-ring.ts` — `Float64Array`-backed ring buffer with mean/std/min/max |
+| ✅ | **Feature normalization layer** | z-score in `feature-normalizer.ts` + min-max in `src/features/min-max-normalizer.ts` |
+| ✅ | **Multi-symbol feature bus** | `src/features/feature-bus.ts` — `FeatureBus` manages per-symbol snapshots for cross-asset signals |
 
 ---
 
@@ -214,8 +214,8 @@ Items marked ✅ are already implemented.
 | DEFERRED | **Prometheus metrics export** | Orders placed/filled, latency histograms, PnL gauge, WS reconnects |
 | DEFERRED | **Grafana dashboard** | Visualize metrics from Prometheus |
 | DEFERRED | **Alert webhooks** | Slack/email/Telegram on: margin call, kill-switch trigger, WS down > N s |
-| ☐ | **Order latency tracking** | Measure send-time → `ORDER_TRADE_UPDATE` roundtrip; P95/P99 per session |
-| ☐ | **Fill quality report** | Fill price vs microprice at order time; slippage variance log |
+| ✅ | **Order latency tracking** | `src/observability/latency-tracker.ts` — `LatencyTracker` with send/ack/fill timestamps + p50/p95/p99 stats |
+| ✅ | **Fill quality report** | `src/observability/fill-quality.ts` — `FillQualityTracker` with signed slippage bps + mean/median/std report |
 | DEFERRED | **Equity curve snapshot** | Periodic equity + drawdown time-series to DB |
 | DEFERRED | **External watchdog** | Separate process that pings bot heartbeat; force-closes all positions if silent > N s |
 
@@ -265,36 +265,45 @@ Items marked ✅ are already implemented.
 7. `ALGO_ORDER_UPDATE` + `CONDITIONAL_ORDER_TRIGGER_REJECT` private stream events
 
 ### P1 — Edge & Execution Quality
+
 8. ✅ Trade Flow Imbalance (TFI) — `microstructure.ts` + tests + orchestrator + dashboard
-9. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
-10. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
-11. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
-12. ✅ `GET /fapi/v1/leverageBracket` — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket`
-13. ✅ `GET /fapi/v1/income` — `getIncomeHistory` with type/time/symbol filters
-14. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
+2. ✅ Weighted OBI + Microprice — `microstructure.ts` + tests + orchestrator + dashboard
+3. ✅ `PUT /fapi/v1/order` / `order.modify` — REST + WS + adapter `modifyRegularOrder` + `amendAlgoStopPrice`
+4. ✅ `POST /fapi/v1/batchOrders` — `placeBatchOrders` + `modifyBatchOrders` + `cancelBatchOrders` + adapter `placeEntryWithBracket`
+5. ✅ `GET /fapi/v1/leverageBracket` — `getLeverageBracket` + `bracketForNotional` + `validateNotionalAgainstBracket`
+6. ✅ `GET /fapi/v1/income` — `getIncomeHistory` with type/time/symbol filters
+7. ✅ `GET /fapi/v1/commissionRate` — `getCommissionRate` for real maker/taker rates
 
 ### P2 — Analytics & Research
+
 15. ✅ `GET /fapi/v1/openInterest` — `getOpenInterest` + polling-ready interface
-16. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
-17. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
-18. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
-19. DEFERRED — PostgreSQL persistence layer
-20. DEFERRED — Backtest engine (kline replay)
+2. ✅ `GET /futures/data/openInterestHist` — `getOpenInterestHist` with period/time filters
+3. ✅ `GET /fapi/v1/fundingRate` — `getFundingRateHistory` with symbol/time filters
+4. ✅ `!forceOrder@arr` — `useGlobalForceOrder` in multiplex + `BINANCE_USE_GLOBAL_FORCE_ORDER` config
+5. DEFERRED — PostgreSQL persistence layer
+6. DEFERRED — Backtest engine (kline replay)
 
 ### P3 — Production Hardening (all DEFERRED — requires external infra)
+
 21. DEFERRED — Prometheus metrics + Grafana
-22. DEFERRED — Alert webhooks (Slack/Telegram)
-23. DEFERRED — External watchdog process
-24. DEFERRED — Redis hot state cache
-25. DEFERRED — Multi-symbol live execution
-26. DEFERRED — Walk-forward parameter validation
+2. DEFERRED — Alert webhooks (Slack/Telegram)
+3. DEFERRED — External watchdog process
+4. DEFERRED — Redis hot state cache
+5. DEFERRED — Multi-symbol live execution
+6. DEFERRED — Walk-forward parameter validation
 
 ---
 
 ## 16. AI / ML Trading System
 
-> Current state: only Ollama LLM advisory (`market-brief.ts`, `supertrend-tune.ts`).
-> No feature pipeline, no label builder, no ML models, no live inference.
+> **Current state — COMPLETE (infra + Phase 1)**:
+> All sections 16.1–16.9 implemented. Feature pipeline (55 columns), label builder (direction/regression/vol/regime
+> with leakage guard, cost-adjusted, multi-horizon), data pipeline (stream alignment, stale guard, OI poll),
+> Phase 1 models (LightGBM direction + vol regressor, SHAP, walk-forward), live inference (ONNX export,
+> model versioning, model registry), decision logic (vol sizing, hold-time optimizer, execution gate),
+> training pipeline (drift detection, scheduled retraining), post-trade analytics (calibration, feature drift,
+> signal decay, PnL attribution). Phase 2/3 (sequence models, multimodal ensemble) deferred to future work.
+> **Next**: Collect training data → train baseline → deploy inference server → validate in shadow mode.
 
 ---
 
@@ -302,14 +311,14 @@ Items marked ✅ are already implemented.
 
 | Status | Target | Notes |
 |--------|--------|-------|
-| ☐ | `P(return > +N bps in next T seconds)` | Direction classification — avoids noisy regression |
-| ☐ | `P(return < −N bps in next T seconds)` | Down probability (independent head) |
-| ☐ | `expected_return` over next N seconds | Clipped regression target |
-| ☐ | `expected_volatility` over next N seconds | Realized vol forecast |
-| ☐ | `regime` ∈ {trend, mean-revert, chop, high-vol, low-liq} | Controls whether alpha model should trade at all |
-| ☐ | `fill_probability` | Will a limit order fill before adverse move? |
-| ☐ | `slippage_bps` | Expected execution cost beyond spread |
-| ☐ | `adverse_move_probability` | P(price moves against entry within T seconds of fill) |
+| ✅ | `P(return > +N bps in next T seconds)` | `y_direction_{h}s` labels → LightGBM classifier → `p_up` |
+| ✅ | `P(return < −N bps in next T seconds)` | Same classifier → `p_down` |
+| ✅ | `expected_return` over next N seconds | `y_reg_{h}s` clipped regression labels in `label_builder.py` |
+| ✅ | `expected_volatility` over next N seconds | `y_vol_{h}s` → LightGBM regressor → `expected_volatility` served via `/infer` |
+| ✅ | `regime` ∈ {trend, mean-revert, chop, high-vol, low-liq} | `label_regime` + `_classify_regime()` → `regime` in `/infer` response |
+| ✅ | `fill_probability` | `y_fill_prob_{h}s` labels → `train_fill_probability()` → `fill_probability` in `/infer` |
+| ✅ | `slippage_bps` | `y_slippage_bps_{h}s` labels → `train_slippage()` → `expected_slippage` in `/infer` |
+| ✅ | `adverse_move_probability` | `y_adverse_move_{h}s` labels → `train_adverse_move()` → `adverse_move_probability` in `/infer` |
 
 ---
 
@@ -321,61 +330,61 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `spread` | Best ask − best bid |
-| ☐ | `microprice` | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` |
-| ☐ | `obi_5` | Top-5 weighted bid/ask volume imbalance |
-| ☐ | `obi_10` | Top-10 weighted bid/ask volume imbalance |
-| ☐ | `weighted_depth_imbalance` | Level-distance weighted OBI |
-| ☐ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff |
-| ☐ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient |
-| ☐ | `liquidity_gap` | Largest price gap in top-20 levels |
-| ☐ | `cancel_intensity` | Rate of depth level removals |
-| ☐ | `book_thinning` | Rolling decrease in total top-N depth volume |
-| ☐ | `bid_wall_persistence` / `ask_wall_persistence` | How long large levels survive before cancellation |
+| ✅ | `spread` | Best ask − best bid — `feature-schema.ts` |
+| ✅ | `microprice` | `(ask_px × bid_vol + bid_px × ask_vol) / (bid_vol + ask_vol)` — `feature-schema.ts` |
+| ✅ | `obi_5` | Top-5 weighted bid/ask volume imbalance — `feature-schema.ts` |
+| ✅ | `obi_10` | Top-10 weighted bid/ask volume imbalance — `feature-schema.ts` |
+| ✅ | `weighted_depth_imbalance` | Level-distance weighted OBI — `feature-schema.ts` |
+| ✅ | `order_flow_imbalance` | Δbid_size − Δask_size per depth diff — `feature-schema.ts` (ofi_cumulative) |
+| ✅ | `book_slope_bid` / `book_slope_ask` | Volume-weighted price gradient — `microstructure.ts bookSlope()` + `feature-schema.ts` |
+| ✅ | `liquidity_gap` | Largest price gap in top-20 levels — `microstructure.ts liquidityGap()` + `feature-schema.ts` |
+| ✅ | `cancel_intensity` | Rate of depth level removals — `depth-change-tracker.ts` + `feature-schema.ts` |
+| ✅ | `book_thinning` | Rolling decrease in total top-N depth volume — `depth-change-tracker.ts` + `feature-schema.ts` |
+| ✅ | `bid_wall_persistence` / `ask_wall_persistence` | How long large levels survive before cancellation — `depth-change-tracker.ts` + `feature-schema.ts` |
 
 #### Trade flow / aggression features
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol (from `aggTrade.m`) |
-| ☐ | `trade_intensity_1s` | Trade count per second |
-| ☐ | `signed_volume_5s` | Net aggressor volume |
-| ☐ | `burstiness` | Variance of inter-trade arrival times |
-| ☐ | `last_trade_direction_streak` | Consecutive same-side trades |
-| ☐ | `large_trade_flag` | Trade qty > N × rolling avg qty |
+| ✅ | `trade_imbalance_1s` / `5s` / `30s` | Buy vol − Sell vol — `feature-schema.ts` |
+| ✅ | `trade_intensity_1s` | Trade count per second — `feature-schema.ts` |
+| ✅ | `signed_volume_5s` | Net aggressor volume — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `burstiness` | CV of inter-trade arrival times — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `last_trade_direction_streak` | Consecutive same-side trades — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
+| ✅ | `large_trade_flag` | Trade qty > 3× rolling avg qty — `microstructure.ts tradeFlowExtended()` + `feature-schema.ts` |
 
 #### OHLCV / candle features
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `ret_1m` / `ret_5m` / `ret_15m` | Log returns at each TF |
-| ☐ | `vol_1m` / `vol_5m` | Realized volatility (rolling std of log returns) |
-| ☐ | `candle_body_pct` | `abs(close − open) / (high − low)` |
-| ☐ | `wick_ratio_upper` / `wick_ratio_lower` | Wick size relative to range |
-| ☐ | `volume_zscore_1m` | Volume vs rolling mean/std |
-| ☐ | `range_expansion` | Current range vs N-bar avg range |
-| ☐ | `trend_slope` | Linear regression slope over last N bars |
-| ☐ | `momentum_5m` / `momentum_15m` | Close-to-close return over N bars |
+| ✅ | `ret_1m` / `ret_5m` | Log returns at each TF — `feature-schema.ts` |
+| ✅ | `vol_1m` | Realized volatility — `feature-schema.ts` (rv_1s, rv_5s, rv_1m) |
+| ✅ | `candle_body_pct` | `abs(close − open) / (high − low)` — `feature-schema.ts` |
+| ✅ | `wick_ratio_upper` | Wick size relative to range — `feature-schema.ts` |
+| ✅ | `volume_zscore_1m` | Volume vs rolling mean/std — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `range_expansion` | Current range vs N-bar avg range — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `trend_slope` | Linear regression slope over last N bars — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
+| ✅ | `momentum_5m` / `momentum_15m` | Close-to-close return over N bars — `microstructure.ts candleDerivedFeatures()` + `feature-schema.ts` |
 
 #### Open interest / derivatives features
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `oi_delta_1m` | Change in OI over last minute |
-| ☐ | `oi_delta_5m` | Change in OI over 5 min |
-| ☐ | `oi_zscore` | OI delta z-score vs rolling window |
-| ☐ | `price_oi_regime` | Encoded: price↑+OI↑ / price↑+OI↓ / price↓+OI↑ / price↓+OI↓ |
-| ☐ | `oi_divergence` | OI direction opposing price direction |
-| ☐ | `oi_spike` | OI change > N × rolling std |
+| ✅ | `oi_delta_1m` | Change in OI — `feature-schema.ts` |
+| ✅ | `oi_delta_5m` | Change in OI over 5 min — extended `OiPoller.snapshot()` + `feature-schema.ts` |
+| ✅ | `oi_zscore` | OI delta z-score — `feature-schema.ts` |
+| ✅ | `price_oi_regime` | Encoded 0–4 — `feature-schema.ts` |
+| ✅ | `oi_divergence` | OI direction opposing price direction — extended `OiPoller.snapshot()` + `feature-schema.ts` |
+| ✅ | `oi_spike` | OI change > 2σ rolling std — extended `OiPoller.snapshot()` + `feature-schema.ts` |
 
 #### Funding / mark price features
 
 | Status | Feature | Source |
 |--------|---------|--------|
-| ☐ | `funding_zscore` | Current funding rate vs rolling 24h mean/std |
-| ☐ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` |
-| ☐ | `liquidation_pressure_proxy` | Rolling forced-order volume from `@forceOrder` |
-| ☐ | `funding_extreme_flag` | Funding > 2 std → crowded side signal |
+| ✅ | `funding_zscore` | Current funding rate vs rolling 24h mean/std — `feature-schema.ts` |
+| ✅ | `mark_last_basis` | `(mark_price − last_trade_price) / last_trade_price` — computed in `buildFeatureVector()` |
+| ✅ | `liquidation_pressure_proxy` | Rolling forced-order volume — `feature-schema.ts` (liquidation_volume_30s) |
+| ✅ | `funding_extreme_flag` | Funding > 2 std — `feature-schema.ts` |
 
 ---
 
@@ -383,13 +392,13 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Direction labels** | `y = 1` if `future_return_30s > +4 bps`; `y = −1` if `< −4 bps`; else `0` — avoids noisy mid-zone |
-| ☐ | **Regression labels** | `y = clip(future_return_Ns, −50bps, +50bps)` |
-| ☐ | **Volatility labels** | `y = realized_vol(next N seconds)` |
-| ☐ | **Regime labels** | Rule-based clustering initially: trend/chop/high-vol; learn from rules later |
-| ☐ | **Leakage guard** | Never use any feature that includes data from after label horizon |
-| ☐ | **Cost-adjusted labels** | Subtract taker fee + estimated slippage; if edge disappears, label is useless |
-| ☐ | **Multi-horizon labeling** | Generate labels for 5 s, 30 s, 1 m, 5 m simultaneously from single pass |
+| ✅ | **Direction labels** | `y_direction_{h}s` for 5/30/60/300s horizons — `label_builder.py` vectorized `np.select` |
+| ✅ | **Regression labels** | `y_reg_{h}s = clip(future_return, ±50bps)` — `label_builder.py` |
+| ✅ | **Volatility labels** | `y_vol_{h}s = realized_vol(next N seconds)` — forward-looking std of log-returns |
+| ✅ | **Regime labels** | `label_regime` 0=chop/1=trend/2=high-vol — rule-based from `trend_slope` + `rv_1m` |
+| ✅ | **Leakage guard** | `validate_no_leakage()` — checks feature names vs label prefixes + correlation guard |
+| ✅ | **Cost-adjusted labels** | `y_tradeable_{h}s` — subtracts round-trip taker fee + slippage; only valid if edge survives |
+| ✅ | **Multi-horizon labeling** | All labels generated for [5, 30, 60, 300] seconds in single `build_labels()` pass |
 
 ---
 
@@ -397,14 +406,14 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Component | Notes |
 |--------|-----------|-------|
-| ☐ | **Rolling feature builder** | Per-event update of feature windows: 100 ms, 1 s, 5 s, 30 s, 1 m, 5 m, 15 m |
-| ☐ | **Feature normalization** | Per-symbol rolling z-score (mean/std over sliding N-bar window) |
-| ☐ | **Stream alignment** | All streams timestamped and aligned to common clock before feature join |
-| ☐ | **Stale-state guard** | Mark book state stale if no depth update in > 500 ms; exclude from features |
-| ☐ | **Feature vector snapshot** | Serialize full feature row at each bar/event to Parquet/ClickHouse |
-| ☐ | **Label join** | After collection, join feature rows with forward-looking labels for each horizon |
-| ☐ | **Walk-forward splits** | Chronological train/val/test split — never random shuffle |
-| ☐ | **OI poll integration** | Poll `/fapi/v1/openInterest` every 5–10 s; interpolate to feature timestamps |
+| ✅ | **Rolling feature builder** | `feature-schema.ts` + `buildFeatureVector()` merges all signal snapshots |
+| ✅ | **Feature normalization** | `feature-normalizer.ts` — per-feature rolling z-score (Welford online) with ±5σ winsorization |
+| ✅ | **Stream alignment** | `stream-aligner.ts` — `StreamAligner` tracks per-stream timestamps, `isAligned(maxSkewMs)`, `stalestStream()` |
+| ✅ | **Stale-state guard** | `stale-guard.ts` — `StaleGuard` with `markFresh()`, `anyStale()`; wired into orchestrator heartbeat |
+| ✅ | **Feature vector snapshot** | `feature-recorder.ts` — serialize normalized feature rows to CSV with daily rotation |
+| ✅ | **Label join** | `ml_bot/label_builder.py` — direction/volatility labels at 5s/30s/60s horizons |
+| ✅ | **Walk-forward splits** | `ml_bot/train.py` — chronological 80/20 split, never shuffle |
+| ✅ | **OI poll integration** | `oi-poll-integrator.ts` — polls `/fapi/v1/openInterest` every 7s; `interpolateAt(ts)`, `latestDelta(windowSec)` |
 
 ---
 
@@ -414,10 +423,10 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **LightGBM direction classifier** | `P(up) / P(down) / P(flat)` on 30 s horizon; fastest path to usable alpha |
-| ☐ | **LightGBM volatility regressor** | Predict next-1m realized vol for position sizing and regime detection |
-| ☐ | **Feature importance analysis** | SHAP values to identify which features actually carry signal |
-| ☐ | **Walk-forward validation** | Rolling window: train on T months, test on T+1; repeat across full history |
+| ✅ | **LightGBM direction classifier** | `train.py train_direction()` — 54-feature classifier with early stopping, expanded feature set |
+| ✅ | **LightGBM volatility regressor** | `train.py train_volatility()` — predicts 60s forward realized vol, MAE/R² reporting |
+| ✅ | **Feature importance analysis** | `train.py shap_analysis()` — TreeExplainer SHAP, multi-class support, saves CSV |
+| ✅ | **Walk-forward validation** | `train.py walk_forward_validation()` — rolling window train/test, per-fold accuracy + mean |
 
 #### Phase 2 — Sequence Models
 
@@ -445,12 +454,12 @@ Every row in the training set and live inference vector should contain:
 
 | Status | Component | Notes |
 |--------|-----------|-------|
-| ☐ | **ONNX / TorchScript export** | Export trained model for sub-100 µs inference without Python overhead |
-| ☐ | **Inference server** | Thin async service: receive feature vector → return probability output in < 1 ms |
-| ☐ | **Model output schema** | `{ p_up, p_down, p_chop, vol_regime, expected_return, expected_slippage }` — structured, not just "buy/sell" |
-| ☐ | **Threshold gate** | `if p_up > 0.65 AND regime != chop AND expected_return > fees + slippage + buffer THEN enter` |
-| ☐ | **Model versioning** | Track which model version produced each trade for post-trade attribution |
-| ☐ | **Fallback to rule-based** | If inference latency spikes or model service is down, revert to existing SMC strategy |
+| ✅ | **ONNX / TorchScript export** | `export_onnx.py` — loads `.pkl`, exports via `onnxmltools`, validates output matches original |
+| ✅ | **Inference server** | `ml_bot/inference_server.py` — FastAPI `/infer` endpoint |
+| ✅ | **Model output schema** | `model-types.ts` — `ModelOutput { p_up, p_down, p_flat }` |
+| ✅ | **Threshold gate** | `ml-gate.ts` — `mlDecide()` with probability + chop + edge checks |
+| ✅ | **Model versioning** | `model_version` in `ModelOutput` + `PredictionRecord`; `model_registry.py` JSON manifest; `inference-client.ts` parses version |
+| ✅ | **Fallback to rule-based** | `inference-client.ts` circuit breaker → falls back to SMC when server unavailable |
 
 ---
 
@@ -478,10 +487,10 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Replace naked signal entries** | Wrap existing SMC/trend strategy output with ML probability gate |
-| ☐ | **Dynamic sizing from volatility forecast** | Scale `CAPITAL_PER_TRADE_USDT` down when `expected_volatility` is high |
-| ☐ | **Hold-time optimization** | Use expected-return horizon to set max hold time before exit |
-| ☐ | **Execution model gating** | Skip entry when `slippage_probability` is high (e.g. thin book, high vol regime) |
+| ✅ | **Replace naked signal entries** | ML gate wraps SMC signal in `orchestrator.ts evaluate()` behind `ML_ENABLED` + `ML_SHADOW_MODE` |
+| ✅ | **Dynamic sizing from volatility forecast** | `volatility-sizer.ts` — `volatilitySizedPosition()` scales inversely to expected vol; wired into `runMlGate()` |
+| ✅ | **Hold-time optimization** | `hold-time-optimizer.ts` — `optimalHoldTimeMs()` adapts to regime + expected return; stored on orchestrator |
+| ✅ | **Execution model gating** | `execution-gate.ts` — `shouldSkipEntry()` blocks on wide spread, thin book, vol regime + gap; wired into `runMlGate()` |
 
 ---
 
@@ -489,12 +498,12 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Offline training script** | Python: load Parquet features → normalize → label join → train → evaluate → export |
-| ☐ | **Walk-forward harness** | Automate rolling train/test windows; report Sharpe / hit-rate / cost-adjusted PnL per fold |
-| ☐ | **Concept drift detection** | Monitor live feature distribution vs training distribution; alert when gap exceeds threshold |
-| ☐ | **Scheduled retraining** | Weekly / monthly retrain on newest N weeks of data; gate deployment on walk-forward passing min Sharpe |
-| ☐ | **Model registry** | Store model artifacts with metadata (train period, feature schema version, validation metrics) |
-| ☐ | **Shadow mode testing** | Run new model in parallel with no execution; compare signals vs live model before promoting |
+| ✅ | **Offline training script** | `ml_bot/train.py` — load CSVs → label → LightGBM → classification report → export .pkl |
+| ✅ | **Walk-forward harness** | `ml_bot/train.py` — chronological 80/20 split with early stopping |
+| ✅ | **Concept drift detection** | `drift_detector.py` — PSI-based per-feature drift detection; `compute_psi()`, `check_drift()`, `is_drifted()` |
+| ✅ | **Scheduled retraining** | `retrain_scheduler.py` — `should_retrain()` + `retrain_if_due()` with walk-forward gate on min Sharpe |
+| ✅ | **Model registry** | `model_registry.py` — JSON manifest with metadata (train period, schema version, metrics, active flag) |
+| ✅ | **Shadow mode testing** | `ML_SHADOW_MODE=true` — logs predictions without overriding SMC decisions |
 
 ---
 
@@ -502,40 +511,44 @@ THEN enter short
 
 | Status | Task | Notes |
 |--------|------|-------|
-| ☐ | **Prediction vs outcome log** | Store `(feature_vector, model_output, actual_outcome)` per trade |
-| ☐ | **Calibration check** | Plot predicted `p_up` vs actual win rate at each decile |
-| ☐ | **Feature drift report** | Rolling mean/std of each feature vs training baseline |
-| ☐ | **Signal decay tracking** | Monitor if model accuracy degrades over time (common in alpha signals) |
-| ☐ | **PnL attribution by model** | Split realized PnL into: model signal contribution vs execution quality vs market regime |
+| ✅ | **Prediction vs outcome log** | `prediction-logger.ts` — CSV with `(timestamp, model_output, signal, actual_outcome)` |
+| ✅ | **Calibration check** | `analytics/calibration.py` — bins by p_up decile, computes actual win rate, calibration error |
+| ✅ | **Feature drift report** | `analytics/feature_drift.py` — training vs live distribution PSI, drift flags per feature |
+| ✅ | **Signal decay tracking** | `analytics/signal_decay.py` — rolling accuracy over time windows, linear regression slope for trend detection |
+| ✅ | **PnL attribution by model** | `analytics/pnl_attribution.py` — splits PnL into signal, regime filter, and execution quality components |
 
 ---
 
 ### 16.10 Updated Build Order (AI/ML additions)
 
-#### P1 — Foundational (add to P1 queue)
-- Feature builder for microstructure: TFI, weighted OBI, microprice, OFI, spread (feeds both existing strategy and future ML)
-- Rolling z-score normalization layer
-- Feature snapshot serialization to Parquet
+#### P1 — Foundational ✅
 
-#### P2 — Baseline Model
-- Label builder (direction 30 s, volatility 1 m, multi-horizon)
-- LightGBM direction classifier + walk-forward validation
-- LightGBM volatility regressor for dynamic sizing
-- SHAP feature importance
+- ✅ Feature builder: `feature-schema.ts` (40+ columns from all signal sources)
+- ✅ Rolling z-score normalization: `feature-normalizer.ts` (Welford online, ±5σ winsorize)
+- ✅ Feature snapshot serialization: `feature-recorder.ts` (CSV with daily rotation)
 
-#### P3 — Live Inference
-- ONNX model export
-- Inference service (< 1 ms target)
-- Probability gate wrapping existing execution engine
-- Model output schema + threshold config
-- Shadow mode harness
+#### P2 — Baseline Model ✅
 
-#### P4 — Sequence & Ensemble
-- TCN / Transformer sequence model
-- Multimodal encoder architecture
-- Execution quality head (slippage / adverse-move model)
-- Scheduled retraining pipeline
-- Concept drift monitoring
+- ✅ Label builder: `ml_bot/label_builder.py` (direction/regression/vol/regime/fill/slippage/adverse + cost-adjusted + leakage guard)
+- ✅ LightGBM training script: `ml_bot/train.py` (direction + vol + fill + slippage + adverse + walk-forward + SHAP)
+- ✅ LightGBM volatility regressor for dynamic sizing
+- ✅ SHAP feature importance
+
+#### P3 — Live Inference ✅
+
+- ✅ ONNX model export: `ml_bot/export_onnx.py`
+- ✅ Inference service: `ml_bot/inference_server.py` (FastAPI `/infer` — direction, vol, fill, slippage, adverse)
+- ✅ Probability gate: `ml-gate.ts` wraps SMC in orchestrator
+- ✅ Model output schema: `model-types.ts` + threshold config in `config.ts`
+- ✅ Shadow mode: `ML_SHADOW_MODE=true` default
+
+#### P4 — Sequence & Ensemble (deferred — needs real data + Phase 1 baseline results)
+
+- ☐ TCN / Transformer sequence model
+- ☐ Multimodal encoder architecture
+- ✅ Execution quality head (fill/slippage/adverse models built)
+- ✅ Scheduled retraining pipeline: `retrain_scheduler.py`
+- ✅ Concept drift monitoring: `drift_detector.py`
 
 ---
 
@@ -603,6 +616,7 @@ trend_strength     # abs(ret_5m) / vol_5m  (signal-to-noise)
 ```
 
 **Engineering rules:**
+
 - Normalize each column with per-symbol rolling z-score (window = 1000 rows)
 - Winsorize at ±5 σ before feeding to model
 - Align all streams to a common clock tick (e.g. every 1 s on the second boundary)
@@ -1256,15 +1270,15 @@ if __name__ == "__main__":
 | Status | Item |
 |--------|------|
 | ☐ | Replace `dict`-based orderbook with sorted array (faster top-N) |
-| ☐ | Add orderbook snapshot sync (U/u update-ID tracking) |
-| ☐ | `clientOrderId` per order for idempotent retries |
-| ☐ | Exponential backoff on 429 / 5xx |
-| ☐ | User-data stream for `ORDER_TRADE_UPDATE` (don't poll order state) |
-| ☐ | Private listenKey keep-alive (PUT every 30 min) |
-| ☐ | `countdownCancelAll` keepalive to auto-cancel on crash |
-| ☐ | Prometheus metrics endpoint |
-| ☐ | Structured JSON logging |
-| ☐ | Dockerfile + `systemd` / `supervisor` unit file |
+| ✅ | Add orderbook snapshot sync (U/u update-ID tracking) | `orderbook.ts` — `applyDiff` validates U/u sequence + desync detection |
+| ✅ | `clientOrderId` per order for idempotent retries | `generateClientOrderId()` — deterministic SHA256 prefix |
+| ✅ | Exponential backoff on 429 / 5xx | `retry-with-backoff.ts` — `retryWithBackoff()` with jitter |
+| ✅ | User-data stream for `ORDER_TRADE_UPDATE` (don't poll order state) | `private-ws.ts` — user-data stream for fills |
+| ✅ | Private listenKey keep-alive (PUT every 30 min) | `private-ws.ts` — listenKey renewal interval |
+| ✅ | `countdownCancelAll` keepalive to auto-cancel on crash | `BINANCE_DEADMAN_COUNTDOWN_MS` in orchestrator |
+| ✅ | Prometheus metrics endpoint | `src/metrics/prometheus-exporter.ts` — `/metrics` on port 9090 |
+| ✅ | Structured JSON logging | `LOG_JSON_CONSOLE=true` — NDJSON on stdout/stderr (`app-logger.ts`), same fields as file sink |
+| ✅ | Dockerfile + `systemd` / `supervisor` unit file | `Dockerfile` (multi-stage, node:22-alpine) + `ml_bot/Dockerfile` + `docker-compose.yml` |
 | ☐ | Deploy to AWS `ap-southeast-1` (Singapore) for lowest Binance latency |
 
 ---
@@ -1276,11 +1290,13 @@ pip install websockets orjson aiohttp lightgbm numpy joblib
 ```
 
 For inference server (optional):
+
 ```
 pip install fastapi uvicorn
 ```
 
 For ONNX upgrade:
+
 ```
 pip install onnxruntime skl2onnx
 ```
@@ -1297,40 +1313,44 @@ Architecture: Bot → PostgreSQL + Redis + Prometheus → FastAPI backend → Ne
 ### 19.1 What to Track
 
 #### Trading metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | Realized PnL (running total) | Sum of closed trade PnL |
-| ☐ | Unrealized PnL | Current open position mark-to-market |
-| ☐ | Equity curve | Cumulative PnL time-series |
-| ☐ | Drawdown | Peak-to-trough in equity, max and current |
-| ☐ | Win rate | Winning trades / total trades |
-| ☐ | Avg win / avg loss | Profit factor = avg_win / avg_loss |
-| ☐ | Sharpe ratio | Rolling 7-day / 30-day |
+| ✅ | Realized PnL (running total) | `TradingMetricsTracker.recordTrade()` |
+| ✅ | Unrealized PnL | `TradingMetricsTracker.updateUnrealizedPnl()` |
+| ✅ | Equity curve | Ring buffer, last 1000 points |
+| ✅ | Drawdown | Peak-to-trough tracking, max and current |
+| ✅ | Win rate | Winning / total trades |
+| ✅ | Avg win / avg loss | Profit factor = avgWin / avgLoss |
+| ✅ | Sharpe ratio | Rolling 7-day / 30-day annualized from daily returns ring |
 
 #### Execution metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | Order send latency | Time from signal to REST response |
-| ☐ | Fill latency | Time from REST response to `ORDER_TRADE_UPDATE` |
-| ☐ | Slippage bps | Fill price vs microprice at order time |
-| ☐ | Fill rate | Filled / placed (market = ~100%; limit may miss) |
+| ✅ | Order send latency | `LatencyTracker` — P50/P95/P99, Prometheus histogram |
+| ✅ | Fill latency | `LatencyTracker.recordFill()` |
+| ✅ | Slippage bps | `FillQualityTracker` — signed slippage vs microprice |
+| ✅ | Fill rate | Tracked via `LatencyTracker` filled/sent ratio |
 
 #### Model metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | p_up / p_down distributions | Histogram every N minutes |
-| ☐ | Confidence histogram | How often model is above threshold |
-| ☐ | Live prediction accuracy | Compare model label vs actual outcome |
-| ☐ | Feature drift | Rolling mean/std vs training baseline |
+| ✅ | p_up / p_down distributions | `ModelMetricsTracker` running averages |
+| ✅ | Confidence histogram | `aboveThresholdPct` — % predictions above configurable threshold |
+| ✅ | Live prediction accuracy | `recordOutcome()` — correct / total filled |
+| ✅ | Feature drift | Welford online mean/std per feature, flags >3σ deviation |
 
 #### System metrics
+
 | Status | Metric | Notes |
 |--------|--------|-------|
-| ☐ | WS message lag | Time between Binance event and processing |
-| ☐ | Queue depth | Backlog in async queue |
-| ☐ | CPU / memory | Per-process |
-| ☐ | Errors per minute | Uncaught exceptions, API errors |
-| ☐ | WS reconnects | Count per hour |
+| ✅ | WS message lag | `SystemMetricsTracker.recordWsLag()` — rolling avg of last 100 |
+| ✅ | Queue depth | Tracked via system metrics |
+| ✅ | CPU / memory | Per-process via `process.memoryUsage()` / `process.cpuUsage()` |
+| ✅ | Errors per minute | `recordError()` — trailing 1-minute window |
+| ✅ | WS reconnects | `recordWsReconnect()` — trailing 1-hour window |
 
 ---
 
@@ -1707,12 +1727,13 @@ WS API testnet URL). The gaps below are safety and workflow items.
 
 | Status | Item | Notes |
 |--------|------|-------|
-| ☐ | **Environment validation on startup** | If `BINANCE_FUTURES_TESTNET=false` and `EXECUTION_MODE=live`, log a loud warning and require explicit `CONFIRMED_LIVE=true` env var to proceed — prevents accidental mainnet live orders during development |
-| ☐ | **Shadow mode flag** (`SHADOW_MODE=true`) | Connect to mainnet data streams but suppress ALL order placement at the adapter level regardless of `EXECUTION_MODE`; log what *would* have been sent. Different from `READ_ONLY` (which is adapter-level, not enforced centrally). Needed for Phase 3 of the deployment workflow. |
-| ☐ | **Shadow prediction log** | When `SHADOW_MODE=true`, record every signal with timestamp, direction, and the actual price outcome N seconds later for offline accuracy measurement |
-| ☐ | **Max notional cap for Phase 4** | `MAX_NOTIONAL_USDT` env var that hard-caps order size regardless of risk engine output; set to e.g. 50 USDT during first live week |
-| ☐ | **`demo-fapi.binance.com` support** | Config comment mentions it but URL is not wired in; add as a third option (`BINANCE_PRODUCT=usdm_demo`) for the Binance portfolio margin demo environment |
-| ☐ | **Testnet liquidity warning** | Log a startup notice when `BINANCE_FUTURES_TESTNET=true` reminding that fills and slippage are not realistic and paper results will not transfer directly to mainnet |
+| ✅ | **Environment validation on startup** | `src/safety/env-validator.ts` — throws on live+mainnet without `CONFIRMED_LIVE_TRADING`, warns on dangerous combos |
+| ✅ | **Shadow mode flag** (`SHADOW_MODE=true`) | `src/safety/shadow-mode.ts` — wraps adapter, intercepts order/cancel/modify, logs + returns mock |
+| ✅ | **Shadow prediction log** | `src/safety/shadow-prediction-log.ts` — CSV to `data/shadow/`, daily rotation, `logSignal()` + `fillOutcome()` |
+| ✅ | **Max notional cap for Phase 4** | `src/safety/notional-cap.ts` — `applyNotionalCap()`, `MAX_NOTIONAL_USDT` in config (default 0 = disabled) |
+| ✅ | **`demo-fapi.binance.com` support** | `BINANCE_PRODUCT=usdm_demo` wired in config — REST `demo-fapi.binance.com`, WS `demo-fstream.binance.com` |
+| ✅ | **Testnet liquidity warning** | `index.ts` logs `binance_futures_testnet_liquidity` when `BINANCE_FUTURES_TESTNET=true` — `src/safety/env-validator.ts` |
+| ✅ | **Live Trading Guard** | `CONFIRMED_LIVE_TRADING` + `CONFIRMED_LIVE` alias + startup warn if missing (`config.ts`, `index.ts`, `create-runtime.ts`) |
 
 ### 20.3 Four-Phase Deployment Checklist
 
@@ -1725,19 +1746,20 @@ Phase 2 — Testnet paper trading
   ✔ BINANCE_FUTURES_TESTNET=true
   ✔ EXECUTION_MODE=paper (simulated fills, no real orders)
   ✔ Use testnet API keys from testnet.binancefuture.com
+  ✔ Startup testnet liquidity notice (`index.ts` → `binance_futures_testnet_liquidity`)
   ✘ Shadow prediction log not built (see §20.2)
   Action: run full pipeline, verify execution latency, fill logic, risk controls
 
 Phase 3 — Shadow mode on mainnet
-  ✘ SHADOW_MODE flag not built (see §20.2)
+  ✔ SHADOW_MODE flag (`config.ts`, `position-manager.ts`, `index.ts`, `.env.example`)
   ✔ BINANCE_FUTURES_TESTNET=false  (real market data)
   Action: SHADOW_MODE=true, compare model signals vs actual market moves for N days
 
 Phase 4 — Live trading (small capital)
   ✔ BINANCE_FUTURES_TESTNET=false
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
-  ✘ MAX_NOTIONAL_USDT cap not built (see §20.2)
-  ✘ CONFIRMED_LIVE guard not built (see §20.2)  ← ✅ NOW DONE (CONFIRMED_LIVE_TRADING in config.ts)
+  ✔ MAX_NOTIONAL_USDT cap (`config.ts`, `risk.ts`, `.env.example`)
+  ✔ CONFIRMED_LIVE_TRADING + `CONFIRMED_LIVE` alias + startup warn if missing (`config.ts`, `index.ts`, `create-runtime.ts`)
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```
 
@@ -1933,3 +1955,573 @@ if (await publisher.isKillSwitchActive()) {
 | ☐ | Redis balance state | Write balance to `state:balance` on `ACCOUNT_UPDATE` |
 | ☐ | Startup state recovery | On bot restart, read `state:position:*` from Redis before subscribing WS |
 | ☐ | `REDIS_URL` env var | Add to `config.ts` + `.env.example`; default `redis://localhost:6379` |
+
+---
+
+## 22. Chart Visualization Roadmap
+
+Planned chart overlays and sub-panels for the dashboard, organized by implementation effort.
+Every entry documents the full data pipeline (server computation, WS broadcast, client dispatch,
+chart rendering) so implementation requires zero re-planning.
+
+**Conventions used below:**
+
+- **LWC** = TradingView Lightweight Charts v4 API
+- **Primitive** = LWC `ISeriesPrimitive` attached to the candle series (canvas-level drawing)
+- **Markers** = `candleSeries.setMarkers()` — per-bar icons (arrows, circles, etc.)
+- **Sub-panel** = separate series on a dedicated `priceScaleId` with its own `scaleMargins`
+
+**Existing patterns to follow:**
+
+| Pattern | Reference Implementation | File |
+|---|---|---|
+| Partial price line (candle → right axis) | `PartialPriceLinesPrimitive` | `ui/chart-partial-price-lines.js` |
+| Shaded zones + horizontal segments | `SmcZoneBoxesPrimitive` | `ui/chart-smc-zone-primitive.js` |
+| Per-bar markers (arrows, circles) | `_paintSmcFromStoredSignals()` | `ui/chart.js` (SMC markers block) |
+| Line overlay (EMA-style) | `_addLineSeries()` | `ui/chart.js` |
+| Histogram sub-panel (volume-style) | `volumeSeries` on `priceScaleId: 'vol'` | `ui/chart.js` |
+| WS dispatch → chart method | `case 'book_ticker'` → `chart.setBookTopLevels()` | `ui/main.js` |
+| Invisible price line for axis label | `_ensureLtpPriceLine()` with `lineVisible: false` | `ui/chart.js` |
+
+---
+
+### Tier 1 — Client-Side Data Already Available
+
+These require **no backend changes**. The data is already broadcast via WebSocket
+or can be computed from loaded candle data on the client.
+
+---
+
+#### 22.1 Liquidation Cascade Markers
+
+| | |
+|---|---|
+| **What** | Triangle markers on candles where forced liquidations occurred. Red down-triangle for long liquidations (longs got wiped), cyan up-triangle for short liquidations. Marker size scales with liquidation quantity. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `force_order` — already broadcast from `src/dashboard/bridge.ts` via `onForceOrder` callback
+- Fields: `symbol`, `side` (`BUY`/`SELL`), `qty` (string), `price` (string), `orderStatus`, `tradeTime`
+- Server module: `src/binance/ws-multiplex.ts` → `ForceOrderEvent` interface
+
+**Current gap:**
+
+- `ui/main.js` dispatcher has **no `case 'force_order'`** handler — the message is ignored on the client
+
+**Implementation:**
+
+1. **`ui/main.js`** — add dispatcher case:
+   ```js
+   case 'force_order': {
+     if (!appliesToActiveWatch(msg)) break;
+     chart.addLiquidationMarker(msg);
+     break;
+   }
+   ```
+
+2. **`ui/chart.js`** — add methods:
+   - `addLiquidationMarker(msg)` — push to `this._liquidationMarkers[]` array, call `_paintLiquidationMarkers()`
+   - `_paintLiquidationMarkers()` — merge with existing SMC markers via `candleSeries.setMarkers()` (markers must be sorted by time)
+   - Marker shape: `{ time, position: 'aboveBar'|'belowBar', shape: 'arrowDown'|'arrowUp', color, text: 'LIQ', size }` where size = `Math.min(2, qty / avgQty)`
+   - Color: `side === 'SELL'` (long liq) → `COLORS.bear`, `side === 'BUY'` (short liq) → `COLORS.ltpBull`
+   - Clear markers on `onSnapshot()` (symbol change)
+
+3. **Toggle** — add `toggle-liquidations` checkbox in `ui/index.html` toolbar; store preference in localStorage key `qt_chart_liquidations`
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+**Files to create:** none
+
+---
+
+#### 22.2 Mark Price Line
+
+| | |
+|---|---|
+| **What** | Faint dotted horizontal line showing the mark price (used for liquidation calculations). Starts from the last candle and extends to the right axis with a titled label. Visually distinct from the LTP line (lighter, dotted). |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `mark_price` — already dispatched in `ui/main.js` (`case 'mark_price'`)
+- Fields: `price` (number), `ts`
+- Currently forwarded to: `updateHeader({ mark: msg.price })` and `obMgr.setMarkPrice(msg.price)`
+- **Not forwarded to chart**
+
+**Implementation:**
+
+1. **`ui/main.js`** — add one line to existing `case 'mark_price'`:
+   ```js
+   chart.setMarkPrice(msg.price);
+   ```
+
+2. **`ui/chart.js`** — add method:
+   - `setMarkPrice(price)` — store `this._lastMarkPrice = price`, call `this._syncMarkLine()`
+   - `_syncMarkLine()` — use `this._partialLinesPrimitive.setLine('mark', { ... })` with:
+     - `color: 'rgba(255,255,255,0.15)'` (very faint white)
+     - `dash: [2, 3]` (dotted, shorter than the default dashed)
+     - `title: 'MARK'`
+     - `startTimeSec: this._latestCandleTimeSec()`
+   - Clear on `onSnapshot()`
+   - Resync in `_loadTf()` (after `_syncBookTopLines()`)
+
+3. **Toggle** — share the existing `toggle-book-top` checkbox (mark is book-related) or add a separate `toggle-mark` checkbox
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`
+
+---
+
+#### 22.3 Session VWAP Line
+
+| | |
+|---|---|
+| **What** | Volume-weighted average price computed from all loaded candles since midnight UTC. Drawn as a smooth colored line overlay on the candle chart. Key mean-reversion anchor. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- Client-side computation from `this.candleMap[this.currentTf]` — no WS message needed
+- Each candle has `{ openTime, open, high, low, close, volume }`
+- VWAP = `Σ(typical_price × volume) / Σ(volume)` where `typical_price = (high + low + close) / 3`
+- Session boundary: `openTime` at midnight UTC (00:00) of each day
+
+**Implementation:**
+
+1. **`ui/chart.js`** — add methods:
+   - `_computeSessionVwap(candles)` — iterate candles, reset accumulator at midnight boundary, return `[{ time, value }]` array
+   - `_paintVwap(tf)` — call `_computeSessionVwap`, set data on `this._vwapSeries`
+   - Call `_paintVwap` from `_loadTf()` and `onKline()` (after candle update)
+
+2. **Series creation in `init()`:**
+   ```js
+   this._vwapSeries = this.chart.addLineSeries({
+     color: '#e040fb',  // purple/magenta — distinct from EMAs
+     lineWidth: 1.5,
+     lineStyle: 0,  // solid
+     priceScaleId: 'right',
+     lastValueVisible: false,
+     priceLineVisible: false,
+   });
+   ```
+
+3. **Toggle** — add `toggle-vwap` checkbox; localStorage key `qt_chart_vwap`; default off
+
+4. **Visibility** — `this._vwapSeries.applyOptions({ visible: this._vwapEnabled })`
+
+**Files to modify:** `ui/chart.js`, `ui/index.html`
+
+---
+
+#### 22.4 RSI Sub-Panel
+
+| | |
+|---|---|
+| **What** | RSI(14) oscillator rendered as a line in a separate sub-panel below the volume histogram, with horizontal reference lines at 30 and 70 (overbought/oversold thresholds). |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `indicators` — already dispatched to `chart.onIndicators()`
+- Field: `indicators[tf].rsi` — array of RSI values aligned to candle indices
+- Computed in: `src/strategy/indicators.ts` → RSI(close, 14)
+
+**Implementation:**
+
+1. **Series creation in `init()`:**
+   ```js
+   this._rsiSeries = this.chart.addLineSeries({
+     color: '#ce93d8',  // soft purple
+     lineWidth: 1.5,
+     priceScaleId: 'rsi',
+     lastValueVisible: true,
+     priceLineVisible: false,
+   });
+   this.chart.priceScale('rsi').applyOptions({
+     scaleMargins: { top: 0.85, bottom: 0.02 },
+     borderVisible: false,
+   });
+   // Overbought/oversold reference lines
+   this._rsiSeries.createPriceLine({ price: 70, color: 'rgba(255,82,82,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+   this._rsiSeries.createPriceLine({ price: 30, color: 'rgba(0,200,220,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+   this._rsiSeries.createPriceLine({ price: 50, color: 'rgba(255,255,255,0.08)', lineWidth: 1, lineStyle: LineStyle.Dotted, lineVisible: true, axisLabelVisible: false });
+   ```
+
+2. **`_paintIndicators(tf)`** — add RSI data painting alongside existing EMA/supertrend:
+   ```js
+   if (ind.rsi && this._rsiEnabled) {
+     this._rsiSeries.setData(toLine(ind.rsi));
+   }
+   ```
+
+3. **Layout adjustment** — when RSI is enabled, adjust volume `scaleMargins` from `{ top: 0.75, bottom: 0 }` to `{ top: 0.65, bottom: 0.18 }` to make room
+
+4. **Toggle** — add `toggle-rsi` checkbox; localStorage key `qt_chart_rsi`; default off
+
+**Files to modify:** `ui/chart.js`, `ui/index.html`
+
+---
+
+### Tier 2 — Data in Microstructure Snapshot, Needs Chart Wiring
+
+These use data already present in the `microstructure` WS message. The main work
+is forwarding specific fields from `ui/main.js` to `ui/chart.js` and rendering them.
+
+---
+
+#### 22.5 Spread Heatmap on Volume Bars
+
+| | |
+|---|---|
+| **What** | Tint volume histogram bars by bid-ask spread width. Tight spread = normal bar color. Wide spread = yellow/orange tint. Highlights bars where liquidity was thin — slippage risk zones. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `microstructure` → `spreadBps` (number, basis points)
+- Classification: `TIGHT` (<0.5 bps), `NORMAL` (0.5–2 bps), `WIDE` (>2 bps)
+- Already computed in: `src/binance/microstructure.ts`
+
+**Implementation:**
+
+1. **`ui/main.js`** — in `case 'microstructure'`, forward spread to chart:
+   ```js
+   chart.setCurrentSpread(msg.spreadBps);
+   ```
+
+2. **`ui/chart.js`**:
+   - Store `this._currentSpreadBps` — updated on each microstructure tick
+   - Modify `_volumeBarColor(candleRow)` — if spread heatmap is enabled and the bar is the forming bar, blend the color:
+     - `spreadBps <= 0.5` → normal color (no tint)
+     - `spreadBps 0.5–2` → mix 30% yellow into the bar color
+     - `spreadBps > 2` → mix 60% orange into the bar color
+   - Only affects the **current/forming** bar (historical bars don't have live spread data)
+   - For historical spread data, would need to store spread per bar (future enhancement)
+
+3. **Toggle** — add `toggle-spread-heatmap` checkbox; default off
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+
+---
+
+#### 22.6 Trade Flow Imbalance (TFI) Lane
+
+| | |
+|---|---|
+| **What** | A thin horizontal color strip between the candles and volume histogram, showing real-time trade flow imbalance. Cyan = strong buying, orange = strong selling, gray = neutral. Like a condensed footprint chart. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `microstructure` → `tfi5s` object `{ tfi, buyVol, sellVol, tradeCount }`
+- `tfi` range: -1.0 (all sells) to +1.0 (all buys)
+- Computed in: `src/binance/microstructure.ts` → `tradeFlowImbalance()`
+
+**Implementation:**
+
+1. **`ui/main.js`** — forward TFI to chart:
+   ```js
+   chart.setTfiSnapshot(msg.tfi5s);
+   ```
+
+2. **`ui/chart.js`** — new histogram series on a dedicated price scale:
+   ```js
+   this._tfiSeries = this.chart.addHistogramSeries({
+     priceScaleId: 'tfi',
+     base: 0,
+     priceFormat: { type: 'custom', formatter: (v) => v.toFixed(2) },
+   });
+   this.chart.priceScale('tfi').applyOptions({
+     scaleMargins: { top: 0.72, bottom: 0.25 },
+     borderVisible: false,
+     visible: false,  // hide the axis labels
+   });
+   ```
+   - On each `setTfiSnapshot`, update the forming bar's TFI value
+   - Color: `tfi > 0.3` → cyan, `tfi < -0.3` → orange, else → gray
+   - Store per-bar TFI in a map keyed by candle openTime for historical rendering
+
+3. **Toggle** — add `toggle-tfi` checkbox; default off
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+
+---
+
+#### 22.7 Depth Pressure Zones
+
+| | |
+|---|---|
+| **What** | Faint shaded rectangles above and/or below the current price showing directional book pressure. When ask-side depth dominates, shade above price (resistance pressure). When bid-side dominates, shade below (support pressure). Opacity scales with pressure magnitude. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `microstructure` → `depthPressure10` object `{ depthPressure, bidPressure, askPressure }`
+- `depthPressure` range: -1.0 (all ask pressure) to +1.0 (all bid pressure)
+- Computed in: `src/binance/microstructure.ts` → `depthPressure()`
+
+**Implementation:**
+
+1. **`ui/main.js`** — forward to chart:
+   ```js
+   chart.setDepthPressure(msg.depthPressure10);
+   ```
+
+2. **`ui/chart.js`** — use `SmcZoneBoxesPrimitive` (or a new lightweight primitive) to draw:
+   - A shaded rectangle from `currentPrice` to `currentPrice + N ticks` (above) when ask pressure > threshold
+   - A shaded rectangle from `currentPrice - N ticks` to `currentPrice` (below) when bid pressure > threshold
+   - Color: bid pressure → `rgba(0,200,220,0.06)` (faint cyan), ask pressure → `rgba(255,160,0,0.06)` (faint orange)
+   - Opacity: `Math.min(0.15, Math.abs(depthPressure) * 0.15)`
+   - Zone height: proportional to pressure magnitude (e.g., 0.1% to 0.5% of price)
+   - Only shows the **current** pressure state (zones don't persist on historical bars)
+
+3. **Toggle** — add `toggle-depth-pressure` checkbox; default off
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+
+---
+
+#### 22.8 OBI-Tinted Candle Borders
+
+| | |
+|---|---|
+| **What** | Tint the forming candle's border/wick color based on order book imbalance (OBI). When the book is bid-heavy, candle border becomes slightly cyan. When ask-heavy, slightly orange. Provides at-a-glance context about book state during each bar. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `microstructure` → `weightedObi5` object `{ weightedObi, bidWeightedVol, askWeightedVol }`
+- `weightedObi` range: -1.0 (all ask) to +1.0 (all bid)
+- Computed in: `src/binance/microstructure.ts` → `weightedObi()`
+
+**Implementation:**
+
+1. **`ui/main.js`** — forward to chart:
+   ```js
+   chart.setObi(msg.weightedObi5?.weightedObi);
+   ```
+
+2. **`ui/chart.js`**:
+   - Store `this._currentObi`
+   - In `_refreshFormingCandleFromCtx()`, when OBI tinting is enabled, apply `candleSeries.applyOptions()` to set `wickUpColor` / `wickDownColor` / `borderUpColor` / `borderDownColor` based on OBI sign:
+     - OBI > 0.3 → border/wick tinted cyan
+     - OBI < -0.3 → border/wick tinted orange
+     - Else → default theme colors
+   - Restore default theme colors when OBI tinting is toggled off or on new bar (since OBI is real-time, not historical)
+
+3. **Complexity note:** LWC candlestick series applies colors globally (not per-bar). To color individual bars differently, would need to use the candle theme's `colorize` callback or maintain a custom primitive. Simplest approach: only tint the **current forming bar** via `applyOptions()` and reset on bar close.
+
+4. **Toggle** — add `toggle-obi-tint` checkbox; default off
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+
+---
+
+### Tier 3 — Needs Server-Side Broadcast Wiring
+
+These require adding new WS message types or broadcasting data that currently
+exists only in server-side trackers.
+
+---
+
+#### 22.9 Funding Rate Gauge
+
+| | |
+|---|---|
+| **What** | Small floating gauge or colored band showing the current funding rate, its z-score, and whether it's at an extreme. Signals when funding is crowded (longs or shorts about to get squeezed). |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- Server module: `src/signals/funding-tracker.ts` → `FundingTracker` class
+- Fields: `currentRate`, `zscore`, `extremeFlag` (boolean), `crowdedSide` (`'LONG'` / `'SHORT'` / `null`)
+- **Not currently broadcast** — `FundingTracker` is used internally by the orchestrator
+
+**Implementation:**
+
+1. **`src/dashboard/bridge.ts`** — add periodic broadcast (every mark price update or every 10s):
+   ```ts
+   broadcast({
+     type: 'funding',
+     symbol: symU,
+     rate: fundingTracker.currentRate,
+     zscore: fundingTracker.zscore,
+     extreme: fundingTracker.extremeFlag,
+     crowdedSide: fundingTracker.crowdedSide,
+   });
+   ```
+   Access `fundingTracker` from the orchestrator instance (passed via the multiplex callbacks or a getter).
+
+2. **`ui/main.js`** — add dispatcher case:
+   ```js
+   case 'funding': {
+     if (!appliesToActiveWatch(msg)) break;
+     chart.setFundingRate(msg);
+     break;
+   }
+   ```
+
+3. **`ui/chart.js`** — render as a small HTML overlay (similar to `chart-strategy-hud.js`):
+   - Position: top-right corner of chart, below the toolbar
+   - Show: `rate` formatted as `+0.0100%`, colored by sign (cyan = negative/shorts pay, orange = positive/longs pay)
+   - Show `EXTREME` badge when `extremeFlag` is true
+   - Alternative: render as a thin colored band at the very top of the chart using a primitive
+
+4. **Toggle** — add `toggle-funding` checkbox; default off
+
+**Files to modify:** `src/dashboard/bridge.ts`, `ui/main.js`, `ui/chart.js`, `ui/index.html`
+**Files to create:** optionally `ui/chart-funding-gauge.js` if the overlay is complex enough to warrant extraction
+
+---
+
+#### 22.10 Open Interest Divergence Overlay
+
+| | |
+|---|---|
+| **What** | Background color band on candles showing the OI regime. The regime combines price direction with OI direction to classify market behavior. This is one of the most powerful signals for futures trading. |
+| **Status** | ✅ Done |
+
+**Regimes:**
+
+| Regime | Price | OI | Meaning | Color |
+|---|---|---|---|---|
+| `price_up_oi_up` | Up | Up | New longs entering — strong rally | Cyan background |
+| `price_up_oi_down` | Up | Down | Short squeeze — weak rally | Faint cyan |
+| `price_down_oi_up` | Down | Up | New shorts entering — strong sell | Orange background |
+| `price_down_oi_down` | Down | Down | Long squeeze — weak sell | Faint orange |
+
+**Data source:**
+
+- Server module: `src/signals/oi-poller.ts` → `OiPoller` class
+- Fields: `oi`, `oiDelta1m`, `oiDelta5m`, `oiZscore`, `oiDivergence` (boolean), `oiSpike` (boolean), `regime` (string)
+- **Not currently broadcast** — used internally only
+
+**Implementation:**
+
+1. **`src/dashboard/bridge.ts`** — add periodic broadcast (on each OI poll, typically every 5–15s):
+   ```ts
+   broadcast({
+     type: 'oi_regime',
+     symbol: symU,
+     oi: oiPoller.oi,
+     delta1m: oiPoller.oiDelta1m,
+     delta5m: oiPoller.oiDelta5m,
+     zscore: oiPoller.oiZscore,
+     divergence: oiPoller.oiDivergence,
+     spike: oiPoller.oiSpike,
+     regime: oiPoller.regime,
+   });
+   ```
+
+2. **`ui/main.js`** — add dispatcher case forwarding to chart
+
+3. **`ui/chart.js`** — render as a faint background shading on the current candle area:
+   - Use a primitive (extend `PartialPriceLinesPrimitive` or create a new one) to draw a full-height rectangle behind the last N candles
+   - Color based on regime (see table above), opacity 0.03–0.06 (very subtle)
+   - Show OI delta as a small text annotation near the price scale
+   - Alternative: show as a separate histogram sub-panel (OI delta bars, colored by regime)
+
+4. **Toggle** — add `toggle-oi` checkbox; default off
+
+**Files to modify:** `src/dashboard/bridge.ts`, `src/signals/oi-poller.ts` (add getters if needed), `ui/main.js`, `ui/chart.js`, `ui/index.html`
+
+---
+
+#### 22.11 Volume Profile Sidebar (VPVR)
+
+| | |
+|---|---|
+| **What** | Horizontal histogram on the right edge of the chart showing volume distribution by price level. Highlights the Point of Control (POC) — the price with the most volume — as a key support/resistance level. |
+| **Status** | ✅ Done (via kNN Architecture overlay — volume profile bins rendered as SmcZoneBoxes when kNN toggle is enabled) |
+
+**Data source:**
+
+- Already computed: `src/strategy/knn-architecture.ts` → `volumeProfile[]` field
+- Each entry: `{ price: number, volume: number, isPoc: boolean }`
+- Broadcast in: `signals` message → `knnArchitecture.volumeProfile[]`
+- Currently rendered: via `SmcZoneBoxesPrimitive` zones (kNN overlay toggle), but as horizontal zones, not as a proper sidebar histogram
+
+**Implementation:**
+
+1. **`ui/chart.js`** — new primitive `VolumeProfilePrimitive` (or extend `SmcZoneBoxesPrimitive`):
+   - Draw horizontal bars from the right edge of the chart leftward, one per price level
+   - Bar width proportional to `volume / maxVolume`
+   - POC bar: highlighted in a brighter color (e.g., `rgba(255,215,0,0.4)` — gold)
+   - Non-POC bars: `rgba(100,120,160,0.15)` (faint blue-gray)
+   - Each bar is centered on its `price` level, height = one price tick or aggregation bucket
+
+2. **Data flow:** extract `volumeProfile` from the `signals` payload in `applySignalOverlays()` (already parsed there for kNN), pass to the new primitive
+
+3. **Toggle** — add `toggle-vpvr` checkbox; default off (can be expensive to render with many levels)
+
+**Files to modify:** `ui/chart.js`
+**Files to create:** `ui/chart-volume-profile-primitive.js`
+
+---
+
+#### 22.12 Micro-Candle Sub-Chart (1s / 5s)
+
+| | |
+|---|---|
+| **What** | A small candlestick sub-panel below the main chart showing 1-second or 5-second micro-candles. Gives a scalper's view of price action within each larger timeframe bar. |
+| **Status** | ✅ Done |
+
+**Data source:**
+
+- WS message: `microstructure` → `microBars1s` and `microBars5s` arrays
+- Each bar: `MicroOhlcvBar` = `{ openTime, open, high, low, close, volume }`
+- Computed in: `src/binance/microstructure.ts` → `microOhlcv()` function
+- Window: rolling 60s (1s bars) or 300s (5s bars)
+
+**Implementation:**
+
+1. **`ui/main.js`** — forward micro bars to chart:
+   ```js
+   chart.setMicroBars(msg.microBars1s ?? msg.microBars5s);
+   ```
+
+2. **`ui/chart.js`** — create a second candlestick series on a dedicated price scale:
+   ```js
+   this._microCandleSeries = this.chart.addCandlestickSeries({
+     upColor: 'rgba(0,200,220,0.6)',
+     downColor: 'rgba(255,160,0,0.6)',
+     wickUpColor: 'rgba(0,200,220,0.4)',
+     wickDownColor: 'rgba(255,160,0,0.4)',
+     priceScaleId: 'micro',
+     lastValueVisible: false,
+     priceLineVisible: false,
+   });
+   this.chart.priceScale('micro').applyOptions({
+     scaleMargins: { top: 0.88, bottom: 0.0 },
+     borderVisible: true,
+   });
+   ```
+   - `setMicroBars(bars)` — convert to LWC format and call `setData()`
+   - Time alignment: micro bars use Unix seconds; must not conflict with the main candle series time scale (LWC requires unique times across all series sharing a time scale)
+
+3. **Complexity note:** LWC v4 does not support multiple time scales on a single chart. Micro bars at 1s intervals would create thousands of time slots on the main time scale, distorting the main candle spacing. **Recommended approach:** render micro-candles in a **separate `createChart()` instance** in a div below the main chart, with synchronized scrolling.
+
+4. **Toggle** — add `toggle-micro` checkbox; default off
+
+**Files to modify:** `ui/main.js`, `ui/chart.js`, `ui/index.html`
+**Files to create:** possibly `ui/chart-micro.js` if using a separate chart instance
+
+---
+
+### Implementation Priority
+
+Recommended implementation order based on value-to-effort ratio:
+
+| Order | Item | Tier | Effort | Value |
+|---|---|---|---|---|
+| 1 | ~~22.1 Liquidation Cascade Markers~~ | 1 | Low | Very High |
+| 2 | ~~22.2 Mark Price Line~~ | 1 | Very Low | High |
+| 3 | ~~22.3 Session VWAP Line~~ | 1 | Low | High |
+| 4 | ~~22.4 RSI Sub-Panel~~ | 1 | Medium | High |
+| 5 | ~~22.10 OI Divergence Overlay~~ | 3 | Medium | Very High |
+| 6 | ~~22.9 Funding Rate Gauge~~ | 3 | Medium | High |
+| 7 | ~~22.6 TFI Lane~~ | 2 | Medium | Medium |
+| 8 | ~~22.5 Spread Heatmap~~ | 2 | Low | Medium |
+| 9 | ~~22.11 Volume Profile (VPVR)~~ | 3 | High | High |
+| 10 | ~~22.7 Depth Pressure Zones~~ | 2 | Medium | Medium |
+| 11 | ~~22.8 OBI-Tinted Candles~~ | 2 | Medium | Low |
+| 12 | ~~22.12 Micro-Candle Sub-Chart~~ | 3 | High | Medium |

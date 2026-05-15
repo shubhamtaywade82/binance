@@ -1,4 +1,4 @@
-import { binanceWsBase, binanceRestBase, multiplexBinanceSymbols, type AppConfig } from './config';
+import { binanceWsBase, binanceRestBase, multiplexBinanceSymbols, isBinanceUsdmProduct, type AppConfig } from './config';
 import { fetchBinanceKlines } from './binance/rest-klines';
 import { fetchUsdmMarkFromRest } from './binance/rest-premium-index';
 import { BinanceMarketWs, type MarkPriceUpdate, type TickerLtpUpdate } from './binance/ws-streams';
@@ -50,17 +50,40 @@ import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
 import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
+import { evaluateSwingSignal } from './strategy/swing-strategy';
+import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
-import { PositionManager } from './strategy/position-manager';
+import { PositionManager, type TrackedPosition } from './strategy/position-manager';
+import {
+  correlationGuardConflict,
+  findCorrelationCluster,
+  type PositionRiskLike,
+} from './strategy/correlation-guard';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
-import type { Candle, Side, TrendBias } from './types';
+import type { Candle, Side, TrendBias, DashboardPosition } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
+import type { TradeAttribution } from './execution/types';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
 import type { OrderTradeUpdate, AccountUpdate } from './binance/private-ws';
 import { getRedisClient } from './services/redis';
 import { publish, CHANNELS } from './services/pubsub';
 import { setPosition, clearPosition, isKillSwitchActive } from './services/state';
 import { ExecutionRouter } from './execution/execution-router';
+import { buildFeatureVector, type FeatureSourceData } from './ai/feature-schema';
+import { bookSlope, liquidityGap, tradeFlowExtended, candleDerivedFeatures } from './binance/microstructure';
+import { DepthChangeTracker } from './binance/depth-change-tracker';
+import { FeatureNormalizer } from './ai/feature-normalizer';
+import { FeatureRecorder } from './ai/feature-recorder';
+import { InferenceClient } from './ai/inference-client';
+import { mlDecide } from './ai/ml-gate';
+import { PredictionLogger } from './ai/prediction-logger';
+import { shouldSkipEntry, type ExecutionContext } from './ai/execution-gate';
+import { volatilitySizedPosition } from './ai/volatility-sizer';
+import { optimalHoldTimeMs } from './ai/hold-time-optimizer';
+import type { ExtendedModelOutput } from './ai/model-types';
+import { StaleGuard } from './ai/stale-guard';
+import { FxRateService } from './services/fx-rate';
+import { formatStatusLine } from './orchestrator/format-status-line';
 
 export interface OrchestratorLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -187,8 +210,27 @@ export class HybridOrchestrator {
   private orderRatePauseActive = false;
   private drawdownHaltLogged = false;
   private sessionPeakUsdt = 0;
+  /** Short TTL cache for `GET /fapi/v2/positionRisk` (all symbols) used by the correlation guard. */
+  private correlationPositionCache: { atMs: number; rows: PositionRiskLike[] } | null = null;
+  private static readonly CORRELATION_POSITION_TTL_MS = 5000;
+  /** Tracks session peak equity (balance + unrealized) for the paper heartbeat status line. */
+  private sessionPeakEquity = 0;
+  private currentDrawdownPct = 0;
+  private readonly fxRate: FxRateService;
   /** ioredis client — null when REDIS_URL is not configured (all publish calls are no-ops). */
   private readonly redis: ReturnType<typeof getRedisClient>;
+
+  private readonly mlNormalizer: FeatureNormalizer | null;
+  private readonly mlRecorder: FeatureRecorder | null;
+  private readonly mlInferenceClient: InferenceClient | null;
+  private readonly mlPredictionLogger: PredictionLogger | null;
+  private readonly depthChangeTracker: DepthChangeTracker | null;
+  private readonly staleGuard: StaleGuard | null;
+
+  /** Set by runMlGate when volatility model output is available. */
+  private mlVolatilitySizedQty: number | null = null;
+  /** Set by runMlGate when extended model output is available. */
+  private mlHoldTimeMs: number | null = null;
 
   constructor(
     private readonly cfg: AppConfig,
@@ -196,6 +238,9 @@ export class HybridOrchestrator {
     deps: OrchestratorDeps = {},
   ) {
     this.pairs = resolvePairMap(cfg);
+    if (cfg.ENABLE_MULTI_ASSET) {
+      applyTierOverrides(cfg.ASSET_TIER_OVERRIDES_JSON);
+    }
     this.cdcx = deps.cdcx ?? new CoinDcxFuturesClient({
       apiKey: cfg.COINDCX_API_KEY,
       apiSecret: cfg.COINDCX_API_SECRET,
@@ -204,8 +249,14 @@ export class HybridOrchestrator {
     });
     this.execution = deps.execution ?? createExecutionRuntime(cfg, this.cdcx);
     this.book = this.execution.book;
-    this.risk = new RiskManager(cfg);
-    this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log);
+    this.fxRate = new FxRateService({
+      source: cfg.INR_RATE_SOURCE,
+      refreshSec: cfg.INR_RATE_REFRESH_SEC,
+      fallbackInrPerUsdt: cfg.INR_PER_USDT,
+    });
+    this.risk = new RiskManager(cfg, this.fxRate);
+    this.execution.paperAdapter?.setFxRate(this.fxRate);
+    this.positionManager = new PositionManager(cfg, this.execution.adapter, this.risk, this.log, this.execution.pgWriter);
     this.seed = deps.seedKlines ?? fetchBinanceKlines;
     this.fetchUsdmMarkRest = deps.fetchUsdmMarkRest ?? fetchUsdmMarkFromRest;
     this.fetchHistorical = deps.fetchHistorical ?? fetchHistoricalKlines;
@@ -303,11 +354,34 @@ export class HybridOrchestrator {
     }
 
     this.redis = getRedisClient(cfg.REDIS_URL);
-  }
 
+    if (cfg.ML_ENABLED) {
+      this.mlNormalizer = new FeatureNormalizer();
+      this.mlRecorder = new FeatureRecorder(cfg.ML_FEATURE_DIR);
+      this.mlInferenceClient = new InferenceClient({
+        url: cfg.ML_INFERENCE_URL,
+        timeoutMs: cfg.ML_INFERENCE_TIMEOUT_MS,
+      });
+      this.mlPredictionLogger = new PredictionLogger(cfg.ML_PREDICTION_DIR);
+      this.depthChangeTracker = new DepthChangeTracker();
+      this.staleGuard = new StaleGuard();
+      this.log.info('ml_pipeline_initialized', { shadow: cfg.ML_SHADOW_MODE, inferenceUrl: cfg.ML_INFERENCE_URL });
+    } else {
+      this.mlNormalizer = null;
+      this.mlRecorder = null;
+      this.mlInferenceClient = null;
+      this.mlPredictionLogger = null;
+      this.depthChangeTracker = null;
+      this.staleGuard = null;
+    }
+  }
   async start(): Promise<void> {
+    // Hard reset: clear any stale UI/memory labels before reconciliation
+    this.positionManager.clearAllPositions();
+
     await this.seedCandles();
     await this.loadPrecision();
+    void this.fxRate.start();
 
     // Push exchange precision into the Binance adapter and reconcile any open position.
     if (this.cfg.BINANCE_EXECUTION_ADAPTER && this.execution.binanceRestClient) {
@@ -319,6 +393,9 @@ export class HybridOrchestrator {
       }
       const live = this.binanceLiveAdapter();
       if (live) await this.reconcileExchangePosition(live);
+    } else if (this.execution.router) {
+      // Paper or generic router reconciliation
+      await this.reconcileGenericPosition();
     }
 
     this.scheduleDeadmanAndOrderRatePolling();
@@ -338,6 +415,7 @@ export class HybridOrchestrator {
     }
     this.scheduleLtpWatchdog();
     this.scheduleRestMarkPoll();
+    this.mlRecorder?.start();
     this.scheduleHeartbeat();
     this.log.info('orchestrator_started', {
       tradingAsset: this.cfg.TRADING_ASSET,
@@ -345,22 +423,32 @@ export class HybridOrchestrator {
       coindcx: this.pairs.coindcxPair,
       readOnly: this.cfg.READ_ONLY,
       placeOrder: this.cfg.PLACE_ORDER,
+      executionMode: this.cfg.EXECUTION_MODE,
       executionAdapter: this.cfg.BINANCE_EXECUTION_ADAPTER ? 'binance' : 'coindcx',
       privateWs: this.privateWs !== null,
       usdmMarkRestPollSec:
-        this.cfg.BINANCE_PRODUCT === 'usdm' ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
+        isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT) ? this.cfg.USDM_MARK_REST_POLL_SEC : 0,
       ltpCheck: 'Wait for binance_ws_connected then ltp_connected (mark, mark_rest, or ticker).',
       logFile: this.cfg.APP_LOG_PATH.trim() || '(stdout only — set APP_LOG_PATH for NDJSON file)',
+      postgres: this.cfg.POSTGRES_URL ? 'enabled' : 'disabled',
+      prometheus: this.cfg.PROMETHEUS_ENABLED ? `:${this.cfg.PROMETHEUS_PORT}` : 'disabled',
     });
+
+    if (this.cfg.PROMETHEUS_ENABLED) {
+      import('./metrics/prometheus-exporter').then(m => m.startPrometheusServer(this.cfg.PROMETHEUS_PORT)).catch(() => {});
+    }
   }
 
   stop(): void {
     this.clearHeartbeat();
+    this.fxRate.stop();
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
     this.clearDeadmanTimer();
     this.clearOrderRateTimer();
+    this.mlRecorder?.stop();
     this.execution.stopFunding?.();
+    this.execution.stopPgWriter?.().catch(() => {});
     this.book.stop();
     if (this.ws) this.ws.stop();
     if (this.multiplex) void this.multiplex.stop();
@@ -416,21 +504,31 @@ export class HybridOrchestrator {
     const symU = symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
     const accepted = this.store.applyKline(symbol, tf, candle, isFinal);
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
-    if (tf === this.ltfTf) {
-      const series = this.store.getSeries(symbol, this.ltfTf);
-      this.c15.splice(0, this.c15.length, ...series);
-    } else if (tf === this.htfTf) {
-      const series = this.store.getSeries(symbol, this.htfTf);
-      this.c1h.splice(0, this.c1h.length, ...series);
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (isPrimary) {
+      if (tf === this.ltfTf) {
+        const series = this.store.getSeries(symbol, this.ltfTf);
+        this.c15.splice(0, this.c15.length, ...series);
+      } else if (tf === this.htfTf) {
+        const series = this.store.getSeries(symbol, this.htfTf);
+        this.c1h.splice(0, this.c1h.length, ...series);
+      }
     }
-    if (accepted && isFinal && tf === this.ltfTf) void this.evaluate(candle);
+    if (!accepted || !isFinal) return;
+    if (isPrimary && tf === this.ltfTf) void this.evaluate(candle);
+    if (this.cfg.ENABLE_MULTI_ASSET) {
+      const tier = tierFor(symU);
+      if (tier && tf === tier.ltf) {
+        void this.evaluateForSymbol(symU, tier, candle);
+      }
+    }
   }
 
   private onBookTicker(t: BookTickerEvent): void {
     const symU = t.symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (!isPrimary && !this.cfg.ENABLE_MULTI_ASSET) return;
     const tick = {
       symbol: symU,
       bestBid: t.bestBid,
@@ -445,13 +543,17 @@ export class HybridOrchestrator {
     const symU = t.symbol.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
     this.tapeFor(symU).push({ price: t.price, qty: t.qty, ts: t.ts, makerSide: t.makerSide });
-    if (symU !== this.pairs.binanceSymbol.toUpperCase()) return;
-    this.book.ingestTrade(symU, t.price);
+    const isPrimary = symU === this.pairs.binanceSymbol.toUpperCase();
+    if (isPrimary || this.cfg.ENABLE_MULTI_ASSET) {
+      this.book.ingestTrade(symU, t.price);
+    }
+    if (isPrimary) this.staleGuard?.markFresh('trade');
   }
 
   private onDepthDiffEvent(d: import('./binance/orderbook').DepthDiff & { s: string }): void {
     const symU = d.s.toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) this.staleGuard?.markFresh('depth');
     if (this.cfg.BINANCE_DEPTH_LEVELS > 0) return;
     const ob = this.obFor(symU);
     if (!ob.isBootstrapped()) {
@@ -475,6 +577,7 @@ export class HybridOrchestrator {
   private onDepthPartialEvent(p: import('./binance/ws-multiplex').DepthPartialEvent): void {
     const symU = (p.symbol ?? this.pairs.binanceSymbol).toUpperCase();
     if (!this.multiplexSymbolList.includes(symU)) return;
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) this.staleGuard?.markFresh('depth');
     this.obFor(symU).replaceFromPartial({ bids: p.bids, asks: p.asks });
     this.recordDepthSnapshot(symU);
   }
@@ -551,11 +654,150 @@ export class HybridOrchestrator {
       execTf: this.ltfTf,
       barsExec: this.c15.length,
       barsHTF: this.c1h.length,
-      inPosition: this.positionManager.hasPosition(),
+      inPosition: this.positionManager.hasOpenPosition(),
+      positions: this.positionManager.getOpenPositionCount(),
+      openSymbols: this.positionManager.getOpenSymbols(),
       tfi1s: +micro.tfi1s.tfi.toFixed(4),
       weightedObi5: +micro.weightedObi5.weightedObi.toFixed(4),
       microprice: micro.microprice != null ? +micro.microprice.toFixed(4) : null,
     });
+
+    this.emitPaperStatusLine();
+
+    if (this.mlRecorder && this.mlNormalizer) {
+      if (this.staleGuard?.anyStale()) {
+        this.log.info('ml_feature_skipped_stale', { staleSources: this.staleGuard.staleSources() });
+      } else {
+        const fv = this.buildMlFeatureVector();
+        if (fv) {
+          const normalized = this.mlNormalizer.normalize(fv);
+          this.mlRecorder.record(normalized);
+        }
+      }
+    }
+  }
+
+  private emitPaperStatusLine(): void {
+    if (this.cfg.EXECUTION_MODE !== 'paper') return;
+    const paper = this.execution.paperAdapter;
+    if (!paper) return;
+    const w = paper.getWalletState();
+    if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+    this.currentDrawdownPct = this.sessionPeakEquity > 0
+      ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+      : 0;
+    const openPositions = this.positionManager.getOpenPositionCount();
+    const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
+    const line = formatStatusLine({
+      equityUsdt: w.equityUsdt,
+      balanceUsdt: w.balanceUsdt,
+      unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+      realizedPnlUsdt: w.realizedPnlUsdt,
+      drawdownPct: this.currentDrawdownPct,
+      inrPerUsdt: this.fxRate.getInrPerUsdt(),
+      openPositions,
+      positionPnls,
+    });
+    console.log(line);
+  }
+
+  /**
+   * For each open position, compute unrealized PnL pct relative to entry, using
+   * the latest mark from the per-symbol book/tape (or entry price as a fallback).
+   */
+  private computePerSymbolPnls(): Array<{ symbol: string; unrealizedPct: number }> {
+    const out: Array<{ symbol: string; unrealizedPct: number }> = [];
+    for (const pos of this.positionManager.getOpenPositions()) {
+      const symU = pos.symbol;
+      const mark = this.getMarkForSymbol(symU) ?? pos.entryPrice;
+      if (!Number.isFinite(mark) || pos.entryPrice <= 0) continue;
+      const dir = pos.side === 'LONG' ? 1 : -1;
+      const pct = ((mark - pos.entryPrice) / pos.entryPrice) * 100 * dir;
+      out.push({ symbol: symU, unrealizedPct: pct });
+    }
+    return out;
+  }
+
+  getDashboardPositions(): DashboardPosition[] {
+    return this.positionManager.getOpenPositions().map((pos: TrackedPosition) => {
+      const mark = this.getMarkForSymbol(pos.symbol);
+      const dir = pos.side === 'LONG' ? 1 : -1;
+      const hasMark = mark !== null && Number.isFinite(mark);
+      const unrealizedUsdt = (hasMark && pos.entryPrice > 0)
+        ? ((mark as number) - pos.entryPrice) * pos.quantity * dir
+        : 0;
+      const leverage = pos.leverage ?? this.cfg.LEVERAGE;
+      const marginUsdt = leverage > 0 ? pos.notionalUsdt / leverage : undefined;
+      return {
+        orderId: pos.orderId,
+        symbol: pos.symbol,
+        side: pos.side,
+        entryPrice: pos.entryPrice,
+        quantity: pos.quantity,
+        leverage,
+        openedAt: pos.openedAt,
+        unrealizedUsdt,
+        mode: 'live',
+        marginUsdt,
+      };
+    });
+  }
+
+  private getMarkForSymbol(sym: string): number | null {
+    const symbol = sym.trim().toUpperCase();
+    if (!symbol) return null;
+
+    if (this.marketFeeds?.listSymbols().includes(symbol)) {
+      const mid = this.marketFeeds.book(symbol).midPrice();
+      if (Number.isFinite(mid)) return mid;
+      const tapeLast = this.marketFeeds.tape(symbol).lastPrice();
+      if (Number.isFinite(tapeLast)) return tapeLast;
+    }
+
+    const tick = this.book.latest(symbol);
+    if (tick && Number.isFinite(tick.bestBid) && Number.isFinite(tick.bestAsk)) {
+      return (tick.bestBid + tick.bestAsk) / 2;
+    }
+
+    const lastTrade = this.book.lastTrade(symbol);
+    if (Number.isFinite(lastTrade)) return lastTrade as number;
+
+    const tapeLast = this.tradeTape.lastPrice();
+    if (Number.isFinite(tapeLast)) return tapeLast;
+
+    return null;
+  }
+
+  private buildMlFeatureVector() {
+    const sym = this.pairs.binanceSymbol;
+    const micro = this.getMicrostructure();
+    const funding = this.fundingTracker.snapshot();
+    const liquidation = this.liquidationTracker.snapshot();
+    const ofi = this.orderbook.isBootstrapped() ? 0 : 0;
+
+    const oiSnap: import('./signals/oi-poller').OiSnapshot = { oi: 0, oiDelta1m: 0, oiDelta5m: 0, oiZscore: 0, oiDivergence: 0, oiSpike: 0, regime: 'neutral' };
+
+    this.depthChangeTracker?.update(this.orderbook);
+
+    const candle1m = this.store.getSeries(sym, '1m').at(-1);
+    const candle5m = this.store.getSeries(sym, '5m').at(-1);
+    const series1m = this.store.getSeries(sym, '1m');
+    const series5m = this.store.getSeries(sym, '5m');
+
+    const src: FeatureSourceData = {
+      micro, funding, oi: oiSnap, liquidation,
+      ofiCumulative: ofi,
+      bookSlope: bookSlope(this.orderbook, 10),
+      liquidityGap: liquidityGap(this.orderbook, 20),
+      tradeFlowExt: tradeFlowExtended(this.tapeFor(sym), 5),
+      candleFeatures1m: candleDerivedFeatures(series1m, 20),
+      candleFeatures5m: candleDerivedFeatures(series5m, 20),
+      depthChange: this.depthChangeTracker?.snapshot() ?? { cancelIntensity: 0, bookThinning: 0, bidWallPersistence: 0, askWallPersistence: 0 },
+      markPrice: micro.mid ?? 0,
+      lastTradePrice: this.tapeFor(sym).lastPrice() ?? 0,
+      candle1m, candle5m, symbol: sym,
+    };
+    return buildFeatureVector(src);
   }
 
   /** Daily bias when SOL MTF strategy is on; else HTF EMA bias from the secondary candle buffer. */
@@ -589,7 +831,7 @@ export class HybridOrchestrator {
         symbol: this.pairs.binanceSymbol,
         usdmMarkRestPollSec: this.cfg.USDM_MARK_REST_POLL_SEC,
         hint:
-          this.cfg.BINANCE_PRODUCT === 'usdm'
+          isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)
             ? this.cfg.USDM_MARK_REST_POLL_SEC > 0
               ? 'No mark on WS yet; if fapi REST is blocked too, mark REST poll will also fail. Else expect ltp_connected (mark_rest) on next poll.'
               : 'No markPriceUpdate yet — enable USDM_MARK_REST_POLL_SEC (default 5) or check BINANCE_WS_BASE / network.'
@@ -648,7 +890,7 @@ export class HybridOrchestrator {
   }
 
   hasPosition(): boolean {
-    return this.positionManager.hasPosition();
+    return this.positionManager.hasOpenPosition();
   }
 
   /** Returns the ExecutionRouter wrapping the current adapter, or null when the execution
@@ -726,7 +968,7 @@ export class HybridOrchestrator {
     const hubSymbols = this.multiplexSymbolList.map((s) => s.toUpperCase());
     const primaryU = this.pairs.binanceSymbol.toUpperCase();
 
-    if (this.cfg.BINANCE_PRODUCT === 'usdm') {
+    if (isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) {
       try {
         const map = await this.fetchExchangeInfoForSymbols(binanceRestBase(this.cfg), hubSymbols);
         for (const symU of hubSymbols) {
@@ -769,13 +1011,54 @@ export class HybridOrchestrator {
   }
 
   private onMark(u: MarkPriceUpdate): void {
-    if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
+    const symU = u.symbol.toUpperCase();
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) {
+      this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
+      return;
+    }
+    if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
+      this.applyMarkForSymbol(symU, u.markPrice);
+    }
   }
 
   private onTickerLtp(u: TickerLtpUpdate): void {
-    if (u.symbol.toUpperCase() !== this.pairs.binanceSymbol) return;
-    this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
+    const symU = u.symbol.toUpperCase();
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) {
+      this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
+      return;
+    }
+    if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
+      this.applyMarkForSymbol(symU, u.lastPrice);
+    }
+  }
+
+  /**
+   * Non-primary symbol mark update. Routes to the paper adapter (for unrealized PnL
+   * roll-up) and triggers `positionManager.onMark(symbol, …)` for that symbol only.
+   */
+  private applyMarkForSymbol(symbol: string, price: number): void {
+    if (!Number.isFinite(price)) return;
+    const symU = symbol.toUpperCase();
+    this.execution.adapter.onMark?.(symU, price);
+    if (!this.positionManager.hasOpenPosition(symU)) return;
+    const tier = tierFor(symU);
+    const htfBias = tier
+      ? biasFromCandles(this.store.getSeries(symU, tier.htf))
+      : ('NONE' as TrendBias);
+    void this.positionManager.onMark(symU, price, htfBias).then((closeEvent) => {
+      if (!closeEvent) return;
+      clearPosition(this.redis, symU);
+      publish(this.redis, CHANNELS.POSITIONS, {
+        event: 'close',
+        symbol: symU,
+        side: closeEvent.position.side,
+        entryPrice: closeEvent.position.entryPrice,
+        exitPrice: closeEvent.exitPrice,
+        reason: closeEvent.reason,
+        netUsdt: closeEvent.pnl.netUsdt,
+        ts: Date.now(),
+      });
+    }).catch(() => undefined);
   }
 
   private applyMarkReference(
@@ -785,6 +1068,7 @@ export class HybridOrchestrator {
   ): void {
     if (!Number.isFinite(price)) return;
     this.lastMark = price;
+    this.staleGuard?.markFresh('markPrice');
     if (ltpSource === 'ticker') this.confirmLtp('ticker', price, eventTime);
     else this.confirmLtp(ltpSource, price, eventTime);
     const symU = this.pairs.binanceSymbol.toUpperCase();
@@ -794,7 +1078,7 @@ export class HybridOrchestrator {
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
     publish(this.redis, CHANNELS.TICKS, { symbol: sym, price, ts: Date.now() });
-    this.positionManager.onMark(price, this.reversalTrendBias()).then((closeEvent) => {
+    this.positionManager.onMark(sym, price, this.reversalTrendBias()).then((closeEvent) => {
       if (!closeEvent) return;
       clearPosition(this.redis, sym);
       publish(this.redis, CHANNELS.POSITIONS, {
@@ -812,7 +1096,7 @@ export class HybridOrchestrator {
 
   private scheduleRestMarkPoll(): void {
     this.clearRestMarkPoll();
-    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    if (!isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) return;
     const sec = this.cfg.USDM_MARK_REST_POLL_SEC;
     if (sec <= 0) return;
     void this.pollRestMarkOnce();
@@ -827,7 +1111,7 @@ export class HybridOrchestrator {
   }
 
   private async pollRestMarkOnce(): Promise<void> {
-    if (this.cfg.BINANCE_PRODUCT !== 'usdm') return;
+    if (!isBinanceUsdmProduct(this.cfg.BINANCE_PRODUCT)) return;
     try {
       const row = await this.fetchUsdmMarkRest(this.cfg, this.pairs.binanceSymbol);
       if (!row) {
@@ -904,13 +1188,44 @@ export class HybridOrchestrator {
             source: 'exchange_algo',
             ts: Date.now(),
           });
-          void this.positionManager.notifyExchangeClose(result.closed.exitPrice, result.closed.reason);
+          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason);
         }
       }
     }
   }
 
   /** Fetch open positions and algo orders from Binance on startup; restore state if found. */
+  private async reconcileGenericPosition(): Promise<void> {
+    if (!this.execution.router) return;
+    try {
+      const positions = (this.execution.router as any).getOpenPositions?.() ?? [];
+      for (const pos of positions) {
+        if (!pos || Math.abs(Number(pos.quantity)) <= 0) continue;
+        
+        const side: Side = pos.side.toUpperCase() === 'LONG' ? 'LONG' : 'SHORT';
+        const entryPrice = Number(pos.entryPrice);
+        const qty = Math.abs(Number(pos.quantity));
+        
+        this.positionManager.restoreFromExchange({
+          symbol: pos.symbol,
+          side,
+          entryPrice,
+          quantity: qty,
+          pair: pos.pair || this.pairs.coindcxPair,
+          orderId: pos.orderId,
+          takeProfit: pos.takeProfit || 0,
+          stopLoss: pos.stopLoss || 0,
+          openedAt: pos.openedAt || Date.now(),
+          notionalUsdt: entryPrice * qty,
+          leverage: Number(pos.leverage || 1),
+          liqPrice: Number(pos.liqPrice || 0),
+        });
+      }
+    } catch (e) {
+      this.log.warn('reconcile_generic_failed', { err: (e as Error).message });
+    }
+  }
+
   private async reconcileExchangePosition(adapter: BinanceLiveExecutionAdapter): Promise<void> {
     if (!this.execution.binanceRestClient) return;
     const client = this.execution.binanceRestClient;
@@ -966,6 +1281,7 @@ export class HybridOrchestrator {
       const { takeProfit, stopLoss } = this.risk.targets(entryPrice, side);
 
       this.positionManager.restoreFromExchange({
+        symbol: sym,
         side,
         entryPrice,
         quantity: qty,
@@ -975,6 +1291,8 @@ export class HybridOrchestrator {
         stopLoss,
         openedAt: pos.updateTime || Date.now(),
         notionalUsdt: entryPrice * qty,
+        leverage: Number(pos.leverage),
+        liqPrice: Number(pos.liquidationPrice),
       });
     } catch (e) {
       this.log.warn('startup_reconcile_failed', { err: (e as Error).message });
@@ -1009,14 +1327,53 @@ export class HybridOrchestrator {
     }
   }
 
+  /**
+   * When `BINANCE_CORRELATION_SYMBOL_GROUPS` is set and a Binance REST client exists, blocks new
+   * entries that would duplicate same-direction exposure on another symbol in the same cluster
+   * (per live `positionRisk` snapshot, cached briefly).
+   */
+  private async correlationGuardAllowsEntry(intendedSide: Side): Promise<boolean> {
+    const groups = this.cfg.BINANCE_CORRELATION_SYMBOL_GROUPS ?? [];
+    if (!groups.length) return true;
+    const client = this.execution.binanceRestClient;
+    if (!client) return true;
+
+    const primary = this.pairs.binanceSymbol.toUpperCase();
+    const cluster = findCorrelationCluster(groups, primary);
+    if (!cluster || cluster.length < 2) return true;
+
+    const now = Date.now();
+    let rows: PositionRiskLike[];
+    const cached = this.correlationPositionCache;
+    if (cached && now - cached.atMs < HybridOrchestrator.CORRELATION_POSITION_TTL_MS) {
+      rows = cached.rows;
+    } else {
+      rows = await getPositionRisk(client).catch(() => []);
+      this.correlationPositionCache = { atMs: now, rows };
+    }
+
+    const { blocked, conflictSymbol } = correlationGuardConflict({
+      cluster,
+      primarySymbol: primary,
+      intendedSide,
+      rows,
+    });
+    if (blocked) {
+      this.log.info('correlation_guard_reject', { primary, intendedSide, conflictSymbol, cluster });
+      return false;
+    }
+    return true;
+  }
+
   private async evaluate(ltfBar: Candle): Promise<void> {
-    if (this.positionManager.hasPosition()) return;
+    const primary = this.pairs.binanceSymbol.toUpperCase();
+    if (this.positionManager.hasOpenPosition(primary)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
 
     const maxPos = this.cfg.MAX_OPEN_POSITIONS;
-    if (maxPos > 0 && this.positionManager.openCount() >= maxPos) return;
+    if (maxPos > 0 && this.positionManager.getOpenPositionCount() >= maxPos) return;
 
     const maxSpread = this.cfg.MAX_ENTRY_SPREAD_BPS;
     if (maxSpread > 0) {
@@ -1075,17 +1432,21 @@ export class HybridOrchestrator {
 
       if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
 
+      const smcSide: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
+      const mlResult = await this.runMlGate(smcSide, sym, refPrice);
+      if (mlResult === 'blocked') return;
+
       if (await isKillSwitchActive(this.redis)) {
         this.log.warn('kill_switch_active', { symbol: sym });
         return;
       }
-      const side: Side = sol.direction === 'LONG' ? 'LONG' : 'SHORT';
-      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: side, source: 'sol_mtf', ts: Date.now() });
+      if (!(await this.correlationGuardAllowsEntry(smcSide))) return;
+      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'sol_mtf', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
-      const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+      const opened = await this.positionManager.open(smcSide, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
       if (opened) {
-        setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
-        publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
+        setPosition(this.redis, sym, { side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
+        publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side: smcSide, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
       }
       return;
     }
@@ -1134,21 +1495,195 @@ export class HybridOrchestrator {
       return;
     }
 
+    const side: Side = ltf.direction === 'LONG' ? 'LONG' : 'SHORT';
+    const mlResult = await this.runMlGate(side, sym, refPrice);
+    if (mlResult === 'blocked') return;
+
     if (await isKillSwitchActive(this.redis)) {
       this.log.warn('kill_switch_active', { symbol: sym });
       return;
     }
+    if (!(await this.correlationGuardAllowsEntry(side))) return;
 
-    const side: Side = ltf.direction === 'LONG' ? 'LONG' : 'SHORT';
     publish(this.redis, CHANNELS.SIGNALS, {
       symbol: sym, direction: side, htfBias, ltfConfidence: ltf.confidence, smcScore: smc.score, source: 'htf_ltf', ts: Date.now(),
     });
     const prec = this.precision ?? extractPrecisionFromInstrument(null);
-    const opened = await this.positionManager.open(side, refPrice, prec, this.pairs.coindcxPair);
+    const opened = await this.positionManager.open(side, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
     if (opened) {
       setPosition(this.redis, sym, { side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt });
       publish(this.redis, CHANNELS.POSITIONS, { event: 'open', symbol: sym, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now() });
     }
+  }
+
+  /**
+   * Multi-asset evaluation entry point. Fires on LTF kline close for any
+   * symbol that has an `AssetTierConfig` in the registry.
+   *
+   * - scalp tier: SOL-MTF stack + SMC confluence + microstructure-aware refPrice.
+   * - swing tier: lighter `evaluateSwingSignal` (HTF bias + displacement + zone).
+   */
+  private async evaluateForSymbol(symbol: string, tier: AssetTierConfig, ltfBar: Candle): Promise<void> {
+    const symU = symbol.toUpperCase();
+    if (this.positionManager.hasOpenPosition(symU)) return;
+    if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
+    if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
+
+    const maxPos = this.cfg.MAX_OPEN_POSITIONS;
+    if (maxPos > 0 && this.positionManager.getOpenPositionCount() >= maxPos) return;
+
+    // Don't double-evaluate the primary symbol — `evaluate()` already covers it.
+    if (symU === this.pairs.binanceSymbol.toUpperCase()) return;
+
+    const ltfCandles = this.store.getSeries(symU, tier.ltf);
+    const htfCandles = this.store.getSeries(symU, tier.htf);
+    if (ltfCandles.length === 0 || htfCandles.length === 0) return;
+
+    const refPrice = ltfBar.close;
+    const prec = this.precisionBySymbol?.get(symU) ?? this.precision ?? extractPrecisionFromInstrument(null);
+
+    let side: Side | null = null;
+    let attribution: TradeAttribution | undefined;
+
+    if (tier.tier === 'swing') {
+      const sig = evaluateSwingSignal({
+        symbol: symU,
+        candlesLtf: ltfCandles,
+        candlesHtf: htfCandles,
+        refPrice,
+        minConfidence: tier.minConfidence,
+      });
+      this.log.info('swing_signal_evaluated', {
+        symbol: symU,
+        pass: sig !== null,
+        confidence: sig?.confidence ?? null,
+      });
+      if (!sig) return;
+      side = sig.side;
+      attribution = sig.attribution;
+    } else {
+      // scalp tier — SMC confluence on the configured LTF/HTF.
+      const htfBias: TrendBias = biasFromCandles(htfCandles);
+      if (htfBias === 'NONE') return;
+      const confluence = evaluateSmcConfluence(ltfCandles, htfCandles, htfBias, refPrice, {
+        enabled: this.cfg.USE_SMC_CONFLUENCE,
+        mode: this.cfg.SMC_CONFLUENCE_MODE,
+        standardMinScore: this.cfg.SMC_CONFLUENCE_MIN_STANDARD,
+        sniperMinScore: this.cfg.SMC_CONFLUENCE_MIN_SNIPER,
+        targetPct: this.cfg.SMC_CONFLUENCE_TARGET_PCT,
+      });
+      this.log.info('scalp_signal_evaluated', {
+        symbol: symU,
+        htfBias,
+        pass: confluence.pass,
+        score: Number(confluence.score.toFixed(2)),
+        threshold: confluence.threshold,
+      });
+      if (this.cfg.USE_SMC_CONFLUENCE && !confluence.pass) return;
+      side = htfBias === 'LONG' ? 'LONG' : 'SHORT';
+      attribution = {
+        entrySignal: 'scalp_mtf',
+        htfBias,
+        confidence: Number((confluence.score / Math.max(confluence.threshold, 1)).toFixed(3)),
+      };
+    }
+
+    if (!side) return;
+
+    if (await isKillSwitchActive(this.redis)) {
+      this.log.warn('kill_switch_active', { symbol: symU });
+      return;
+    }
+
+    publish(this.redis, CHANNELS.SIGNALS, {
+      symbol: symU, direction: side, source: `tier_${tier.tier}`, ts: Date.now(),
+    });
+    const opened = await this.positionManager.open(side, refPrice, prec, symU, symU, tier, attribution);
+    if (opened) {
+      setPosition(this.redis, symU, {
+        side, entryPrice: opened.entryPrice, qty: opened.quantity, openedAt: opened.openedAt,
+      });
+      publish(this.redis, CHANNELS.POSITIONS, {
+        event: 'open', symbol: symU, side, entryPrice: opened.entryPrice, qty: opened.quantity, ts: Date.now(),
+      });
+    }
+  }
+
+  private async runMlGate(
+    smcSignal: 'LONG' | 'SHORT',
+    symbol: string,
+    refPrice: number,
+  ): Promise<'pass' | 'blocked'> {
+    this.mlVolatilitySizedQty = null;
+    this.mlHoldTimeMs = null;
+
+    if (!this.cfg.ML_ENABLED || !this.mlInferenceClient || !this.mlNormalizer) return 'pass';
+
+    const fv = this.buildMlFeatureVector();
+    if (!fv) return 'pass';
+
+    const normalized = this.mlNormalizer.normalize(fv);
+    const features: Record<string, number> = {};
+    for (const [k, v] of Object.entries(normalized)) {
+      if (typeof v === 'number') features[k] = v;
+    }
+
+    const modelOutput = await this.mlInferenceClient.predict(features);
+
+    if (!modelOutput) {
+      this.log.info('ml_inference_unavailable', { fallback: 'rule_based' });
+      return 'pass';
+    }
+
+    const signal = mlDecide(modelOutput, smcSignal, {
+      minProbability: this.cfg.ML_MIN_PROBABILITY,
+      minEdgeBps: this.cfg.ML_MIN_EDGE_BPS,
+    });
+
+    this.mlPredictionLogger?.logPrediction(
+      symbol,
+      modelOutput,
+      signal ?? 'HOLD',
+      refPrice,
+    );
+
+    this.log.info('ml_gate', {
+      p_up: +modelOutput.p_up.toFixed(3),
+      p_down: +modelOutput.p_down.toFixed(3),
+      p_flat: +modelOutput.p_flat.toFixed(3),
+      smcSignal,
+      mlSignal: signal,
+      shadow: this.cfg.ML_SHADOW_MODE,
+    });
+
+    if (this.cfg.ML_SHADOW_MODE) return 'pass';
+    if (signal === null) return 'blocked';
+
+    const execCtx: ExecutionContext = {
+      spreadBps: fv.spread_bps,
+      bookThinning: fv.book_thinning,
+      volRegimeFlag: fv.vol_regime_flag,
+      cancelIntensity: fv.cancel_intensity,
+      liquidityGap: fv.liquidity_gap,
+    };
+    const gateResult = shouldSkipEntry(execCtx);
+    if (gateResult.skip) {
+      this.log.info('execution_gate_skip', { reason: gateResult.reason });
+      return 'blocked';
+    }
+
+    if (fv.rv_1m > 0) {
+      this.mlVolatilitySizedQty = volatilitySizedPosition(1, fv.rv_1m);
+      this.log.info('ml_volatility_sizing', { rv1m: +fv.rv_1m.toFixed(6), scale: +this.mlVolatilitySizedQty.toFixed(4) });
+    }
+
+    const extended = modelOutput as ExtendedModelOutput;
+    if (extended.regime != null || extended.expected_return != null) {
+      this.mlHoldTimeMs = optimalHoldTimeMs(extended);
+      this.log.info('ml_hold_time', { holdMs: this.mlHoldTimeMs, regime: extended.regime });
+    }
+
+    return 'pass';
   }
 
   private binanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
