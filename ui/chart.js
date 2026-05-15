@@ -30,6 +30,7 @@ import {
   storeSignalHudEnabled,
 } from './chart-strategy-hud.js';
 import { SmcZoneBoxesPrimitive } from './chart-smc-zone-primitive.js';
+import { PartialPriceLinesPrimitive } from './chart-partial-price-lines.js';
 
 const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
 
@@ -52,6 +53,8 @@ const storeBookTopLinesEnabled = (on) => {
 const COLORS = {
   bull: '#00e676',
   bear: '#ff1744',
+  /** Colorblind-safe bull for LTP / price lines (cyan-teal, distinguishable from bear red). */
+  ltpBull: '#00c8dc',
   accent: '#7c4dff',
   ema9: '#ffd740',
   ema21: '#00b0ff',
@@ -124,6 +127,16 @@ const DEFAULT_VISIBLE_BARS = {
 const TF_TAB_ORDER = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const SMC_OVERLAY_STORAGE_KEY = 'qt_smc_chart_overlay';
+const KNN_ARCHITECTURE_STORAGE_KEY = 'qt_knn_chart_overlay';
+const LIQUIDATION_MARKERS_STORAGE_KEY = 'qt_chart_liquidations';
+const OI_REGIME_STORAGE_KEY = 'qt_chart_oi_regime';
+const VWAP_STORAGE_KEY = 'qt_chart_vwap';
+const RSI_STORAGE_KEY = 'qt_chart_rsi';
+const SPREAD_HEATMAP_STORAGE_KEY = 'qt_chart_spread_heatmap';
+const TFI_STORAGE_KEY = 'qt_chart_tfi';
+const DEPTH_PRESSURE_STORAGE_KEY = 'qt_chart_depth_pressure';
+const OBI_TINT_STORAGE_KEY = 'qt_chart_obi_tint';
+const MICRO_CHART_STORAGE_KEY = 'qt_chart_micro';
 
 /** Persisted chart timeframe (must match `.tf-btn` data-tf). */
 const CHART_TF_STORAGE_KEY = 'qt_chart_tf';
@@ -147,6 +160,7 @@ const storeChartTf = (tf) => {
     /* ignore */
   }
 };
+
 
 const readStoredIndicatorOn = (key, defaultOn = true) => {
   try {
@@ -188,7 +202,7 @@ export class ChartManager {
     this._historyDebounceTimer = null;
     /** @type {((p: { tf: string; oldestOpenTime: number }) => void) | null} */
     this._onNeedHistory = null;
-    /** Custom dashed LTP line (series default price line jumps on each tick). */
+    /** Invisible price line for axis label; visual line drawn by `_partialLinesPrimitive`. */
     this._ltpPriceLine = null;
     /** Integer price × 1_000 — sequential steps ±1 toward `_ltpTargetTicks`. */
     this._ltpDisplayTicks = null;
@@ -214,24 +228,68 @@ export class ChartManager {
     this._volAnimColor = '';
     /** @type {number | null} */
     this._volRafId = null;
-    /** Best bid / ask from order book — horizontal guides on the price scale. */
-    this._bookTopBidLine = null;
-    this._bookTopAskLine = null;
+    /** Best bid / ask from order book. */
     this._lastBookBid = null;
     this._lastBookAsk = null;
     this._bookTopLinesEnabled = readBookTopLinesEnabled();
+    /** 24h high/low values from ticker. */
+    this._lastHigh24h = null;
+    this._lastLow24h = null;
+    /** Single canvas primitive for all partial horizontal price lines (LTP, BID, ASK, 24h H/L). */
+    this._partialLinesPrimitive = null;
     /** @type {(() => void) | null} */
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
     this._smcSignalPriceLines = [];
+    /** SMC markers (separate from liquidation markers, merged via _paintAllMarkers). */
+    this._lastSmcMarkers = [];
+    /** Open-position markers and entry lines. */
+    this._positionMarkers = [];
+    this._openPositionLines = new Map();
     /** Shaded OB / FVG zones (LWC series primitive). */
     this._smcZonePrimitive = null;
     this._smcSignalsOverlayEnabled = this._readSmcOverlayEnabled();
+    this._knnArchitectureEnabled = this._readKnnArchitectureEnabled();
     /** Latest WS `signals` payload for redraw after `setData`. */
     this._lastSignalsForChart = null;
     this._signalHudEnabled = readSignalHudEnabled();
     this.showEma = readStoredIndicatorOn(CHART_SHOW_EMA_STORAGE_KEY, true);
     this.showSupertrend = readStoredIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, true);
+    /** Liquidation markers collected from `force_order` messages. */
+    this._liquidationMarkers = [];
+    this._liquidationsEnabled = readStoredIndicatorOn(LIQUIDATION_MARKERS_STORAGE_KEY, true);
+    /** Last mark price for the chart mark-price partial line. */
+    this._lastMarkPrice = null;
+    /** OI regime overlay state. */
+    this._oiRegime = null;
+    this._oiRegimeEnabled = readStoredIndicatorOn(OI_REGIME_STORAGE_KEY, true);
+    this._oiRegimePriceLine = null;
+    /** Session VWAP series. */
+    this._vwapSeries = null;
+    this._vwapEnabled = readStoredIndicatorOn(VWAP_STORAGE_KEY, false);
+    /** RSI(14) sub-panel series. */
+    this._rsiSeries = null;
+    this._rsiEnabled = readStoredIndicatorOn(RSI_STORAGE_KEY, false);
+    /** Funding rate axis label. */
+    this._fundingPriceLine = null;
+    this._lastFunding = null;
+    /** Spread heatmap on forming volume bar. */
+    this._currentSpreadBps = null;
+    this._spreadHeatmapEnabled = readStoredIndicatorOn(SPREAD_HEATMAP_STORAGE_KEY, false);
+    /** TFI histogram lane. */
+    this._tfiSeries = null;
+    this._tfiEnabled = readStoredIndicatorOn(TFI_STORAGE_KEY, false);
+    this._tfiBarMap = new Map();
+    /** Depth pressure zone line. */
+    this._depthPressureEnabled = readStoredIndicatorOn(DEPTH_PRESSURE_STORAGE_KEY, false);
+    this._lastDepthPressure = null;
+    /** OBI-tinted candle wick/border. */
+    this._obiTintEnabled = readStoredIndicatorOn(OBI_TINT_STORAGE_KEY, false);
+    this._currentObi = null;
+    /** Micro-candle sub-chart. */
+    this._microChart = null;
+    this._microCandleSeries = null;
+    this._microEnabled = readStoredIndicatorOn(MICRO_CHART_STORAGE_KEY, false);
   }
 
   _readSmcOverlayEnabled() {
@@ -250,6 +308,22 @@ export class ChartManager {
     }
   }
 
+  _readKnnArchitectureEnabled() {
+    try {
+      return localStorage.getItem(KNN_ARCHITECTURE_STORAGE_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  _storeKnnArchitectureEnabled(on) {
+    try {
+      localStorage.setItem(KNN_ARCHITECTURE_STORAGE_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
   _clearSmcChartVisuals() {
     if (this.candleSeries && this._smcSignalPriceLines?.length) {
       for (const pl of this._smcSignalPriceLines) {
@@ -261,11 +335,8 @@ export class ChartManager {
       }
     }
     this._smcSignalPriceLines = [];
-    try {
-      this.candleSeries?.setMarkers([]);
-    } catch {
-      /* ignore */
-    }
+    this._lastSmcMarkers = [];
+    this._paintAllMarkers();
     this._smcZonePrimitive?.setZones([]);
     this._smcZonePrimitive?.setLines([]);
   }
@@ -307,211 +378,266 @@ export class ChartManager {
 
   _paintSmcFromStoredSignals() {
     this._clearSmcChartVisuals();
-    if (!this._smcSignalsOverlayEnabled || !this._lastSignalsForChart || !this.candleSeries) return;
+    if ((!this._smcSignalsOverlayEnabled && !this._knnArchitectureEnabled) || !this._lastSignalsForChart || !this.candleSeries) return;
+    
     const s = this._lastSignalsForChart;
-    const refTf = s.refPriceTf;
-    if (typeof refTf !== 'string' || refTf !== this.currentTf) return;
+    const refTf = s.refPriceTf || this.currentTf;
 
-    const smc = s.smc;
-    if (!smc) return;
-
+    const smc = this._smcSignalsOverlayEnabled ? s.smc : null;
+    const knn = (this._knnArchitectureEnabled && s.knnArchitecture) ? s.knnArchitecture : null;
+    
     const markers = [];
     /** @type {{ t1: number; t2: number; top: number; bottom: number; fill: string; stroke?: string; text?: string; textColor?: string }[]} */
     const smcZones = [];
-    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number }[]} */
+    /** @type {{ t1: number; t2: number; price: number; color: string; label?: string; lineWidth?: number; lineStyle?: number }[]} */
     const smcStructLines = [];
-    const lastT = this._lastVisibleBarTimeSec(refTf);
+    const lastT = this._lastVisibleBarTimeSec(refTf) || this._lastVisibleBarTimeSec(this.currentTf) || Math.floor(Date.now() / 1000);
 
-    const ob = smc.orderBlock;
-    if (ob && Number.isFinite(ob.index)) {
-      const t = this._signalBarTimeSec(refTf, ob.index);
-      if (t != null) {
-        const bull = ob.type === 'BULLISH';
-        markers.push({
-          time: t,
-          position: bull ? 'belowBar' : 'aboveBar',
-          shape: 'square',
-          color: bull ? '#26a69a' : '#ef5350',
-          text: 'OB',
-          id: 'smc-ob',
-        });
-      }
-      if (
-        lastT != null &&
-        Number.isFinite(ob.high) &&
-        Number.isFinite(ob.low) &&
-        Number.isFinite(ob.index)
-      ) {
-        const tOb = this._signalBarTimeSec(refTf, ob.index);
-        if (tOb != null) {
-          const bull = ob.type === 'BULLISH';
-          smcZones.push({
-            t1: tOb,
-            t2: lastT,
-            top: Math.max(ob.high, ob.low),
-            bottom: Math.min(ob.high, ob.low),
-            fill: bull ? 'rgba(38,166,154,0.2)' : 'rgba(239,83,80,0.2)',
-            stroke: bull ? 'rgba(38,166,154,0.55)' : 'rgba(239,83,80,0.55)',
-            text: bull ? 'Demand OB' : 'Supply OB',
-            textColor: bull ? 'rgba(200,255,240,0.95)' : 'rgba(255,220,220,0.95)',
-          });
+    if (smc) {
+      // 1. Order Blocks
+      if (Array.isArray(smc.orderBlocks)) {
+        for (const ob of smc.orderBlocks) {
+          const tOb = this._signalBarTimeSec(refTf, ob.index);
+          if (tOb != null) {
+            const bull = ob.type === 'BULLISH';
+            markers.push({
+              time: tOb,
+              position: bull ? 'belowBar' : 'aboveBar',
+              shape: 'square',
+              color: bull ? '#26a69a' : '#ef5350',
+              text: 'OB',
+              size: 0.8,
+            });
+
+            if (lastT != null) {
+              const isInst = ob.score >= 6;
+              const alpha = ob.isMitigated ? 0.08 : (isInst ? 0.45 : 0.30);
+              const strokeAlpha = ob.isMitigated ? 0.2 : 0.7;
+              smcZones.push({
+                t1: tOb, t2: lastT, top: ob.high, bottom: ob.low,
+                fill: bull ? `rgba(38,166,154,${alpha})` : `rgba(239,83,80,${alpha})`,
+                stroke: bull ? `rgba(38,166,154,${strokeAlpha})` : `rgba(239,83,80,${strokeAlpha})`,
+                text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
+                textColor: bull ? 'rgba(200,255,240,0.95)' : 'rgba(255,220,220,0.95)',
+              });
+            }
+          }
         }
       }
-    }
 
-    const fvg = smc.fvg;
-    if (fvg && Number.isFinite(fvg.low) && Number.isFinite(fvg.high)) {
-      const t = Number.isFinite(fvg.index) ? this._signalBarTimeSec(refTf, fvg.index) : null;
-      if (t != null) {
-        markers.push({
-          time: t,
-          position: 'aboveBar',
-          shape: 'circle',
-          color: '#ffab00',
-          text: 'FVG',
-          id: 'smc-fvg',
-        });
-      }
-      if (lastT != null && Number.isFinite(fvg.index)) {
-        const i = Math.trunc(fvg.index);
-        const tFvg =
-          this._signalBarTimeSec(refTf, Math.max(0, i - 2)) ?? this._signalBarTimeSec(refTf, i);
-        if (tFvg != null) {
-          const bull = fvg.type === 'BULLISH';
-          smcZones.push({
-            t1: tFvg,
-            t2: lastT,
-            top: Math.max(fvg.high, fvg.low),
-            bottom: Math.min(fvg.high, fvg.low),
-            fill: bull ? 'rgba(255,171,0,0.18)' : 'rgba(255,171,0,0.12)',
-            stroke: 'rgba(255,171,0,0.55)',
-            text: bull ? 'Bull FVG' : 'Bear FVG',
-            textColor: 'rgba(255,224,178,0.95)',
-          });
+      // 2. Fair Value Gaps
+      if (Array.isArray(smc.fvgs)) {
+        for (const fvg of smc.fvgs) {
+          const tFvg = this._signalBarTimeSec(refTf, fvg.index);
+          if (tFvg != null && lastT != null) {
+            const isHighValue = fvg.score >= 2;
+            const alpha = isHighValue ? 0.35 : 0.20;
+            smcZones.push({
+              t1: tFvg, t2: lastT, top: fvg.high, bottom: fvg.low,
+              fill: `rgba(255,193,7,${alpha})`, 
+              stroke: `rgba(255,193,7,${isHighValue ? 0.6 : 0.4})`,
+              text: isHighValue ? 'Propulsion FVG' : 'FVG',
+              textColor: 'rgba(255,236,179,0.9)',
+            });
+          }
         }
       }
-    }
 
-    if (lastT != null) {
+      // 3. Dealing Range
+      if (smc.dealingRange && lastT != null) {
+        const dr = smc.dealingRange;
+        const startT = lastT - 3600 * 4; 
+        smcZones.push({ t1: startT, t2: lastT, top: dr.high, bottom: dr.equilibrium, fill: 'rgba(239,83,80,0.06)', text: 'PREMIUM', textColor: 'rgba(239,83,80,0.4)' });
+        smcZones.push({ t1: startT, t2: lastT, top: dr.equilibrium, bottom: dr.low, fill: 'rgba(38,166,154,0.06)', text: 'DISCOUNT', textColor: 'rgba(38,166,154,0.4)' });
+        smcStructLines.push({ t1: startT, t2: lastT, price: dr.equilibrium, color: 'rgba(176,190,197,0.5)', label: 'EQ', lineWidth: 1 });
+      }
+
+      // 4. Breaker Blocks
+      if (Array.isArray(smc.breakers)) {
+        for (const bb of smc.breakers) {
+          const tBb = this._signalBarTimeSec(refTf, bb.index);
+          if (tBb != null && lastT != null) {
+            const bull = bb.type === 'BULLISH';
+            smcZones.push({
+              t1: tBb, t2: lastT, top: bb.high, bottom: bb.low,
+              fill: 'rgba(126,87,194,0.25)', stroke: 'rgba(126,87,194,0.5)',
+              text: bull ? 'Bull Breaker' : 'Bear Breaker', textColor: 'rgba(209,196,233,0.9)',
+            });
+          }
+        }
+      }
+
+      // 5. Generic Blocks
+      if (Array.isArray(smc.blocks)) {
+        for (const blk of smc.blocks) {
+          const t1 = this._signalBarTimeSec(refTf, blk.startIndex);
+          const t2 = this._signalBarTimeSec(refTf, blk.endIndex) || lastT;
+          if (t1 != null && t2 != null) {
+            let fill = 'rgba(144,164,174,0.2)', stroke = 'rgba(144,164,174,0.5)', textColor = 'rgba(207,216,220,0.95)';
+            if (blk.type === 'LIQUIDITY') { 
+              fill = 'rgba(0,188,212,0.25)'; 
+              stroke = 'rgba(0,188,212,0.6)'; 
+              textColor = 'rgba(178,235,242,0.95)'; 
+            } else if (blk.type === 'SESSION') { 
+              fill = 'rgba(100,181,246,0.15)'; 
+              stroke = 'rgba(100,181,246,0.4)'; 
+              textColor = 'rgba(187,222,251,0.95)'; 
+            }
+            smcZones.push({ t1, t2, top: blk.high, bottom: blk.low, fill, stroke, text: blk.subType, textColor });
+          }
+        }
+      }
+
+      // 6. BOS/CHoCH Markers
+      if (lastT != null) {
+        if (smc.bos && smc.bos !== 'NONE') {
+          const bull = smc.bos === 'BULLISH';
+          const tBos = smc.bosLine && Number.isFinite(smc.bosLine.endIndex) ? this._signalBarTimeSec(refTf, smc.bosLine.endIndex) : null;
+          markers.push({ time: tBos ?? lastT, position: 'aboveBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#b388ff', text: 'BOS', id: 'smc-bos' });
+        }
+        if (smc.choch && smc.choch !== 'NONE') {
+          const bull = smc.choch === 'BULLISH';
+          const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) : null;
+          markers.push({ time: tChoch ?? lastT, position: 'belowBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#80cbc4', text: 'CHoCH', id: 'smc-choch' });
+        }
+        if (Array.isArray(smc.swings)) {
+          for (const sw of smc.swings) {
+            const tSw = this._signalBarTimeSec(refTf, sw.index);
+            if (tSw) markers.push({ time: tSw, position: sw.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)', size: 0.2 });
+          }
+        }
+      }
+
+      // 7. Structural Labels
+      if (Array.isArray(smc.structPoints)) {
+        for (const sp of smc.structPoints) {
+          const tSp = this._signalBarTimeSec(refTf, sp.swing.index);
+          if (tSp) markers.push({ time: tSp, position: sp.swing.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sp.swing.kind === 'high' ? '#ff5252' : '#00e676', text: sp.label.toUpperCase(), size: 0.1 });
+        }
+      }
+
+      // 8. Liquidity
       let hasLiqSweepMarker = false;
-      if (smc.bos && smc.bos !== 'NONE') {
-        const bull = smc.bos === 'BULLISH';
-        markers.push({
-          time: lastT,
-          position: 'aboveBar',
-          shape: bull ? 'arrowUp' : 'arrowDown',
-          color: '#b388ff',
-          text: 'BOS',
-          id: 'smc-bos',
-        });
-      }
-      if (smc.choch && smc.choch !== 'NONE') {
-        const bull = smc.choch === 'BULLISH';
-        markers.push({
-          time: lastT,
-          position: 'belowBar',
-          shape: bull ? 'arrowUp' : 'arrowDown',
-          color: '#80cbc4',
-          text: 'CHoCH',
-          id: 'smc-choch',
-        });
-      }
       const liq = smc.liquidity;
       if (liq && typeof liq === 'object') {
         const pools = Array.isArray(liq.pools) ? liq.pools : [];
-        let liqLines = 0;
         for (const p of pools) {
-          if (liqLines >= 4) break;
-          const px = p.price;
-          if (!Number.isFinite(px)) continue;
-          const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
-          this._addSmcPriceLine(
-            px,
-            bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)',
-            bullPool ? 'LQ↑' : 'LQ↓',
-            LineStyle.Dotted,
-          );
-          liqLines++;
+          if (Number.isFinite(p.price)) {
+            const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
+            this._addSmcPriceLine(p.price, bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)', bullPool ? 'LQ↑' : 'LQ↓', LineStyle.Dotted);
+          }
         }
         const pr = liq.primaryRejection;
-        if (
-          pr &&
-          pr.outcome === 'rejection' &&
-          pr.sweepBarIndex != null &&
-          Number.isFinite(pr.sweepBarIndex)
-        ) {
+        if (pr && pr.outcome === 'rejection' && pr.sweepBarIndex != null) {
           const tSweep = this._signalBarTimeSec(refTf, pr.sweepBarIndex);
           if (tSweep != null) {
             const buyRaid = pr.poolKind === 'buyside' || pr.poolKind === 'BUYSIDE';
-            const raidArrow = pr.raidDirection === 'DOWN' ? '↓' : '↑';
-            markers.push({
-              time: tSweep,
-              position: buyRaid ? 'aboveBar' : 'belowBar',
-              shape: buyRaid ? 'arrowDown' : 'arrowUp',
-              color: '#ff80ab',
-              text: `LQ${raidArrow}${Number(pr.score) || 0}`,
-            });
+            markers.push({ time: tSweep, position: buyRaid ? 'aboveBar' : 'belowBar', shape: buyRaid ? 'arrowDown' : 'arrowUp', color: '#ff80ab', text: `LQ${pr.raidDirection === 'DOWN' ? '↓' : '↑'}${Number(pr.score) || 0}` });
             hasLiqSweepMarker = true;
           }
         }
       }
       if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE' && !hasLiqSweepMarker) {
-        markers.push({
-          time: lastT,
-          position: 'inBar',
-          shape: 'circle',
-          color: '#ff80ab',
-          text: 'LS',
+        markers.push({ time: lastT, position: 'inBar', shape: 'circle', color: '#ff80ab', text: 'LS' });
+      }
+
+      // 9. Structure Segments
+      const pushSmcStructureSegment = (line, color, label, position) => {
+        if (!line || !Number.isFinite(line.price)) return;
+        const tA = this._signalBarTimeSec(refTf, line.startIndex);
+        const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
+        if (tA != null && tB != null) {
+          const t1 = Math.min(tA, tB), t2 = Math.max(tA, tB);
+          if (t2 > t1) smcStructLines.push({ t1, t2, price: line.price, color, label, position, lineWidth: 2 });
+        }
+      };
+      if (smc.bos && smc.choch && smc.bosLine && smc.chochLine && smc.bosLine.startIndex === smc.chochLine.startIndex && smc.bosLine.endIndex === smc.chochLine.endIndex && Math.abs(smc.bosLine.price - smc.chochLine.price) < 1e-10) {
+        pushSmcStructureSegment(smc.bosLine, '#a389d4', 'BOS · CHoCH', smc.bos === 'BULLISH' ? 'top' : 'bottom');
+      } else {
+        if (smc.bos && smc.bos !== 'NONE') pushSmcStructureSegment(smc.bosLine, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
+        if (smc.choch && smc.choch !== 'NONE') pushSmcStructureSegment(smc.chochLine, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
+      }
+    }
+
+    if (knn) {
+      const profileWidthSec = 3600 * 6;
+      const chartRightEdge = lastT + profileWidthSec;
+
+      const renderKnnLine = (lineData, color, style, label) => {
+        if (lineData.high != null) {
+          const t1 = (lineData.highIndex != null) ? (this._signalBarTimeSec(refTf, lineData.highIndex) ?? lastT - 3600 * 12) : lastT - 3600 * 12;
+          smcStructLines.push({ t1, t2: chartRightEdge, price: lineData.high, color, label, lineWidth: 1.5, lineStyle: style, position: 'top' });
+        }
+        if (lineData.low != null) {
+          const t1 = (lineData.lowIndex != null) ? (this._signalBarTimeSec(refTf, lineData.lowIndex) ?? lastT - 3600 * 12) : lastT - 3600 * 12;
+          smcStructLines.push({ t1, t2: chartRightEdge, price: lineData.low, color, label, lineWidth: 1.5, lineStyle: style, position: 'bottom' });
+        }
+      };
+
+      renderKnnLine(knn.stLines, 'rgba(176,190,197,0.5)', 2, 'ST');
+      renderKnnLine(knn.mtLines, 'rgba(207,216,220,0.7)', 1, 'MT');
+      renderKnnLine(knn.ltLines, 'rgba(255,255,255,0.9)', 0, 'LT');
+
+      const addBosLines = (list, label, color, lineStyle) => {
+        for (const b of list) {
+          const tBreak = this._signalBarTimeSec(refTf, b.index);
+          const tFrom = this._signalBarTimeSec(refTf, b.fromIndex);
+          if (!tBreak) continue;
+          const t1 = tFrom ?? tBreak - 3600 * 2;
+          smcStructLines.push({
+            t1, t2: tBreak, price: b.price,
+            color, label, lineWidth: 1, lineStyle,
+            position: b.type === 'BULLISH' ? 'top' : 'bottom',
+          });
+        }
+      };
+      addBosLines(knn.stBOS, 'ST BOS', '#ef5350', 2);
+      addBosLines(knn.mtBOS, 'MT BOS', '#ef5350', 1);
+      addBosLines(knn.ltBOS, 'LT BOS', '#26a69a', 0);
+
+      for (const tank of knn.deltaTanks) {
+        const isBull = tank.delta >= 0;
+        const color = isBull ? '#00e676' : '#ff5252';
+        const fill = isBull ? 'rgba(0,230,118,0.15)' : 'rgba(255,82,82,0.15)';
+        const absRatio = Math.min(1, Math.abs(tank.ratio));
+
+        smcZones.push({
+          t1: lastT, t2: chartRightEdge,
+          top: tank.price * 1.002, bottom: tank.price * 0.998,
+          fill, stroke: color,
+          tankRatio: absRatio,
+          text: `[ DELTA TANK ] ▼\n${(absRatio * 100).toFixed(0)}%`,
+          textColor: '#ffffff', labelAlign: 'right',
         });
       }
-    }
 
-    const bosLinePayload = smc.bosLine;
-    const chochLinePayload = smc.chochLine;
-    const bosActive = smc.bos && smc.bos !== 'NONE';
-    const chochActive = smc.choch && smc.choch !== 'NONE';
-    const sameBosChochGeometry =
-      bosActive &&
-      chochActive &&
-      bosLinePayload &&
-      chochLinePayload &&
-      bosLinePayload.startIndex === chochLinePayload.startIndex &&
-      bosLinePayload.endIndex === chochLinePayload.endIndex &&
-      Math.abs(bosLinePayload.price - chochLinePayload.price) < 1e-10;
+      if (Array.isArray(knn.volumeProfile) && knn.volumeProfile.length > 1) {
+        const maxVol = Math.max(...knn.volumeProfile.map(v => v.volume));
+        const binHeight = (knn.volumeProfile[1].price - knn.volumeProfile[0].price) * 0.98;
+        const pocPrice = knn.volumeProfile.find(b => b.isPoc)?.price;
+        const midPrice = pocPrice ?? ((knn.ltLines.high || 0) + (knn.ltLines.low || 0)) / 2;
 
-    const pushSmcStructureSegment = (line, color, label) => {
-      if (!line || !Number.isFinite(line.price)) return;
-      const tA = this._signalBarTimeSec(refTf, line.startIndex);
-      const tB = this._signalBarTimeSec(refTf, line.endIndex) ?? lastT;
-      if (tA == null || tB == null) return;
-      const t1 = Math.min(tA, tB);
-      const t2 = Math.max(tA, tB);
-      if (t2 <= t1) return;
-      smcStructLines.push({ t1, t2, price: line.price, color, label, lineWidth: 2 });
-    };
+        for (const bin of knn.volumeProfile) {
+          if (bin.volume === 0) continue;
+          const binWidth = (bin.volume / maxVol) * profileWidthSec;
+          const above = bin.price >= midPrice;
 
-    if (sameBosChochGeometry && bosLinePayload) {
-      pushSmcStructureSegment(bosLinePayload, '#a389d4', 'BOS · CHoCH');
-    } else {
-      if (bosActive) pushSmcStructureSegment(bosLinePayload, '#b388ff', 'BOS');
-      if (chochActive) pushSmcStructureSegment(chochLinePayload, '#80cbc4', 'CHoCH');
-    }
-
-    if (Number.isFinite(s.refPrice)) {
-      this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
-    }
-
-    this._smcZonePrimitive?.setZones(smcZones);
-    this._smcZonePrimitive?.setLines(smcStructLines);
-
-    if (markers.length) {
-      markers.sort((a, b) => a.time - b.time);
-      try {
-        this.candleSeries.setMarkers(markers);
-      } catch (e) {
-        console.warn('[chart] SMC markers', e);
+          smcZones.push({
+            t1: chartRightEdge - binWidth, t2: chartRightEdge,
+            top: bin.price + binHeight / 2, bottom: bin.price - binHeight / 2,
+            fill: bin.isPoc ? 'rgba(255,255,255,0.35)' : (above ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)'),
+            stroke: bin.isPoc ? '#ffffff' : 'rgba(255,255,255,0.08)',
+            isVolumeProfile: true,
+          });
+        }
       }
     }
+
+    if (Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
+    this._smcZonePrimitive?.setZones(smcZones);
+    this._smcZonePrimitive?.setLines(smcStructLines);
+    this._lastSmcMarkers = markers;
+    this._paintAllMarkers();
   }
 
   /**
@@ -548,8 +674,14 @@ export class ChartManager {
   _volumeBarColor(candleRow) {
     const up = this._volumeColorUp;
     const down = this._volumeColorDown;
-    if (!up || !down) return candleRow.close >= candleRow.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)';
-    return candleRow.close >= candleRow.open ? up : down;
+    const base = (!up || !down)
+      ? (candleRow.close >= candleRow.open ? 'rgba(0,230,118,0.35)' : 'rgba(255,23,68,0.35)')
+      : (candleRow.close >= candleRow.open ? up : down);
+    if (this._spreadHeatmapEnabled && this._currentSpreadBps != null && this._currentSpreadBps > 0.5) {
+      if (this._currentSpreadBps > 2) return 'rgba(255,152,0,0.7)';
+      return 'rgba(255,235,59,0.5)';
+    }
+    return base;
   }
 
   /**
@@ -818,103 +950,497 @@ export class ChartManager {
     }
   }
 
-  _removeBookTopLines() {
-    if (this.candleSeries && this._bookTopBidLine) {
-      try {
-        this.candleSeries.removePriceLine(this._bookTopBidLine);
-      } catch {
-        /* ignore */
-      }
-    }
-    if (this.candleSeries && this._bookTopAskLine) {
-      try {
-        this.candleSeries.removePriceLine(this._bookTopAskLine);
-      } catch {
-        /* ignore */
-      }
-    }
-    this._bookTopBidLine = null;
-    this._bookTopAskLine = null;
-  }
-
-  _ensureBookTopLines() {
-    if (!this.candleSeries) return;
-    if (!this._bookTopBidLine) {
-      this._bookTopBidLine = this.candleSeries.createPriceLine({
-        price: this._lastBookBid ?? 0,
-        color: 'rgba(0,230,118,0.82)',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        lineVisible: true,
-        axisLabelVisible: true,
-        title: 'BID',
-        axisLabelColor: 'rgba(0,230,118,0.95)',
-        axisLabelTextColor: '#e8f5e9',
-      });
-    }
-    if (!this._bookTopAskLine) {
-      this._bookTopAskLine = this.candleSeries.createPriceLine({
-        price: this._lastBookAsk ?? 0,
-        color: 'rgba(255,23,68,0.82)',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        lineVisible: true,
-        axisLabelVisible: true,
-        title: 'ASK',
-        axisLabelColor: 'rgba(255,23,68,0.95)',
-        axisLabelTextColor: '#ffebee',
-      });
-    }
-  }
-
   _syncBookTopLines() {
-    if (!this.candleSeries) return;
+    if (!this._partialLinesPrimitive) return;
     if (!this._bookTopLinesEnabled) {
-      this._removeBookTopLines();
+      this._partialLinesPrimitive.removeLine('bid');
+      this._partialLinesPrimitive.removeLine('ask');
       return;
     }
     const bid = this._lastBookBid;
     const ask = this._lastBookAsk;
     if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid > ask) {
-      this._removeBookTopLines();
+      this._partialLinesPrimitive.removeLine('bid');
+      this._partialLinesPrimitive.removeLine('ask');
       return;
     }
-    this._ensureBookTopLines();
-    this._bookTopBidLine?.applyOptions({
-      price: bid,
-      lineVisible: true,
-      axisLabelVisible: true,
-      title: 'BID',
-      color: 'rgba(0,230,118,0.82)',
-      axisLabelColor: 'rgba(0,230,118,0.95)',
-      axisLabelTextColor: '#e8f5e9',
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('bid', {
+      startTimeSec: startTime, price: bid, color: 'rgba(0,200,220,0.82)',
+      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#e0f7fa',
     });
-    this._bookTopAskLine?.applyOptions({
-      price: ask,
-      lineVisible: true,
-      axisLabelVisible: true,
-      title: 'ASK',
-      color: 'rgba(255,23,68,0.82)',
-      axisLabelColor: 'rgba(255,23,68,0.95)',
-      axisLabelTextColor: '#ffebee',
+    this._partialLinesPrimitive.setLine('ask', {
+      startTimeSec: startTime, price: ask, color: 'rgba(255,160,0,0.82)',
+      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#fff3e0',
     });
   }
 
-  /**
-   * Best bid / ask from the order book (same top-of-book as the ladder). Non-finite clears lines.
-   */
   setBookTopLevels(bid, ask) {
     const b = Number.isFinite(bid) ? bid : null;
     const a = Number.isFinite(ask) ? ask : null;
     if (b == null || a == null) {
       this._lastBookBid = null;
       this._lastBookAsk = null;
-      this._removeBookTopLines();
+      this._partialLinesPrimitive?.removeLine('bid');
+      this._partialLinesPrimitive?.removeLine('ask');
       return;
     }
     this._lastBookBid = b;
     this._lastBookAsk = a;
     this._syncBookTopLines();
+  }
+
+  // ── 24h High / Low + helpers ──────────────────────────────────────────
+
+  _findCandleTimeSec(matchFn) {
+    const candles = this.candleMap[this.currentTf];
+    if (!candles?.length) return null;
+    for (let i = candles.length - 1; i >= 0; i--) {
+      if (matchFn(candles[i])) return Math.floor(candles[i].openTime / 1000);
+    }
+    return null;
+  }
+
+  _latestCandleTimeSec() {
+    const candles = this.candleMap[this.currentTf];
+    if (!candles?.length) return null;
+    return Math.floor(candles[candles.length - 1].openTime / 1000);
+  }
+
+  _sync24hLines() {
+    if (!this._partialLinesPrimitive) return;
+    const endTime = this._latestCandleTimeSec();
+    if (endTime == null) {
+      this._partialLinesPrimitive.removeLine('high24h');
+      this._partialLinesPrimitive.removeLine('low24h');
+      return;
+    }
+
+    if (this._lastHigh24h != null) {
+      const startTime = this._findCandleTimeSec((c) => c.high === this._lastHigh24h) ?? endTime;
+      this._partialLinesPrimitive.setLine('high24h', {
+        startTimeSec: startTime, price: this._lastHigh24h, color: 'rgba(255,255,255,0.25)',
+        title: '24h High',
+      });
+    } else {
+      this._partialLinesPrimitive.removeLine('high24h');
+    }
+
+    if (this._lastLow24h != null) {
+      const startTime = this._findCandleTimeSec((c) => c.low === this._lastLow24h) ?? endTime;
+      this._partialLinesPrimitive.setLine('low24h', {
+        startTimeSec: startTime, price: this._lastLow24h, color: 'rgba(255,255,255,0.25)',
+        title: '24h Low',
+      });
+    } else {
+      this._partialLinesPrimitive.removeLine('low24h');
+    }
+  }
+
+  set24hHighLow(high, low) {
+    this._lastHigh24h = Number.isFinite(high) ? high : null;
+    this._lastLow24h = Number.isFinite(low) ? low : null;
+    this._sync24hLines();
+  }
+
+  // ── Liquidation Cascade Markers ─────────────────────────────────────
+
+  addLiquidationMarker(msg) {
+    if (!this._liquidationsEnabled) return;
+    const price = Number(msg.price);
+    const qty = Number(msg.qty);
+    const time = Math.floor(Number(msg.tradeTime) / 1000);
+    if (!Number.isFinite(price) || !Number.isFinite(time)) return;
+    const isLongLiq = msg.side === 'SELL';
+    this._liquidationMarkers.push({
+      time,
+      position: isLongLiq ? 'aboveBar' : 'belowBar',
+      shape: isLongLiq ? 'arrowDown' : 'arrowUp',
+      color: isLongLiq ? COLORS.bear : COLORS.ltpBull,
+      text: `LIQ ${Number.isFinite(qty) ? qty.toFixed(1) : ''}`,
+      size: 1,
+      id: `liq-${time}-${msg.side}`,
+    });
+    if (this._liquidationMarkers.length > 200) {
+      this._liquidationMarkers = this._liquidationMarkers.slice(-200);
+    }
+    this._paintAllMarkers();
+  }
+
+  _paintAllMarkers() {
+    if (!this.candleSeries) return;
+    const smcMarkers = this._lastSmcMarkers ?? [];
+    const liqMarkers = this._liquidationsEnabled ? this._liquidationMarkers : [];
+    const posMarkers = this._positionMarkers ?? [];
+    const all = [...smcMarkers, ...liqMarkers, ...posMarkers].sort((a, b) => a.time - b.time);
+    try {
+      this.candleSeries.setMarkers(all);
+    } catch (e) {
+      console.warn('[chart] setMarkers failed', e);
+    }
+  }
+
+  _currentPositionRefPrice() {
+    if (Number.isFinite(this._lastMarkPrice)) return this._lastMarkPrice;
+    if (Number.isFinite(this._lastBookBid) && Number.isFinite(this._lastBookAsk)) {
+      return (this._lastBookBid + this._lastBookAsk) / 2;
+    }
+    const close = this.getLastCloseForTf(this.currentTf);
+    return Number.isFinite(close) ? close : null;
+  }
+
+  _positionPnlText(pos, currentPrice) {
+    const entry = Number(pos.entryPrice);
+    const qty = Number(pos.quantity);
+    const side = String(pos.side || '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    const dir = side === 'LONG' ? 1 : -1;
+    const provided = Number(pos.unrealizedUsdt);
+    const pnl = Number.isFinite(provided) && String(pos.mode || '').toLowerCase() !== 'live'
+      ? provided
+      : (Number.isFinite(currentPrice) && Number.isFinite(entry) && Number.isFinite(qty)
+          ? (currentPrice - entry) * qty * dir
+          : 0);
+    const leverage = Number(pos.leverage);
+    const margin = Number.isFinite(pos.marginUsdt) && pos.marginUsdt > 0
+      ? pos.marginUsdt
+      : (Number.isFinite(leverage) && leverage > 0 && Number.isFinite(entry) && Number.isFinite(qty)
+          ? (entry * qty) / leverage
+          : null);
+    const pct = margin && margin > 0 ? (pnl / margin) * 100 : null;
+    return {
+      pnl,
+      pct,
+      text:
+        `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT` +
+        (pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : ''),
+    };
+  }
+
+  setOpenPositions(positions, symbolFilter = null) {
+    if (!this.candleSeries || !this._partialLinesPrimitive) return;
+    const filter = symbolFilter ? String(symbolFilter).trim().toUpperCase() : null;
+    const list = Array.isArray(positions) ? positions : [];
+    const currentPrice = this._currentPositionRefPrice();
+    const nextMarkers = [];
+    const nextIds = new Set();
+
+    for (const pos of list) {
+      if (!pos || typeof pos !== 'object') continue;
+      const symbol = String(pos.symbol || '').trim().toUpperCase();
+      if (!symbol) continue;
+      if (filter && symbol !== filter) continue;
+      const orderId = String(pos.orderId || `${symbol}:${pos.openedAt ?? ''}:${pos.entryPrice ?? ''}`);
+      const entryPrice = Number(pos.entryPrice);
+      if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+      const openedAt = Number(pos.openedAt);
+      const startTimeSec = Number.isFinite(openedAt) ? Math.floor(openedAt / 1000) : this._latestCandleTimeSec();
+      const side = String(pos.side || '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+      const sideColor = side === 'LONG' ? COLORS.ltpBull : COLORS.bear;
+      const pnlInfo = this._positionPnlText(pos, currentPrice);
+      nextIds.add(orderId);
+      this._openPositionLines.set(orderId, { ...pos });
+      this._partialLinesPrimitive.setLine(`pos-${orderId}`, {
+        startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+        price: entryPrice,
+        color: sideColor,
+        lineWidth: 1,
+        title: `${side} ENTRY ${fmtLtpDisplay(entryPrice)} | ${pnlInfo.text}`,
+        axisLabelColor: sideColor,
+      });
+      nextMarkers.push({
+        time: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+        position: side === 'LONG' ? 'belowBar' : 'aboveBar',
+        shape: side === 'LONG' ? 'arrowUp' : 'arrowDown',
+        color: sideColor,
+        text: `${side} ENTRY`,
+        size: 1,
+        id: `pos-${orderId}`,
+      });
+    }
+
+    for (const [orderId] of this._openPositionLines) {
+      if (nextIds.has(orderId)) continue;
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}`);
+      this._openPositionLines.delete(orderId);
+    }
+
+    this._positionMarkers = nextMarkers;
+    this._paintAllMarkers();
+  }
+
+  // ── Mark Price Line ─────────────────────────────────────────────────
+
+  setMarkPrice(price) {
+    const p = Number.isFinite(price) ? price : null;
+    this._lastMarkPrice = p;
+    this._syncMarkLine();
+  }
+
+  _syncMarkLine() {
+    if (!this._partialLinesPrimitive) return;
+    if (this._lastMarkPrice == null) {
+      this._partialLinesPrimitive.removeLine('mark');
+      return;
+    }
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('mark', {
+      startTimeSec: startTime,
+      price: this._lastMarkPrice,
+      color: 'rgba(255,255,255,0.15)',
+      dash: [2, 3],
+      title: 'MARK',
+      axisLabelColor: 'rgba(255,255,255,0.25)',
+      axisLabelTextColor: '#b0bec5',
+    });
+  }
+
+  // ── OI Regime Overlay ───────────────────────────────────────────────
+
+  setOiRegime(msg) {
+    if (!msg || !msg.regime) {
+      this._oiRegime = null;
+      this._syncOiRegimeOverlay();
+      return;
+    }
+    this._oiRegime = msg;
+    this._syncOiRegimeOverlay();
+  }
+
+  _syncOiRegimeOverlay() {
+    if (!this.candleSeries) return;
+    if (this._oiRegimePriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+      this._oiRegimePriceLine = null;
+    }
+    if (!this._oiRegimeEnabled || !this._oiRegime || this._oiRegime.regime === 'neutral') return;
+
+    const regime = this._oiRegime.regime;
+    const OI_COLORS = {
+      price_up_oi_up: '#00c8dc',
+      price_up_oi_down: 'rgba(0,200,220,0.45)',
+      price_down_oi_up: '#ffa000',
+      price_down_oi_down: 'rgba(255,160,0,0.45)',
+    };
+    const OI_LABELS = {
+      price_up_oi_up: '▲P ▲OI  New Longs',
+      price_up_oi_down: '▲P ▼OI  Short Squeeze',
+      price_down_oi_up: '▼P ▲OI  New Shorts',
+      price_down_oi_down: '▼P ▼OI  Long Squeeze',
+    };
+    const color = OI_COLORS[regime] ?? 'rgba(255,255,255,0.15)';
+    const label = OI_LABELS[regime] ?? 'OI';
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) return;
+
+    this._oiRegimePriceLine = this.candleSeries.createPriceLine({
+      price: anchorPrice,
+      color: 'transparent',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      lineVisible: false,
+      axisLabelVisible: true,
+      axisLabelColor: color,
+      title: label,
+    });
+  }
+
+  // ── Funding Rate Overlay ────────────────────────────────────────────
+
+  setFundingRate(msg) {
+    this._lastFunding = msg ?? null;
+    this._syncFundingOverlay();
+  }
+
+  _syncFundingOverlay() {
+    if (this._fundingPriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
+      this._fundingPriceLine = null;
+    }
+    if (!this._lastFunding || !this.candleSeries) return;
+    const { rate, zscore, extreme, crowdedSide } = this._lastFunding;
+    if (!Number.isFinite(rate)) return;
+
+    const pctStr = (rate * 100).toFixed(4) + '%';
+    const isNeg = rate < 0;
+    const color = extreme
+      ? (isNeg ? '#00e5ff' : '#ff5252')
+      : (isNeg ? 'rgba(0,229,255,0.5)' : 'rgba(255,82,82,0.5)');
+    const label = `FR ${pctStr}${extreme ? ' ⚠' : ''}`;
+
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) return;
+
+    const offset = anchorPrice * 0.001;
+    this._fundingPriceLine = this.candleSeries.createPriceLine({
+      price: anchorPrice + (isNeg ? -offset : offset),
+      color: 'transparent',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      lineVisible: false,
+      axisLabelVisible: true,
+      axisLabelColor: color,
+      title: label,
+    });
+  }
+
+  // ── Feature 22.5: Spread Heatmap ────────────────────────────────────
+
+  setCurrentSpread(spreadBps) {
+    this._currentSpreadBps = Number.isFinite(spreadBps) ? spreadBps : null;
+  }
+
+  // ── Feature 22.6: TFI Lane ─────────────────────────────────────────
+
+  setTfiSnapshot(tfi5s) {
+    if (!this._tfiEnabled || !this._tfiSeries || !tfi5s) return;
+    const t = this._latestCandleTimeSec();
+    if (!t) return;
+    const tfi = Number(tfi5s.tfi);
+    if (!Number.isFinite(tfi)) return;
+    let color = 'rgba(128,128,128,0.3)';
+    if (tfi > 0.3) color = 'rgba(0,200,220,0.6)';
+    else if (tfi < -0.3) color = 'rgba(255,160,0,0.6)';
+    this._tfiBarMap.set(t, { time: t, value: tfi, color });
+    try { this._tfiSeries.update({ time: t, value: tfi, color }); } catch { /* ignore */ }
+  }
+
+  // ── Feature 22.7: Depth Pressure Zones ─────────────────────────────
+
+  setDepthPressure(dp) {
+    this._lastDepthPressure = dp ?? null;
+    this._syncDepthPressureZones();
+  }
+
+  _syncDepthPressureZones() {
+    if (!this._partialLinesPrimitive || !this._depthPressureEnabled || !this._lastDepthPressure) {
+      return;
+    }
+    const dp = this._lastDepthPressure.depthPressure;
+    if (!Number.isFinite(dp) || Math.abs(dp) < 0.1) {
+      this._partialLinesPrimitive.removeLine('dp-zone');
+      return;
+    }
+    const anchorPrice = this._lastMarkPrice ?? this._formingBarCtx?.closeTruth;
+    if (!Number.isFinite(anchorPrice)) {
+      this._partialLinesPrimitive.removeLine('dp-zone');
+      return;
+    }
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    const alpha = Math.min(0.6, Math.abs(dp) * 0.5);
+    const isBidDominant = dp > 0;
+    const offset = anchorPrice * 0.002 * (isBidDominant ? -1 : 1);
+    const color = isBidDominant
+      ? `rgba(0,200,220,${alpha.toFixed(2)})`
+      : `rgba(255,160,0,${alpha.toFixed(2)})`;
+    const label = isBidDominant
+      ? `▲BID ${(dp * 100).toFixed(0)}%`
+      : `▼ASK ${(Math.abs(dp) * 100).toFixed(0)}%`;
+    this._partialLinesPrimitive.setLine('dp-zone', {
+      startTimeSec: startTime,
+      price: anchorPrice + offset,
+      color,
+      dash: [1, 4],
+      title: label,
+      axisLabelColor: color,
+    });
+  }
+
+  // ── Feature 22.8: OBI-Tinted Candle Borders ────────────────────────
+
+  setObi(obi) {
+    this._currentObi = Number.isFinite(obi) ? obi : null;
+    this._syncObiTint();
+  }
+
+  _syncObiTint() {
+    if (!this.candleSeries) return;
+    if (!this._obiTintEnabled || this._currentObi == null || Math.abs(this._currentObi) < 0.15) {
+      this._restoreDefaultWickColors();
+      return;
+    }
+    const intensity = Math.min(1, Math.abs(this._currentObi));
+    const alpha = (0.3 + intensity * 0.5).toFixed(2);
+    if (this._currentObi > 0) {
+      this.candleSeries.applyOptions({
+        wickUpColor: `rgba(0,200,220,${alpha})`,
+        wickDownColor: `rgba(0,200,220,${alpha})`,
+        borderUpColor: `rgba(0,200,220,${alpha})`,
+        borderDownColor: `rgba(0,200,220,${alpha})`,
+      });
+    } else {
+      this.candleSeries.applyOptions({
+        wickUpColor: `rgba(255,160,0,${alpha})`,
+        wickDownColor: `rgba(255,160,0,${alpha})`,
+        borderUpColor: `rgba(255,160,0,${alpha})`,
+        borderDownColor: `rgba(255,160,0,${alpha})`,
+      });
+    }
+  }
+
+  _restoreDefaultWickColors() {
+    if (!this.candleSeries) return;
+    const themeId = readStoredCandleThemeId();
+    const theme = getCandleTheme(themeId);
+    if (theme?.candle) {
+      this.candleSeries.applyOptions({
+        wickUpColor: theme.candle.wickUpColor,
+        wickDownColor: theme.candle.wickDownColor,
+        borderUpColor: theme.candle.borderUpColor,
+        borderDownColor: theme.candle.borderDownColor,
+      });
+    }
+  }
+
+  // ── Feature 22.12: Micro-Candle Sub-Chart ──────────────────────────
+
+  _initMicroChart() {
+    const container = document.getElementById('micro-chart-container');
+    if (!container) return;
+    container.style.display = this._microEnabled ? '' : 'none';
+    if (this._microChart) return;
+    this._microChart = createChart(container, {
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: COLORS.text, fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
+      grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.05, bottom: 0.05 } },
+      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5 },
+      crosshair: { mode: 0 },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      handleScale: { mouseWheel: true, pinch: true },
+      height: 100,
+      width: container.clientWidth,
+    });
+    this._microCandleSeries = this._microChart.addCandlestickSeries({
+      upColor: 'rgba(0,200,220,0.6)',
+      downColor: 'rgba(255,160,0,0.6)',
+      wickUpColor: 'rgba(0,200,220,0.4)',
+      wickDownColor: 'rgba(255,160,0,0.4)',
+      borderUpColor: 'rgba(0,200,220,0.6)',
+      borderDownColor: 'rgba(255,160,0,0.6)',
+      lastValueVisible: true,
+      priceLineVisible: false,
+    });
+    if (this._resizeObs) this._resizeObs.observe(container);
+  }
+
+  setMicroBars(bars) {
+    if (!this._microEnabled || !this._microCandleSeries || !Array.isArray(bars) || bars.length === 0) return;
+    const data = bars
+      .filter(b => Number.isFinite(b.openTime) && Number.isFinite(b.open))
+      .map(b => ({
+        time: Math.floor(b.openTime / 1000),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      }))
+      .sort((a, b) => a.time - b.time);
+    const deduped = [];
+    let prevT = -Infinity;
+    for (const d of data) {
+      if (d.time === prevT) deduped[deduped.length - 1] = d;
+      else { deduped.push(d); prevT = d.time; }
+    }
+    try { this._microCandleSeries.setData(deduped); } catch (e) { console.warn('[chart] micro setData', e); }
   }
 
   _hideLtpPriceLine() {
@@ -930,6 +1456,7 @@ export class ChartManager {
       }
     }
     this._ltpPriceLine = null;
+    this._partialLinesPrimitive?.removeLine('ltp');
   }
 
   /** @param {object | null} tail coerced candle (openTime, OHLC, volume). */
@@ -987,10 +1514,29 @@ export class ChartManager {
       color: COLORS.bear,
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
-      lineVisible: true,
+      lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: COLORS.bear,
     });
+  }
+
+  _ltpColor(price) {
+    const open = this._formingBarCtx?.open;
+    return (Number.isFinite(open) && price >= open) ? COLORS.ltpBull : COLORS.bear;
+  }
+
+  _updateLtpVisual(price) {
+    if (!this._partialLinesPrimitive) return;
+    if (!Number.isFinite(price)) {
+      this._partialLinesPrimitive.removeLine('ltp');
+      return;
+    }
+    const color = this._ltpColor(price);
+    const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
+    this._partialLinesPrimitive.setLine('ltp', {
+      startTimeSec: startTime, price, color,
+    });
+    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color });
   }
 
   _ltpAnimStep() {
@@ -1021,6 +1567,7 @@ export class ChartManager {
 
     const p = ltpPriceFromTicks(this._ltpDisplayTicks);
     this._ltpPriceLine.applyOptions({ price: p });
+    this._updateLtpVisual(p);
     this._emitLtpDisplay(p);
     this._refreshFormingCandleFromCtx();
     if (this._ltpDisplayTicks !== this._ltpTargetTicks) {
@@ -1040,13 +1587,15 @@ export class ChartManager {
     this._ltpDisplayTicks = ticks;
     const p = ltpPriceFromTicks(ticks);
     this._ensureLtpPriceLine(p);
+    const color = this._ltpColor(p);
     this._ltpPriceLine.applyOptions({
       price: p,
-      lineVisible: true,
+      lineVisible: false,
       axisLabelVisible: true,
-      color: COLORS.bear,
-      axisLabelColor: COLORS.bear,
+      color,
+      axisLabelColor: color,
     });
+    this._updateLtpVisual(p);
     this._emitLtpDisplay(p);
     this._refreshFormingCandleFromCtx();
   }
@@ -1163,6 +1712,51 @@ export class ChartManager {
       priceLineVisible: false,
     });
 
+    this._vwapSeries = this.chart.addLineSeries({
+      color: '#e040fb',
+      lineWidth: 1.5,
+      lineStyle: 0,
+      priceScaleId: 'right',
+      lastValueVisible: true,
+      priceLineVisible: false,
+      visible: this._vwapEnabled,
+    });
+
+    this._rsiSeries = this.chart.addLineSeries({
+      color: '#ce93d8',
+      lineWidth: 1.5,
+      priceScaleId: 'rsi',
+      lastValueVisible: true,
+      priceLineVisible: false,
+      visible: this._rsiEnabled,
+    });
+    this.chart.priceScale('rsi').applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0.02 },
+      borderVisible: false,
+      visible: this._rsiEnabled,
+    });
+    this._rsiSeries.createPriceLine({ price: 70, color: 'rgba(255,82,82,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+    this._rsiSeries.createPriceLine({ price: 30, color: 'rgba(0,200,220,0.3)', lineWidth: 1, lineStyle: LineStyle.Dashed, lineVisible: true, axisLabelVisible: false });
+    this._rsiSeries.createPriceLine({ price: 50, color: 'rgba(255,255,255,0.08)', lineWidth: 1, lineStyle: LineStyle.Dotted, lineVisible: true, axisLabelVisible: false });
+
+    this._tfiSeries = this.chart.addHistogramSeries({
+      priceScaleId: 'tfi',
+      base: 0,
+      priceFormat: { type: 'custom', formatter: (v) => v.toFixed(2) },
+      lastValueVisible: false,
+      visible: this._tfiEnabled,
+    });
+    this.chart.priceScale('tfi').applyOptions({
+      scaleMargins: { top: 0.72, bottom: 0.26 },
+      borderVisible: false,
+      visible: false,
+    });
+
+    this._initMicroChart();
+
+    this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
+    this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
+
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((lr) => {
       this._maybeRequestHistory(lr);
     });
@@ -1225,8 +1819,7 @@ export class ChartManager {
       smcToggle.addEventListener('change', () => {
         this._smcSignalsOverlayEnabled = smcToggle.checked;
         this._storeSmcOverlayEnabled(this._smcSignalsOverlayEnabled);
-        if (this._smcSignalsOverlayEnabled) this._paintSmcFromStoredSignals();
-        else this._clearSmcChartVisuals();
+        this._paintSmcFromStoredSignals();
       });
     }
 
@@ -1237,6 +1830,113 @@ export class ChartManager {
         this._signalHudEnabled = hudToggle.checked;
         storeSignalHudEnabled(this._signalHudEnabled);
         this.updateStrategyHud(this._lastSignalsForChart);
+      });
+    }
+
+    const knnToggle = document.getElementById('toggle-knn-overlay');
+    if (knnToggle instanceof HTMLInputElement) {
+      knnToggle.checked = this._knnArchitectureEnabled;
+      knnToggle.addEventListener('change', () => {
+        this._knnArchitectureEnabled = knnToggle.checked;
+        this._storeKnnArchitectureEnabled(this._knnArchitectureEnabled);
+        this._paintSmcFromStoredSignals();
+      });
+    }
+
+    const liqToggle = document.getElementById('toggle-liquidations');
+    if (liqToggle instanceof HTMLInputElement) {
+      liqToggle.checked = this._liquidationsEnabled;
+      liqToggle.addEventListener('change', () => {
+        this._liquidationsEnabled = liqToggle.checked;
+        storeIndicatorOn(LIQUIDATION_MARKERS_STORAGE_KEY, this._liquidationsEnabled);
+        this._paintAllMarkers();
+      });
+    }
+
+    const oiToggle = document.getElementById('toggle-oi-regime');
+    if (oiToggle instanceof HTMLInputElement) {
+      oiToggle.checked = this._oiRegimeEnabled;
+      oiToggle.addEventListener('change', () => {
+        this._oiRegimeEnabled = oiToggle.checked;
+        storeIndicatorOn(OI_REGIME_STORAGE_KEY, this._oiRegimeEnabled);
+        this._syncOiRegimeOverlay();
+      });
+    }
+
+    const vwapToggle = document.getElementById('toggle-vwap');
+    if (vwapToggle instanceof HTMLInputElement) {
+      vwapToggle.checked = this._vwapEnabled;
+      vwapToggle.addEventListener('change', () => {
+        this._vwapEnabled = vwapToggle.checked;
+        storeIndicatorOn(VWAP_STORAGE_KEY, this._vwapEnabled);
+        this._vwapSeries.applyOptions({ visible: this._vwapEnabled });
+        if (this._vwapEnabled) this._paintVwap(this.currentTf);
+      });
+    }
+
+    const rsiToggle = document.getElementById('toggle-rsi');
+    if (rsiToggle instanceof HTMLInputElement) {
+      rsiToggle.checked = this._rsiEnabled;
+      rsiToggle.addEventListener('change', () => {
+        this._rsiEnabled = rsiToggle.checked;
+        storeIndicatorOn(RSI_STORAGE_KEY, this._rsiEnabled);
+        this._rsiSeries.applyOptions({ visible: this._rsiEnabled });
+        this.chart.priceScale('rsi').applyOptions({ visible: this._rsiEnabled });
+        if (this._rsiEnabled) this._paintIndicators(this.currentTf);
+      });
+    }
+
+    const spreadToggle = document.getElementById('toggle-spread-heatmap');
+    if (spreadToggle instanceof HTMLInputElement) {
+      spreadToggle.checked = this._spreadHeatmapEnabled;
+      spreadToggle.addEventListener('change', () => {
+        this._spreadHeatmapEnabled = spreadToggle.checked;
+        storeIndicatorOn(SPREAD_HEATMAP_STORAGE_KEY, this._spreadHeatmapEnabled);
+      });
+    }
+
+    const tfiToggle = document.getElementById('toggle-tfi');
+    if (tfiToggle instanceof HTMLInputElement) {
+      tfiToggle.checked = this._tfiEnabled;
+      tfiToggle.addEventListener('change', () => {
+        this._tfiEnabled = tfiToggle.checked;
+        storeIndicatorOn(TFI_STORAGE_KEY, this._tfiEnabled);
+        this._tfiSeries.applyOptions({ visible: this._tfiEnabled });
+      });
+    }
+
+    const dpToggle = document.getElementById('toggle-depth-pressure');
+    if (dpToggle instanceof HTMLInputElement) {
+      dpToggle.checked = this._depthPressureEnabled;
+      dpToggle.addEventListener('change', () => {
+        this._depthPressureEnabled = dpToggle.checked;
+        storeIndicatorOn(DEPTH_PRESSURE_STORAGE_KEY, this._depthPressureEnabled);
+        if (!this._depthPressureEnabled) this._partialLinesPrimitive?.removeLine('dp-zone');
+        else this._syncDepthPressureZones();
+      });
+    }
+
+    const obiToggle = document.getElementById('toggle-obi-tint');
+    if (obiToggle instanceof HTMLInputElement) {
+      obiToggle.checked = this._obiTintEnabled;
+      obiToggle.addEventListener('change', () => {
+        this._obiTintEnabled = obiToggle.checked;
+        storeIndicatorOn(OBI_TINT_STORAGE_KEY, this._obiTintEnabled);
+        if (!this._obiTintEnabled) this._restoreDefaultWickColors();
+        else this._syncObiTint();
+      });
+    }
+
+    const microToggle = document.getElementById('toggle-micro');
+    if (microToggle instanceof HTMLInputElement) {
+      microToggle.checked = this._microEnabled;
+      microToggle.addEventListener('change', () => {
+        this._microEnabled = microToggle.checked;
+        storeIndicatorOn(MICRO_CHART_STORAGE_KEY, this._microEnabled);
+        const mc = document.getElementById('micro-chart-container');
+        if (mc) mc.style.display = this._microEnabled ? '' : 'none';
+        if (this._microEnabled) this._initMicroChart();
+        if (this._microChart) this._microChart.applyOptions({ width: mc?.clientWidth ?? 0 });
       });
     }
 
@@ -1318,6 +2018,9 @@ export class ChartManager {
     this.ema21Series.setData([]);
     this.ema50Series.setData([]);
     this.stSeries.setData([]);
+    this._vwapSeries?.setData([]);
+    this._rsiSeries?.setData([]);
+    this._tfiSeries?.setData([]);
   }
 
   _maybeRequestHistory(logicalRange) {
@@ -1418,6 +2121,8 @@ export class ChartManager {
   _handleResize() {
     const c = document.getElementById(this.containerId);
     if (c) this.chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
+    const mc = document.getElementById('micro-chart-container');
+    if (mc && this._microChart) this._microChart.applyOptions({ width: mc.clientWidth });
   }
 
   /**
@@ -1481,13 +2186,16 @@ export class ChartManager {
 
   _applyTimeScaleForTf(tf) {
     const dailyLike = tf === '1d';
+    // Preserve current zoom level across timeframe switches. 
+    // If not set (initial boot), default to 4.
+    const currentSpacing = this.chart ? this.chart.timeScale().options().barSpacing : 4;
     const ts = {
       ...CHART_OPTS.timeScale,
       timeVisible: !dailyLike,
       secondsVisible: false,
       /** Extra empty space so the last candle is not drawn under stacked price-scale labels. */
       rightOffset: 22,
-      barSpacing: 4,
+      barSpacing: currentSpacing,
       fixLeftEdge: false,
       fixRightEdge: false,
       rightBarStaysOnScroll: true,
@@ -1501,18 +2209,9 @@ export class ChartManager {
    */
   _fitDefaultVisibleRange(tf, barCount) {
     if (!this.chart || barCount < 1) return;
-    const want = DEFAULT_VISIBLE_BARS[tf] ?? 160;
-    if (barCount <= want) {
-      this.chart.timeScale().fitContent();
-    } else {
-      const from = barCount - want;
-      const to = barCount - 1;
-      try {
-        this.chart.timeScale().setVisibleLogicalRange({ from, to });
-      } catch {
-        this.chart.timeScale().fitContent();
-      }
-    }
+    // Just snap to the latest data respecting the rightOffset gap.
+    // Do not use fitContent() or setVisibleLogicalRange(), as they stretch/shrink the candles.
+    this.chart.timeScale().scrollToRealTime();
   }
 
   /**
@@ -1561,6 +2260,19 @@ export class ChartManager {
   onSnapshot({ candles, indicators, availableTimeframes }) {
     this._historyExhausted = {};
     this._historyLoading = {};
+    this.set24hHighLow(null, null);
+    this._liquidationMarkers = [];
+    this._lastMarkPrice = null;
+    this._lastFunding = null;
+    this._oiRegime = null;
+    this._tfiBarMap?.clear();
+    this._lastDepthPressure = null;
+    this._currentObi = null;
+    this._microCandleSeries?.setData([]);
+    if (this._oiRegimePriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+      this._oiRegimePriceLine = null;
+    }
     this._applyAvailableTimeframes(availableTimeframes ?? null);
 
     const raw = candles ?? {};
@@ -1684,6 +2396,17 @@ export class ChartManager {
       this.candleSeries.setData([]);
       this.volumeSeries.setData([]);
       this._clearOverlaySeries();
+      this._partialLinesPrimitive?.clear();
+      this._openPositionLines.clear();
+      this._positionMarkers = [];
+      if (this._oiRegimePriceLine && this.candleSeries) {
+        try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+        this._oiRegimePriceLine = null;
+      }
+      if (this._fundingPriceLine && this.candleSeries) {
+        try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
+        this._fundingPriceLine = null;
+      }
       this.chart.timeScale().fitContent();
       this._hideLtpPriceLine();
       this._emitLtpDisplay(null);
@@ -1747,6 +2470,48 @@ export class ChartManager {
     const lastClose = candles[candles.length - 1]?.close;
     this._snapLtpTo(Number.isFinite(lastClose) ? lastClose : NaN);
     this._paintSmcFromStoredSignals();
+    this._sync24hLines();
+    this._syncBookTopLines();
+    this._syncMarkLine();
+    this._syncOiRegimeOverlay();
+    this._syncFundingOverlay();
+    this._tfiBarMap.clear();
+    this._tfiSeries?.setData([]);
+    this._syncDepthPressureZones();
+  }
+
+  _computeSessionVwap(candles) {
+    const result = [];
+    let cumPV = 0;
+    let cumV = 0;
+    let sessionDay = -1;
+    for (const c of candles) {
+      const d = new Date(c.openTime);
+      const day = d.getUTCDate() + d.getUTCMonth() * 100 + d.getUTCFullYear() * 10000;
+      if (day !== sessionDay) {
+        cumPV = 0;
+        cumV = 0;
+        sessionDay = day;
+      }
+      const tp = (c.high + c.low + c.close) / 3;
+      cumPV += tp * c.volume;
+      cumV += c.volume;
+      if (cumV > 0) {
+        result.push({ time: Math.floor(c.openTime / 1000), value: cumPV / cumV });
+      }
+    }
+    return result;
+  }
+
+  _paintVwap(tf) {
+    if (!this._vwapSeries || !this._vwapEnabled) return;
+    const raw = this.candleMap[tf];
+    if (!raw?.length) {
+      this._vwapSeries.setData([]);
+      return;
+    }
+    const candles = this._sortedDedupeCandles(raw);
+    this._vwapSeries.setData(this._computeSessionVwap(candles));
   }
 
   _paintIndicators(tf) {
@@ -1800,5 +2565,14 @@ export class ChartManager {
       const stPadded = this._padLineLikeToLastTime(stData, tLastCandle);
       this.stSeries.setData(stPadded);
     }
+
+    if (ind.rsi && this._rsiEnabled) {
+      const rsiData = toLine(ind.rsi);
+      this._rsiSeries.setData(this._padLineLikeToLastTime(rsiData, tLastCandle));
+    } else if (this._rsiSeries) {
+      this._rsiSeries.setData([]);
+    }
+
+    this._paintVwap(tf);
   }
 }

@@ -46,7 +46,7 @@ export const AppConfigSchema = z.object({
    */
   BINANCE_WATCHLIST: z
     .string()
-    .default('')
+    .default('ETHUSDT,BTCUSDT,XRPUSDT')
     .transform((s) =>
       [...new Set(s.split(',').map((p) => p.trim().toUpperCase()).filter((p) => p.length > 0))],
     ),
@@ -128,6 +128,17 @@ export const AppConfigSchema = z.object({
   CAPITAL_PER_TRADE: numFromString(20000),
   CAPITAL_PER_TRADE_INR: numFromString(20000),
   INR_PER_USDT: numFromString(85),
+  /** Live INR/USDT FX rate source: `binance` (USDTINR), `coindcx` (USDTINR), or `fixed` (use INR_PER_USDT). */
+  INR_RATE_SOURCE: z
+    .union([z.enum(['binance', 'coindcx', 'fixed']), z.string()])
+    .default('coindcx')
+    .transform((v) => {
+      const s = String(v).toLowerCase();
+      return s === 'coindcx' || s === 'fixed' ? s : 'binance';
+    })
+    .pipe(z.enum(['binance', 'coindcx', 'fixed'])),
+  /** Seconds between INR/USDT FX rate polls (min 15 enforced at runtime). */
+  INR_RATE_REFRESH_SEC: numFromString(300),
   TARGET_PNL_PCT: numFromString(0.10),
   STOP_LOSS_PCT: numFromString(0.05),
   /** Take-profit distance as underlying price move (default 1.5% capture profile). */
@@ -188,6 +199,8 @@ export const AppConfigSchema = z.object({
   PAPER_LEDGER_DIR: z.string().default('./paper'),
   PAPER_FUNDING_POLL_SEC: numFromString(300),
   PAPER_EQUITY_SNAPSHOT_SEC: numFromString(5),
+  PAPER_PARTIAL_FILLS: z.union([z.boolean(), z.string().transform(v => v === 'true' || v === '1')]).default(false),
+  PAPER_MAX_SLIPPAGE_BPS: numFromString(20),
 
   /** Comma-separated kline timeframes for the multiplex feed. First = execution (LTF) close. */
   BINANCE_TIMEFRAMES: z
@@ -362,6 +375,10 @@ export const AppConfigSchema = z.object({
     .default(120)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(30).max(3600)),
+  /** When true, Ollama extended thinking is on (`think: true`); uses more tokens. */
+  AI_BRIEF_THINK_ENABLED: boolFromString(false),
+  /** When true, stream the brief over the dashboard WebSocket (partial `ai_brief` updates). */
+  AI_BRIEF_STREAM_ENABLED: boolFromString(false),
   AI_REQUEST_TIMEOUT_MS: z
     .union([z.number(), z.string()])
     .default(60_000)
@@ -371,6 +388,16 @@ export const AppConfigSchema = z.object({
    * When true (and dashboard enabled), periodically asks Ollama for SuperTrend `atrPeriod` + `multiplier`;
    * the chart still uses deterministic {@link supertrend} math with those parameters.
    */
+  /**
+   * When true, the in-app AI market-brief / chat loop can call MCP tools served
+   * by `mcp-server` (Binance + CoinDCX public market data). Off by default;
+   * leaving it disabled preserves the current Ollama-only behavior.
+   */
+  AI_MCP_ENABLED: boolFromString(false),
+  /** URL of the MCP server's streamable-http endpoint. */
+  AI_MCP_URL: z.string().default('http://localhost:4003'),
+  /** Maximum number of tool-call iterations the chat loop may take per request. */
+  AI_MCP_MAX_TOOL_ITER: numFromString(4),
   AI_SUPERTREND_TUNING_ENABLED: boolFromString(false),
   /** Minimum seconds between SuperTrend tuning Ollama calls per symbol. */
   AI_SUPERTREND_TUNING_INTERVAL_SEC: z
@@ -409,6 +436,21 @@ export const AppConfigSchema = z.object({
 
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
+
+  /**
+   * When true, the orchestrator evaluates and trades every symbol in `ASSET_TIERS`
+   * that is also present in the active multiplex feed (BINANCE_SYMBOL + BINANCE_WATCHLIST).
+   * When false, the orchestrator falls back to the legacy single-symbol path on
+   * `BINANCE_SYMBOL` only.
+   */
+  ENABLE_MULTI_ASSET: boolFromString(true),
+
+  /**
+   * Optional JSON map of per-symbol tier overrides applied on top of ASSET_TIERS.
+   * Example: `{"SOLUSDT":{"leverage":3,"marginUsdt":1000},"DOGEUSDT":{"tier":"swing","ltf":"15m","htf":"4h","leverage":3,"tpPct":0.02,"slPct":0.012,"marginUsdt":600,"minConfidence":0.7}}`.
+   * Empty string = no overrides.
+   */
+  ASSET_TIER_OVERRIDES_JSON: z.string().default(''),
 
   /** Scale position size inversely with realized volatility. */
   VOL_ADJUSTED_SIZING: boolFromString(false),
@@ -456,6 +498,12 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 9090;
       return n;
     }),
+
+  /** When true, start the prom-client based Prometheus metrics HTTP server on PROMETHEUS_PORT. */
+  PROMETHEUS_ENABLED: boolFromString(false),
+
+  /** PostgreSQL connection URL for PnL dashboard persistence (empty = disabled). */
+  POSTGRES_URL: z.string().default(''),
 
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),

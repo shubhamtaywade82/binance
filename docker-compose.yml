@@ -1,92 +1,86 @@
-version: "3.8"
-
 services:
-  bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: trading-bot
-    env_file: .env
+  postgres:
+    image: postgres:16-alpine
     environment:
-      REDIS_URL: redis://redis:6379
-      ML_INFERENCE_URL: http://ml-inference:8000/infer
-      DASHBOARD_BIND: "0.0.0.0"
+      POSTGRES_DB: bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports:
-      - "9090:9090"
-      - "4001:4001"
-      - "4002:4002"
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - trading-net
-    restart: unless-stopped
-
-  ml-inference:
-    build:
-      context: ./ml_bot
-      dockerfile: Dockerfile
-    container_name: ml-inference
-    env_file: .env
-    ports:
-      - "8000:8000"
+      - "5434:5432"
     volumes:
-      - ./ml_bot/models:/app/models:ro
-    networks:
-      - trading-net
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: trading-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
+      - pgdata:/var/lib/postgresql/data
+      - ./pnl-dashboard/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
       timeout: 3s
       retries: 5
-    networks:
-      - trading-net
-    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: trading-prometheus
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
     ports:
       - "9091:9090"
-    depends_on:
-      - bot
-      - ml-inference
-    networks:
-      - trading-net
-    restart: unless-stopped
+    volumes:
+      - ./pnl-dashboard/prometheus.yml:/etc/prometheus/prometheus.yml
+      - promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   grafana:
     image: grafana/grafana:latest
-    container_name: trading-grafana
     ports:
       - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/trading.json
     volumes:
-      - grafana-data:/var/lib/grafana
+      - grafanadata:/var/lib/grafana
+      - ./pnl-dashboard/grafana/provisioning:/etc/grafana/provisioning
+      - ./pnl-dashboard/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
-    networks:
-      - trading-net
+
+  # MCP server bridging Binance + CoinDCX public market data to MCP clients
+  # (incl. the bot's in-app AI tool-calling loop). FastMCP `streamable-http`
+  # mounts under /mcp/ and does not expose a `/health` endpoint, so no
+  # healthcheck is configured. On the host bot: AI_MCP_ENABLED=true,
+  # AI_MCP_URL=http://localhost:4003 (or http://mcp-server:4003 from another container).
+  mcp-server:
+    build:
+      context: ./mcp-server
+    ports:
+      - "4003:4003"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 4003
+      MCP_TRANSPORT: http
+      LOG_LEVEL: INFO
     restart: unless-stopped
 
-volumes:
-  redis-data:
-  prometheus-data:
-  grafana-data:
+  api:
+    build:
+      context: ./pnl-dashboard
+      dockerfile: api/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/bot
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-networks:
-  trading-net:
-    driver: bridge
+  frontend:
+    build:
+      context: ./pnl-dashboard/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8001
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

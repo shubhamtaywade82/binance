@@ -106,6 +106,17 @@ export const renderStrategyHud = (container, signals) => {
     mtfLine = `${dirTxt} ${mtf.pass ? '✓ PASS' : '✗ FAIL'}${rs ? ` · ${rs}` : ''}`;
   }
 
+  const knn = signals.knnArchitecture;
+  let knnBlock = 'kNN —';
+  if (knn) {
+    const bias = knn.bias;
+    const stBos = knn.stBOS.length > 0 ? (knn.stBOS[knn.stBOS.length - 1].type === 'BULLISH' ? '▲' : '▼') : '—';
+    const mtBos = knn.mtBOS.length > 0 ? (knn.mtBOS[knn.mtBOS.length - 1].type === 'BULLISH' ? '▲' : '▼') : '—';
+    const ltBos = knn.ltBOS.length > 0 ? (knn.ltBOS[knn.ltBOS.length - 1].type === 'BULLISH' ? '▲' : '▼') : '—';
+    const deltaSum = knn.deltaTanks.reduce((acc, t) => acc + t.delta, 0).toFixed(1);
+    knnBlock = `${bias} · BOS ${stBos}${mtBos}${ltBos} · DeltaΣ ${deltaSum}`;
+  }
+
   const ls = signals.ltfSignals;
   let matLine = 'Matrix —';
   if (ls) {
@@ -138,13 +149,22 @@ export const renderStrategyHud = (container, signals) => {
     <details class="chart-signal-hud-more"${detailsOpen ? ' open' : ''}>
       <summary class="chart-signal-hud-more-summary">
         <span class="chart-signal-hud-more-chev" aria-hidden="true"></span>
-        <span>SMC · MTF · Matrix</span>
+        <span>SMC · kNN · MTF · Matrix</span>
       </summary>
       <div class="chart-signal-hud-more-body">
         <div class="chart-signal-hud-smc">${escapeHtml(smcBlock)}</div>
+        <div class="chart-signal-hud-knn mono-sm">${escapeHtml(knnBlock)}</div>
         <div class="chart-signal-hud-mtf">${mtfLine}</div>
         <div class="chart-signal-hud-matrix mono-sm">${escapeHtml(matLine)}</div>
       </div>
     </details>
   `.trim();
+
+  // Re-attach listener to details
+  const details = container.querySelector('.chart-signal-hud-more');
+  if (details) {
+    details.addEventListener('toggle', () => {
+      storeSignalHudDetailsOpen(details.open);
+    });
+  }
 }

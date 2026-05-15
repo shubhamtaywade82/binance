@@ -6,7 +6,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ['dist/**', 'dist-ui/**', 'node_modules/**'],
+    ignores: ['dist/**', 'dist-ui/**', 'node_modules/**', 'packages/**/dist/**'],
   },
   {
     files: ['ui/**/*.js'],
