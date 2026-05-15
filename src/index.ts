@@ -14,6 +14,10 @@ import { ControlHttpServer } from './control/http-server';
 import { getRedisClient, closeRedisClient } from './services/redis';
 import { createExecutionRuntime } from './execution/create-runtime';
 import { CoinDcxFuturesClient } from './coindcx/futures-client';
+import { defaultEventBus } from './core/events/event-bus';
+import { EventStore } from './persistence/event-store';
+import { MarketEventPublisher } from './market/distribution/event-publisher';
+import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 
 let orch: HybridOrchestrator | null = null;
 let dashboardBridge: DashboardBridge | null = null;
@@ -75,6 +79,13 @@ const main = async (): Promise<void> => {
   const execution = createExecutionRuntime(cfg, cdcx);
   const paperAdapter = execution.paperAdapter ?? null;
 
+  const eventPublisher = new MarketEventPublisher(defaultEventBus);
+  const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
+  if (execution.pgWriter) {
+    const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
+    eventStore.startRecording();
+  }
+
   if (cfg.DASHBOARD_ENABLED) {
     const store = new MultiTimeframeStore({
       maxBars: cfg.DASHBOARD_STORE_MAX_BARS,
@@ -129,12 +140,17 @@ const main = async (): Promise<void> => {
       orderbook,
       tradeTape,
       marketFeeds: marketFeeds ?? undefined,
-      multiplexSidecar: dashboardBridge.multiplexSidecar,
+      multiplexSidecar: dashboardBridge.multiplexSidecar ? mergeMultiplexCallbacks(dashboardBridge.multiplexSidecar, eventPublisherCallbacks) : eventPublisherCallbacks,
       orderBookSnapshotRing,
       precisionBySymbol,
     });
   } else {
-    orch = new HybridOrchestrator(cfg, log, { cdcx, execution, orderBookSnapshotRing });
+    orch = new HybridOrchestrator(cfg, log, { 
+      cdcx, 
+      execution, 
+      orderBookSnapshotRing, 
+      multiplexSidecar: eventPublisherCallbacks 
+    });
   }
 
   const mx = orch.getMultiplexWs();

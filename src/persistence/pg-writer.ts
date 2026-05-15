@@ -7,7 +7,7 @@ export interface PgWriterOptions {
 }
 
 export class PgWriter {
-  private pool: Pool | null = null;
+  public pool: Pool | null = null;
   private connected = false;
 
   constructor(private readonly opts: PgWriterOptions) {}
@@ -191,6 +191,27 @@ export class PgWriter {
       );
     } catch (err) {
       console.warn('[pg-writer] writePrediction failed:', (err as Error).message);
+    }
+  }
+
+  async appendEvent(e: {
+    id: string;
+    type: string;
+    ts: number;
+    source: string;
+    symbol?: string;
+    payload: unknown;
+  }): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        `INSERT INTO events (id, type, ts, source, symbol, payload)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO NOTHING`,
+        [e.id, e.type, e.ts, e.source, e.symbol ?? null, JSON.stringify(e.payload)]
+      );
+    } catch (err) {
+      console.warn('[pg-writer] appendEvent failed:', (err as Error).message);
     }
   }
 }
