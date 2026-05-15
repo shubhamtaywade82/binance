@@ -69,7 +69,6 @@ export class RiskManager {
     }
 
     const leverage = typeof opts.leverage === 'number' && opts.leverage > 0 ? opts.leverage : this.cfg.LEVERAGE;
-
     let notionalUsdt = marginUsdt * leverage;
     const maxNotional = this.cfg.MAX_NOTIONAL_USDT;
     if (maxNotional > 0 && notionalUsdt > maxNotional) {
