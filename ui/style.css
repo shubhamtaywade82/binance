@@ -104,7 +104,7 @@ body::before {
 
 /* Logo */
 .logo { display: flex; align-items: center; gap: 8px; }
-.logo-text { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; background: linear-gradient(135deg, #7c4dff, #00b0ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.logo-text { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; background: linear-gradient(135deg, #7c4dff, #00b0ff); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 
 /* Pair badge */
 .pair-badge { display: flex; align-items: center; gap: 6px; background: var(--accent-dim); border: 1px solid var(--border-accent); border-radius: var(--radius-sm); padding: 4px 10px; }
@@ -178,6 +178,32 @@ body::before {
   50% { opacity: 0.4; }
 }
 
+.icon-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  padding: 0;
+}
+.icon-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--border-accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.icon-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* ── Main Grid ───────────────────────────────────────────────────────────── */
 #main-grid {
   position: fixed;
@@ -190,6 +216,13 @@ body::before {
   padding: var(--gap);
   overflow: hidden;
   z-index: 1;
+  transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1), gap 0.3s ease, padding 0.3s ease;
+}
+
+#main-grid.sidebar-hidden {
+  grid-template-columns: 1fr 0px;
+  gap: 0;
+  padding-right: 0;
 }
 
 /* Columns */
@@ -212,7 +245,13 @@ body::before {
   border-radius: var(--radius-md);
   backdrop-filter: blur(12px);
   position: relative;
-  transition: border-color 0.3s;
+  transition: border-color 0.3s, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+#main-grid.sidebar-hidden #col-sidebar {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
 }
 #col-sidebar.sidebar-tabs:hover { border-color: var(--border-accent); }
 #col-sidebar.sidebar-tabs::before {

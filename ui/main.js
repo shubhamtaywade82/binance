@@ -91,6 +91,7 @@ const appliesToActiveWatch = (msg) => {
 let lastPrice = null;
 /** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
 let lastLtpTarget = null;
+let lastOpenPositions = [];
 
 // ─── Format helpers ───────────────────────────────────────────────────────
 const flashPrice = (el, up) => {
@@ -206,6 +207,10 @@ const syncVwap1mRow = () => {
   gauge.updateVwap(null, null);
 }
 
+const refreshOpenPositionOverlay = () => {
+  chart.setOpenPositions(lastOpenPositions, activeWatchSymbol);
+}
+
 // ─── Message Dispatcher ───────────────────────────────────────────────────
 const dispatch = (msg) => {
   switch (msg.type) {
@@ -225,6 +230,8 @@ const dispatch = (msg) => {
         availableTimeframes: msg.availableTimeframes,
       });
       scripts?.onSnapshot();
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
 
       // Feed order book
       if (msg.depth) {
@@ -285,6 +292,7 @@ const dispatch = (msg) => {
       else if (Number.isFinite(msg.bestBid) && Number.isFinite(msg.bestAsk)) {
         chart.setBookTopLevels(msg.bestBid, msg.bestAsk);
       }
+      refreshOpenPositionOverlay();
 
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'set_chart_tf', tf: chart.getCurrentTf() }));
@@ -299,6 +307,7 @@ const dispatch = (msg) => {
       chart.onKline(msg.tf, msg.candle, msg.isFinal);
       if (msg.isFinal === true) scripts?.onClosedBar(msg.tf, msg.candle);
       if (msg.tf === '1m') syncVwap1mRow();
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       if (msg.tf === chart.getCurrentTf()) {
         const target = chart.getLastCloseForTf(chart.getCurrentTf());
         if (target != null && Number.isFinite(target)) {
@@ -347,6 +356,14 @@ const dispatch = (msg) => {
       updateHeader({ mark: msg.price });
       if (Number.isFinite(msg.price)) obMgr.setMarkPrice(msg.price);
       chart.setMarkPrice(msg.price);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
+      break;
+    }
+
+    case 'paper_position_update':
+    case 'position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
       break;
     }
 
@@ -406,6 +423,7 @@ const dispatch = (msg) => {
       if (!appliesToActiveWatch(msg)) break;
       updateHeader({ bid: msg.bid, ask: msg.ask });
       chart.setBookTopLevels(msg.bid, msg.ask);
+      if (lastOpenPositions.length) refreshOpenPositionOverlay();
       break;
     }
 
@@ -502,6 +520,13 @@ const dispatch = (msg) => {
       break;
     }
 
+    case 'position_update':
+    case 'paper_position_update': {
+      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
+      refreshOpenPositionOverlay();
+      break;
+    }
+
     /* ── Server-side NanoPine alerts ─ */
     case 'script_alert': {
       scripts?.ingestServerAlert?.(msg);
@@ -515,6 +540,42 @@ const dispatch = (msg) => {
     }
   }
 }
+
+const SIDEBAR_STORAGE_KEY = 'qt_sidebar_hidden';
+
+const initSidebarToggle = () => {
+  const btn = document.getElementById('btn-toggle-sidebar');
+  const grid = document.getElementById('main-grid');
+  if (!btn || !grid) return;
+
+  const setHidden = (hidden) => {
+    grid.classList.toggle('sidebar-hidden', hidden);
+    btn.classList.toggle('active', hidden);
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, hidden ? '1' : '0');
+    } catch {}
+  };
+
+  // Restore state
+  try {
+    const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (stored === '1') setHidden(true);
+  } catch {}
+
+  btn.addEventListener('click', () => {
+    const isHidden = grid.classList.contains('sidebar-hidden');
+    setHidden(!isHidden);
+  });
+
+  // Shortcut Ctrl+B
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      btn.click();
+    }
+  });
+};
 
 // ─── Imbalance helper ─────────────────────────────────────────────────────
 const imbalanceRatio = (bids = [], asks = []) => {
@@ -584,6 +645,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     scripts?.onTfChange(tf);
   });
+  initSidebarToggle();
   initSidebarTabs();
 
   scripts = new ScriptManager(chart);

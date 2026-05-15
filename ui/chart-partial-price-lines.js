@@ -67,7 +67,12 @@ export class PartialPriceLinesPrimitive {
     if (!this._series) return;
     const existing = this._labelLines.get(id);
     if (existing) {
-      existing.applyOptions({ price: opts.price });
+      existing.applyOptions({
+        price: opts.price,
+        title: opts.title ?? '',
+        axisLabelColor: opts.axisLabelColor ?? 'rgba(136,146,164,0.9)',
+        axisLabelTextColor: opts.axisLabelTextColor ?? '#c8cdd5',
+      });
       if (opts.axisLabelColor) existing.applyOptions({ axisLabelColor: opts.axisLabelColor });
       if (opts.axisLabelTextColor) existing.applyOptions({ axisLabelTextColor: opts.axisLabelTextColor });
       return;

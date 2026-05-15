@@ -4,11 +4,11 @@
 //   - prepare(program, ctx)            — wires indicator metadata + input defaults
 //   - runBar(program, ctx, barIndex)   — evaluates statements for one bar
 
-import { RuntimeError, ValidationError } from './errors';
-import { Series } from './series';
-import { BUILTINS, isBuiltin } from './ta';
-import type { ExecutionContext } from './context';
-import type { Expr, InputKind, Program, Statement } from './nodes';
+import { RuntimeError, ValidationError } from './errors.js';
+import { Series } from './series.js';
+import { BUILTINS, isBuiltin } from './ta.js';
+import type { ExecutionContext } from './context.js';
+import type { Expr, InputKind, Program, Statement } from './nodes.js';
 
 export function prepare(program: Program, ctx: ExecutionContext): void {
   let seenHeader = false;

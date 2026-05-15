@@ -62,6 +62,13 @@ export class ExecutionRouter implements ExecutionAdapter {
     return this.current.setLeverage?.(pair, lev) ?? Promise.resolve();
   }
 
+  getOpenPositions(): any[] {
+    if ((this.current as any).getOpenPositions) {
+      return (this.current as any).getOpenPositions();
+    }
+    return [];
+  }
+
   /** Live Binance adapter when the router is on Binance; otherwise null. */
   getBinanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
     return this.current instanceof BinanceLiveExecutionAdapter ? this.current : null;

@@ -26,6 +26,8 @@ import {
   buildSupertrendTuneSnapshot,
   requestSupertrendTune,
 } from '../ai/supertrend-tune';
+import type { ClosedPosition } from '../execution/types';
+import type { WalletState } from '../execution/paper/wallet';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
@@ -38,6 +40,7 @@ import { createScriptsApi } from './scripts-api';
 import { createScriptsAi } from './scripts-ai';
 import { createScriptAlertRunner } from './script-alert-runner';
 import { Ollama } from 'ollama';
+import type { DashboardPosition } from '../types';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -60,12 +63,16 @@ export interface DashboardFeeds {
    * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits only).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
+  paperWallet?: () => WalletState | null;
+  paperPositions?: () => DashboardPosition[] | null;
+  livePositions?: () => DashboardPosition[] | null;
 }
 
 export interface DashboardBridge {
   multiplexSidecar: MultiplexCallbacks;
   listen: () => Promise<void>;
   stop: () => Promise<void>;
+  broadcastPaperTrade: (trade: ClosedPosition) => void;
 }
 
 /** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
@@ -163,6 +170,14 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const getSym = (client: WebSocket): string => {
         return watchSymbolByClient.get(client) ?? symbolUpper;
       }
+
+  const getOpenPositions = (): DashboardPosition[] => {
+    const paper = feeds.paperPositions?.();
+    if (Array.isArray(paper)) return paper;
+    const live = feeds.livePositions?.();
+    if (Array.isArray(live)) return live;
+    return [];
+  };
 
   const scriptsApi = createScriptsApi({
     filePath: process.env.NANOPINE_SCRIPTS_PATH || 'data/nanopine-scripts.json',
@@ -325,6 +340,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let validationTimer: ReturnType<typeof setInterval> | null = null;
   let oiPollTimer: ReturnType<typeof setInterval> | null = null;
   let fundingTimer: ReturnType<typeof setInterval> | null = null;
+  let paperStateTimer: ReturnType<typeof setInterval> | null = null;
 
   const oiRestClient = new BinanceRestClient({
     apiKey: cfg.BINANCE_API_KEY ?? '',
@@ -542,6 +558,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
             thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
             streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+            mcpEnabled: cfg.AI_MCP_ENABLED,
+            mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
+            mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
+            mcpLog: log,
             onStreamChunk:
               cfg.AI_BRIEF_STREAM_ENABLED === true
                 ? ({ content, thinking }) => {
@@ -894,6 +914,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
           indicators: computeIndicatorsFromRows(rows, sym),
           signals,
+          positions: getOpenPositions(),
         };
       }
 
@@ -1164,9 +1185,21 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
 
   const listen = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
-          httpServer.once('error', reject);
+          const errorHandler = (err: NodeJS.ErrnoException) => {
+            if (err.code === 'EADDRINUSE') {
+              log.warn('dashboard_bridge_port_conflict', {
+                port: cfg.DASHBOARD_PORT,
+                hint: `Port ${cfg.DASHBOARD_PORT} is already in use. Ensure no other instance of the bot is running (e.g., check with 'lsof -i :${cfg.DASHBOARD_PORT}').`,
+              });
+              reject(new Error(`Dashboard port ${cfg.DASHBOARD_PORT} in use`));
+            } else {
+              reject(err);
+            }
+          };
+
+          httpServer.once('error', errorHandler);
           httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
-            httpServer.off('error', reject);
+            httpServer.off('error', errorHandler);
             resolve();
           });
         });
@@ -1190,6 +1223,18 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         heartbeatTimer = setInterval(() => {
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
         }, 10_000);
+
+        if (feeds.paperWallet || feeds.paperPositions || feeds.livePositions) {
+          paperStateTimer = setInterval(() => {
+            const wallet = feeds.paperWallet?.();
+            if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
+            const positions = getOpenPositions();
+            broadcast({ type: 'position_update', mode: feeds.paperPositions ? 'paper' : 'live', positions });
+            if (feeds.paperPositions) {
+              broadcast({ type: 'paper_position_update', positions });
+            }
+          }, 2000);
+        }
 
         signalsTimer = setInterval(() => {
           for (const s of watchlistSymbols) {
@@ -1238,6 +1283,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           clearInterval(fundingTimer);
           fundingTimer = null;
         }
+        if (paperStateTimer) {
+          clearInterval(paperStateTimer);
+          paperStateTimer = null;
+        }
         for (const p of oiPollers.values()) p.stop();
         oiPollers.clear();
         for (const c of wss.clients) {
@@ -1255,5 +1304,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         });
       }
 
-  return { multiplexSidecar, listen, stop };
+  const broadcastPaperTrade = (trade: ClosedPosition): void => {
+    broadcast({ type: 'paper_trade', ...trade });
+  };
+
+  return { multiplexSidecar, listen, stop, broadcastPaperTrade };
 }

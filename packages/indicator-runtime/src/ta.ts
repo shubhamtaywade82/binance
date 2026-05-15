@@ -4,10 +4,10 @@
 // (EmaState / RsiState / etc.) survives between bars. The interpreter passes the
 // AST node + the current Series argument; this module owns the keyed cache.
 
-import { RuntimeError, ValidationError } from './errors';
-import { Series, DEFAULT_SERIES_CAPACITY } from './series';
-import type { ExecutionContext } from './context';
-import type { Expr, KwArg } from './nodes';
+import { RuntimeError, ValidationError } from './errors.js';
+import { Series, DEFAULT_SERIES_CAPACITY } from './series.js';
+import type { ExecutionContext } from './context.js';
+import type { Expr, KwArg } from './nodes.js';
 import {
   EmaState,
   RsiState,
@@ -19,7 +19,7 @@ import {
   WmaState,
   VwmaState,
   TrendState,
-} from './ta-core';
+} from './ta-core.js';
 
 const MAX_LEN = DEFAULT_SERIES_CAPACITY;
 

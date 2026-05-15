@@ -2,8 +2,8 @@
 // holds user-assigned series, owns the per-bar quota counters, and collects emitted
 // outputs (plots/shapes/hlines/bgcolors).
 
-import { Series, DEFAULT_SERIES_CAPACITY } from './series';
-import { QuotaError, RuntimeError } from './errors';
+import { Series, DEFAULT_SERIES_CAPACITY } from './series.js';
+import { QuotaError, RuntimeError } from './errors.js';
 
 const BUILTIN_SERIES_NAMES = ['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4'] as const;
 

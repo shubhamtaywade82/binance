@@ -4,14 +4,14 @@
  * Consumes normalized candles; emits a serializable render model for chart hosts.
  */
 
-export * from './errors';
-export * from './series';
-export type { Expr, InputKind, KwArg, Program, Statement, SourceLoc } from './nodes';
-export { Node } from './ast';
-export { tokenize } from './lexer';
-export type { Token, TokenBase } from './lexer';
-export { parse } from './parser';
-export { prepare, runBar } from './interpreter';
+export * from './errors.js';
+export * from './series.js';
+export type { Expr, InputKind, KwArg, Program, Statement, SourceLoc } from './nodes.js';
+export { Node } from './ast.js';
+export { tokenize } from './lexer.js';
+export type { Token, TokenBase } from './lexer.js';
+export { parse } from './parser.js';
+export { prepare, runBar } from './interpreter.js';
 export type {
   AlertEvent,
   AlertOutput,
@@ -34,10 +34,10 @@ export type {
   StrategyPosition,
   StrategyState,
   StrategyStats,
-} from './context';
-export { createContext, tfDurationMs } from './context';
-export { BUILTINS, isBuiltin } from './ta';
-export type { BuiltinHandler } from './ta';
+} from './context.js';
+export { createContext, tfDurationMs } from './context.js';
+export { BUILTINS, isBuiltin } from './ta.js';
+export type { BuiltinHandler } from './ta.js';
 export {
   AtrState,
   EmaState,
@@ -49,4 +49,4 @@ export {
   TrendState,
   VwmaState,
   WmaState,
-} from './ta-core';
+} from './ta-core.js';
