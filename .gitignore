@@ -7,3 +7,28 @@ logs/
 coverage/
 # Runtime / ledger data at repo root only — do not match `src/execution/paper/` sources.
 /paper/
+# NanoPine server-side script store (populated by /api/scripts at runtime).
+/data/nanopine-scripts.json
+
+# PnL Dashboard
+pnl-dashboard/frontend/node_modules/
+pnl-dashboard/frontend/.next/
+pnl-dashboard/frontend/out/
+pnl-dashboard/api/__pycache__/
+pnl-dashboard/api/routers/__pycache__/
+data/
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/.python-version
+
+# MCP server runtime
+mcp-server/.venv/

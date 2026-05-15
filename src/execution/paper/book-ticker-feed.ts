@@ -10,6 +10,8 @@ export interface BookTick {
   symbol: string;
   bestBid: number;
   bestAsk: number;
+  bestBidQty?: number;
+  bestAskQty?: number;
   spread: number;
   ts: number;
 }
@@ -149,12 +151,16 @@ export class BookTickerFeed {
         if (data.b !== undefined && data.a !== undefined) {
           const bid = Number(data.b);
           const ask = Number(data.a);
+          const bidQty = Number(data.B);
+          const askQty = Number(data.A);
           const sym = String(data.s ?? '').toUpperCase();
           if (Number.isFinite(bid) && Number.isFinite(ask) && sym) {
             const tick: BookTick = {
               symbol: sym,
               bestBid: bid,
               bestAsk: ask,
+              bestBidQty: Number.isFinite(bidQty) ? bidQty : undefined,
+              bestAskQty: Number.isFinite(askQty) ? askQty : undefined,
               spread: ask - bid,
               ts: Number(data.T ?? data.E ?? Date.now()),
             };

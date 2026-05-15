@@ -120,3 +120,50 @@ describe('PositionManager paper mode', () => {
     expect(evt?.reason).toBe('TP');
   });
 });
+
+describe('PositionManager shadow mode', () => {
+  it('does not call placeOrder when SHADOW_MODE is true', async () => {
+    const adapter = createStubExecutionAdapter();
+    const spy = vi.spyOn(adapter, 'placeOrder');
+    const info = vi.fn();
+    const cfg = makeCfg({ SHADOW_MODE: true, TRADE_LOG_PATH: tmpCsv, TRADES_CSV_PATH: tmpCsv });
+    const pm = new PositionManager(cfg, adapter, new RiskManager(cfg), { info, warn: () => undefined });
+    await pm.open('LONG', 100, { tickSize: 0.01, stepSize: 0.001, minQty: 0.001 }, 'B-SOL_USDT');
+    expect(spy).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      'shadow_would_place_order',
+      expect.objectContaining({
+        side: 'LONG',
+        pair: 'B-SOL_USDT',
+        referencePrice: 100,
+        hint: expect.stringContaining('SHADOW_MODE'),
+      }),
+    );
+    expect(pm.hasPosition()).toBe(false);
+  });
+
+  it('does not call closePosition when SHADOW_MODE is true', async () => {
+    const adapter = createStubExecutionAdapter();
+    const spy = vi.spyOn(adapter, 'closePosition');
+    const info = vi.fn();
+    const cfg = makeCfg({ SHADOW_MODE: true, TRADE_LOG_PATH: tmpCsv, TRADES_CSV_PATH: tmpCsv });
+    const pm = new PositionManager(cfg, adapter, new RiskManager(cfg), { info, warn: () => undefined });
+    pm.restoreFromExchange({
+      side: 'LONG',
+      entryPrice: 100,
+      quantity: 1,
+      pair: 'B-SOL_USDT',
+      orderId: 'oid-1',
+      takeProfit: 102,
+      stopLoss: 99,
+      openedAt: 1,
+      notionalUsdt: 100,
+    });
+    await pm.close(101, 'TP');
+    expect(spy).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      'shadow_would_close_position',
+      expect.objectContaining({ orderId: 'oid-1', reason: 'TP' }),
+    );
+  });
+});
