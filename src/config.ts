@@ -503,6 +503,21 @@ export const AppConfigSchema = z.object({
   /** Min bars in history before strategy can fire. */
   SEYKOTA_MIN_BARS: numFromString(80),
 
+  // ── Paper hot-state Redis cache ─────────────────────────────────────────
+  /**
+   * When true (and REDIS_URL set) the paper adapter mirrors wallet + open
+   * positions into Redis, and appends every onMark snapshot to a bounded
+   * Redis stream `paper:equity`. The dashboard + FastAPI can subscribe to
+   * `paper:updates:*` pubsub channels for push notifications without polling.
+   */
+  PAPER_STATE_REDIS: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /**
+   * Throttle for JSONL equity log writes. Default 12 = one JSONL line per
+   * 12 onMark snapshots (~60s when PAPER_EQUITY_SNAPSHOT_SEC=5). 0 disables.
+   * Redis stream remains the high-frequency record.
+   */
+  PAPER_EQUITY_JSONL_EVERY_N: numFromString(12),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).

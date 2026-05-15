@@ -8,6 +8,8 @@ import type { ExecutionAdapter } from './types';
 import { BookTickerFeed } from './paper/book-ticker-feed';
 import { PaperExecutionAdapter } from './paper/adapter';
 import { PaperWallet } from './paper/wallet';
+import { RedisPaperStateStore } from '../persistence/redis-paper-state';
+import { getRedisClient } from '../services/redis';
 import { Ledger } from './paper/ledger';
 import { LiquidationEngine } from './paper/liquidation';
 import { FundingEngine } from './paper/funding';
@@ -161,6 +163,13 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   });
   funding.start();
 
+  // Optional Redis hot cache for paper-trading runtime state.
+  let redisState: RedisPaperStateStore | undefined;
+  if ((cfg as any).PAPER_STATE_REDIS && cfg.REDIS_URL) {
+    const client = getRedisClient(cfg.REDIS_URL);
+    if (client) redisState = new RedisPaperStateStore(client);
+  }
+
   const paperAdapter = new PaperExecutionAdapter({
     wallet,
     book,
@@ -175,6 +184,8 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     symbolFor: (pair) => symbolFromPair(cfg, pair),
     partialFills: cfg.PAPER_PARTIAL_FILLS,
     maxSlippageBps: cfg.PAPER_MAX_SLIPPAGE_BPS,
+    redisState,
+    equityJsonlEveryN: Number((cfg as any).PAPER_EQUITY_JSONL_EVERY_N ?? 12),
   });
   const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 

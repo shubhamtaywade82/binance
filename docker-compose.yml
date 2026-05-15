@@ -16,6 +16,19 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -84,3 +97,4 @@ volumes:
   pgdata:
   promdata:
   grafanadata:
+  redisdata:

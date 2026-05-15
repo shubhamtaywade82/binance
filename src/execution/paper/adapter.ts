@@ -14,6 +14,7 @@ import { computeFee } from './fees';
 import { FundingEngine } from './funding';
 import { Ledger, type OpenSnapshot } from './ledger';
 import { BookTickerFeed } from './book-ticker-feed';
+import type { RedisPaperStateStore } from '../../persistence/redis-paper-state';
 
 export interface PaperAdapterOptions {
   wallet: PaperWallet;
@@ -32,6 +33,15 @@ export interface PaperAdapterOptions {
   onTradeClose?: (trade: ClosedPosition) => void;
   /** Optional FX rate provider for INR-aware equity snapshots. */
   fxRate?: { getInrPerUsdt(): number };
+  /** Optional Redis hot cache. When set, wallet + positions + equity stream are mirrored to Redis. */
+  redisState?: RedisPaperStateStore;
+  /**
+   * Throttle ratio for JSONL equity writes.
+   *   1  → every snapshot (default, legacy behaviour, equity.jsonl grows fast)
+   *   12 → every 12th snapshot (≈ 60s when equitySnapshotMs=5000)
+   *   0  → disable JSONL equity writes entirely (Redis stream becomes the source of truth)
+   */
+  equityJsonlEveryN?: number;
 }
 
 interface OpenPaperPosition {
@@ -55,6 +65,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   private positions = new Map<string, OpenPaperPosition>();
   private unrealizedByOrder = new Map<string, number>();
   private lastSnapshotTs = 0;
+  private snapshotCount = 0;
 
   constructor(private readonly opts: PaperAdapterOptions) {}
 
@@ -130,6 +141,9 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       openedAt,
     };
     this.positions.set(orderId, pos);
+    void this.opts.redisState?.upsertPosition(orderId, this.snapshotPosition(pos));
+    void this.opts.redisState?.setWallet(this.opts.wallet.state());
+    void this.opts.redisState?.publishUpdate('position', { event: 'open', orderId, symbol });
 
     this.opts.funding.trackPosition({
       positionId: orderId,
@@ -177,9 +191,12 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       void this.closePosition(t.orderId, 'LIQUIDATION');
     }
 
+    void this.opts.redisState?.setMark(symU, markPrice);
+
     const now = Date.now();
     if (now - this.lastSnapshotTs >= this.opts.equitySnapshotMs) {
       this.lastSnapshotTs = now;
+      this.snapshotCount += 1;
       const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => {
         const refMark = p.symbol === symU
           ? markPrice
@@ -192,10 +209,46 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
           unrealizedUsdt: ((refMark - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
         };
       });
-      this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
 
+      const w = this.opts.wallet.state();
+
+      // JSONL: write every Nth snapshot (1=legacy/every, 0=disable).
+      const everyN = this.opts.equityJsonlEveryN ?? 1;
+      if (everyN > 0 && this.snapshotCount % everyN === 0) {
+        this.opts.ledger.snapshotEquity(w, open);
+      }
       this.opts.wallet.flushToDisk();
+
+      // Redis hot tail: always write — bounded by MAXLEN.
+      void this.opts.redisState?.setWallet(w);
+      void this.opts.redisState?.appendEquity({
+        ts: now,
+        equityUsdt: w.equityUsdt,
+        balanceUsdt: w.balanceUsdt,
+        unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+        realizedPnlUsdt: w.realizedPnlUsdt,
+        usedMarginUsdt: w.usedMarginUsdt,
+        inrPerUsdt: this.opts.fxRate?.getInrPerUsdt(),
+      });
+      void this.opts.redisState?.publishUpdate('wallet', { equityUsdt: w.equityUsdt });
     }
+  }
+
+  private snapshotPosition(p: OpenPaperPosition): object {
+    return {
+      orderId: p.orderId,
+      pair: p.pair,
+      symbol: p.symbol,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      quantity: p.quantity,
+      leverage: p.leverage,
+      marginUsdt: p.marginUsdt,
+      liqPrice: p.liqPrice,
+      stopLoss: p.stopLoss,
+      takeProfit: p.takeProfit,
+      openedAt: p.openedAt,
+    };
   }
 
   async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
@@ -239,6 +292,9 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     this.opts.funding.untrackPosition(orderId);
     this.positions.delete(orderId);
     this.unrealizedByOrder.delete(orderId);
+    void this.opts.redisState?.removePosition(orderId);
+    void this.opts.redisState?.setWallet(this.opts.wallet.state());
+    void this.opts.redisState?.publishUpdate('position', { event: 'close', orderId, symbol: pos.symbol });
 
     const closed: ClosedPosition = {
       orderId,
