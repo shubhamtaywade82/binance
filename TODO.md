@@ -1732,7 +1732,7 @@ WS API testnet URL). The gaps below are safety and workflow items.
 | ✅ | **Shadow prediction log** | `src/safety/shadow-prediction-log.ts` — CSV to `data/shadow/`, daily rotation, `logSignal()` + `fillOutcome()` |
 | ✅ | **Max notional cap for Phase 4** | `src/safety/notional-cap.ts` — `applyNotionalCap()`, `MAX_NOTIONAL_USDT` in config (default 0 = disabled) |
 | ✅ | **`demo-fapi.binance.com` support** | `BINANCE_PRODUCT=usdm_demo` wired in config — REST `demo-fapi.binance.com`, WS `demo-fstream.binance.com` |
-| ✅ | **Testnet liquidity warning** | Logged in `validateEnvironment()` when `BINANCE_FUTURES_TESTNET=true` |
+| ✅ | **Testnet liquidity warning** | `index.ts` logs `binance_futures_testnet_liquidity` when `BINANCE_FUTURES_TESTNET=true` — `src/safety/env-validator.ts` |
 
 ### 20.3 Four-Phase Deployment Checklist
 
@@ -1745,6 +1745,7 @@ Phase 2 — Testnet paper trading
   ✔ BINANCE_FUTURES_TESTNET=true
   ✔ EXECUTION_MODE=paper (simulated fills, no real orders)
   ✔ Use testnet API keys from testnet.binancefuture.com
+  ✔ Startup testnet liquidity notice (`index.ts` → `binance_futures_testnet_liquidity`)
   ✘ Shadow prediction log not built (see §20.2)
   Action: run full pipeline, verify execution latency, fill logic, risk controls
 
@@ -1757,7 +1758,9 @@ Phase 4 — Live trading (small capital)
   ✔ BINANCE_FUTURES_TESTNET=false
   ✔ EXECUTION_MODE=live, READ_ONLY=false, BINANCE_EXECUTION_ADAPTER=true
   ✔ MAX_NOTIONAL_USDT cap (`config.ts`, `risk.ts`, `.env.example`)
-  ✘ CONFIRMED_LIVE guard not built (see §20.2)  ← ✅ NOW DONE (CONFIRMED_LIVE_TRADING in config.ts)
+  ✔ CONFIRMED_LIVE_TRADING + `CONFIRMED_LIVE` alias + startup warn if missing (`config.ts`, `index.ts`, `create-runtime.ts`)
+  Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
+```
   Action: set MAX_NOTIONAL_USDT=50, monitor PnL dashboard, raise slowly
 ```
 

@@ -31,9 +31,22 @@ const main = async (): Promise<void> => {
   }
 
   if (cfg.BINANCE_FUTURES_TESTNET && cfg.BINANCE_PRODUCT === 'usdm') {
-    log.warn('binance_testnet_liquidity_notice', {
+    log.warn('binance_futures_testnet_liquidity', {
       hint:
-        'USD-M futures testnet has thin and unrealistic liquidity. Fills and slippage will not match mainnet; treat paper and testnet results as engineering checks only, not as live performance.',
+        'BINANCE_FUTURES_TESTNET=true routes USD-M to Binance test/demo infrastructure. Book depth, queue priority, and fill quality differ sharply from mainnet fapi — do not treat simulated or testnet PnL as predictive of live performance.',
+    });
+  }
+
+  if (
+    cfg.EXECUTION_MODE === 'live' &&
+    cfg.BINANCE_EXECUTION_ADAPTER &&
+    !cfg.BINANCE_FUTURES_TESTNET &&
+    cfg.BINANCE_PRODUCT === 'usdm' &&
+    !cfg.CONFIRMED_LIVE_TRADING
+  ) {
+    log.warn('live_mainnet_missing_confirm', {
+      hint:
+        'Mainnet Binance live execution is configured but CONFIRMED_LIVE_TRADING (or CONFIRMED_LIVE) is not true. createExecutionRuntime will throw until this interlock is set.',
     });
   }
 

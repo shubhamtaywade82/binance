@@ -305,8 +305,14 @@ export const AppConfigSchema = z.object({
    * Must be set to `true` (or `"true"`) when `EXECUTION_MODE=live`,
    * `BINANCE_EXECUTION_ADAPTER=true`, and `BINANCE_FUTURES_TESTNET=false`.
    * Prevents accidental real-money orders during development.
+   * `CONFIRMED_LIVE` is read as a fallback when this key is unset or empty (same meaning).
    */
-  CONFIRMED_LIVE_TRADING: boolFromString(false),
+  CONFIRMED_LIVE_TRADING: z.preprocess((val: unknown) => {
+    if (val !== undefined && val !== '') return val;
+    const alt = process.env.CONFIRMED_LIVE;
+    if (alt !== undefined && alt !== '') return alt;
+    return val;
+  }, boolFromString(false)),
 
   /**
    * When true, live execution uses Binance FAPI directly (HMAC REST + private WS) instead of CoinDCX.
