@@ -60,6 +60,10 @@ export interface Ticker24hrEvent {
   priceChangePercent?: number;
   /** 24h open (`o`). */
   openPrice?: number;
+  /** 24h high (`h`). */
+  highPrice?: number;
+  /** 24h low (`l`). */
+  lowPrice?: number;
 }
 
 /** Liquidation order (forceOrder stream). */
@@ -495,10 +499,14 @@ export class BinanceMultiplexWs {
     const priceChange = Number(data.p);
     const priceChangePercent = Number(data.P);
     const openPrice = Number(data.o);
+    const highPrice = Number(data.h);
+    const lowPrice = Number(data.l);
     const out: Ticker24hrEvent = { symbol, lastPrice, eventTime };
     if (Number.isFinite(priceChange)) out.priceChange = priceChange;
     if (Number.isFinite(priceChangePercent)) out.priceChangePercent = priceChangePercent;
     if (Number.isFinite(openPrice)) out.openPrice = openPrice;
+    if (Number.isFinite(highPrice)) out.highPrice = highPrice;
+    if (Number.isFinite(lowPrice)) out.lowPrice = lowPrice;
     this.cb.on24hrTicker?.(out);
   }
 

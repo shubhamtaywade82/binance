@@ -8,7 +8,10 @@ export interface ModelOutput {
 export interface ExtendedModelOutput extends ModelOutput {
   regime?: 'trend' | 'mean_revert' | 'chop' | 'high_vol' | 'low_liq';
   expected_return?: number;
+  expected_volatility?: number;
   expected_slippage?: number;
+  fill_probability?: number;
+  adverse_move_probability?: number;
 }
 
 export interface PredictionRecord {

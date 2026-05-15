@@ -62,6 +62,13 @@ export class ExecutionRouter implements ExecutionAdapter {
     return this.current.setLeverage?.(pair, lev) ?? Promise.resolve();
   }
 
+  getOpenPositions(): any[] {
+    if ((this.current as any).getOpenPositions) {
+      return (this.current as any).getOpenPositions();
+    }
+    return [];
+  }
+
   /** Live Binance adapter when the router is on Binance; otherwise null. */
   getBinanceLiveAdapter(): BinanceLiveExecutionAdapter | null {
     return this.current instanceof BinanceLiveExecutionAdapter ? this.current : null;
@@ -149,7 +156,16 @@ export class ExecutionRouter implements ExecutionAdapter {
           ? 'https://demo-fapi.binance.com'
           : 'https://fapi.binance.com';
 
-      const client = new BinanceRestClient({ apiKey, apiSecret, baseUrl });
+      const client = new BinanceRestClient({
+        apiKey,
+        apiSecret,
+        baseUrl,
+        retry: {
+          maxAttempts: this.cfg.BINANCE_REST_RETRY_MAX_ATTEMPTS,
+          baseDelayMs: this.cfg.BINANCE_REST_RETRY_BASE_MS,
+          maxDelayMs: this.cfg.BINANCE_REST_RETRY_MAX_MS,
+        },
+      });
       return new BinanceLiveExecutionAdapter({
         client,
         symbol:        this.cfg.BINANCE_SYMBOL.trim().toUpperCase(),
