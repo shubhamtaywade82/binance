@@ -17,3 +17,18 @@ pnl-dashboard/frontend/out/
 pnl-dashboard/api/__pycache__/
 pnl-dashboard/api/routers/__pycache__/
 data/
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/.python-version
+
+# MCP server runtime
+mcp-server/.venv/

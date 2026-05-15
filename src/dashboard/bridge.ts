@@ -553,6 +553,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
             thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
             streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+            mcpEnabled: cfg.AI_MCP_ENABLED,
+            mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
+            mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
+            mcpLog: log,
             onStreamChunk:
               cfg.AI_BRIEF_STREAM_ENABLED === true
                 ? ({ content, thinking }) => {

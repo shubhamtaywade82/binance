@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@coindcx/indicator-runtime": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/pg": "^8.20.0",
     "axios": "^1.7.9",
     "dompurify": "^3.4.2",

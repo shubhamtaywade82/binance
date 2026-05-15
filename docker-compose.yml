@@ -40,6 +40,23 @@ services:
     depends_on:
       - prometheus
 
+  # MCP server bridging Binance + CoinDCX public market data to MCP clients
+  # (incl. the bot's in-app AI tool-calling loop). FastMCP `streamable-http`
+  # mounts under /mcp/ and does not expose a `/health` endpoint, so no
+  # healthcheck is configured. On the host bot: AI_MCP_ENABLED=true,
+  # AI_MCP_URL=http://localhost:4003 (or http://mcp-server:4003 from another container).
+  mcp-server:
+    build:
+      context: ./mcp-server
+    ports:
+      - "4003:4003"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 4003
+      MCP_TRANSPORT: http
+      LOG_LEVEL: INFO
+    restart: unless-stopped
+
   api:
     build:
       context: ./pnl-dashboard

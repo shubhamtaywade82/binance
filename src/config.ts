@@ -388,6 +388,16 @@ export const AppConfigSchema = z.object({
    * When true (and dashboard enabled), periodically asks Ollama for SuperTrend `atrPeriod` + `multiplier`;
    * the chart still uses deterministic {@link supertrend} math with those parameters.
    */
+  /**
+   * When true, the in-app AI market-brief / chat loop can call MCP tools served
+   * by `mcp-server` (Binance + CoinDCX public market data). Off by default;
+   * leaving it disabled preserves the current Ollama-only behavior.
+   */
+  AI_MCP_ENABLED: boolFromString(false),
+  /** URL of the MCP server's streamable-http endpoint. */
+  AI_MCP_URL: z.string().default('http://localhost:4003'),
+  /** Maximum number of tool-call iterations the chat loop may take per request. */
+  AI_MCP_MAX_TOOL_ITER: numFromString(4),
   AI_SUPERTREND_TUNING_ENABLED: boolFromString(false),
   /** Minimum seconds between SuperTrend tuning Ollama calls per symbol. */
   AI_SUPERTREND_TUNING_INTERVAL_SEC: z
