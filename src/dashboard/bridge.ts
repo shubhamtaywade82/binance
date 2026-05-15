@@ -73,6 +73,8 @@ export interface DashboardBridge {
   listen: () => Promise<void>;
   stop: () => Promise<void>;
   broadcastPaperTrade: (trade: ClosedPosition) => void;
+  /** Generic broadcaster — used by event-bus bridges (trail.update, fills, closes). */
+  broadcast: (msg: object) => void;
 }
 
 /** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
@@ -1308,5 +1310,5 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     broadcast({ type: 'paper_trade', ...trade });
   };
 
-  return { multiplexSidecar, listen, stop, broadcastPaperTrade };
+  return { multiplexSidecar, listen, stop, broadcastPaperTrade, broadcast };
 }

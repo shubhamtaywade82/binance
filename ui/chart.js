@@ -1142,10 +1142,67 @@ export class ChartManager {
         startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
         price: entryPrice,
         color: sideColor,
-        lineWidth: 1,
+        lineWidth: 2,
         title: `${side} ENTRY ${fmtLtpDisplay(entryPrice)} | ${pnlInfo.text}`,
         axisLabelColor: sideColor,
       });
+
+      // Stop loss
+      const sl = Number(pos.stopLoss);
+      if (Number.isFinite(sl) && sl > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-sl`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: sl,
+          color: '#ef5350',
+          lineWidth: 1,
+          dash: [4, 3],
+          title: `SL ${fmtLtpDisplay(sl)}`,
+          axisLabelColor: '#ef5350',
+        });
+        nextIds.add(`${orderId}-sl`);
+      }
+      // Take profit
+      const tp = Number(pos.takeProfit);
+      if (Number.isFinite(tp) && tp > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-tp`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: tp,
+          color: '#26a69a',
+          lineWidth: 1,
+          dash: [4, 3],
+          title: `TP ${fmtLtpDisplay(tp)}`,
+          axisLabelColor: '#26a69a',
+        });
+        nextIds.add(`${orderId}-tp`);
+      }
+      // Liquidation
+      const liq = Number(pos.liqPrice);
+      if (Number.isFinite(liq) && liq > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-liq`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: liq,
+          color: '#ff9800',
+          lineWidth: 1,
+          dash: [1, 4],
+          title: `LIQ ${fmtLtpDisplay(liq)}`,
+          axisLabelColor: '#ff9800',
+        });
+        nextIds.add(`${orderId}-liq`);
+      }
+      // Trail (set by trail_update events on the chart, keyed pos-<id>-trail)
+      const trail = Number(pos.currentTrail);
+      if (Number.isFinite(trail) && trail > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-trail`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: trail,
+          color: '#ab47bc',
+          lineWidth: 1,
+          dash: [2, 2],
+          title: `TRAIL ${fmtLtpDisplay(trail)}`,
+          axisLabelColor: '#ab47bc',
+        });
+        nextIds.add(`${orderId}-trail`);
+      }
       nextMarkers.push({
         time: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
         position: side === 'LONG' ? 'belowBar' : 'aboveBar',
@@ -1160,6 +1217,10 @@ export class ChartManager {
     for (const [orderId] of this._openPositionLines) {
       if (nextIds.has(orderId)) continue;
       this._partialLinesPrimitive.removeLine(`pos-${orderId}`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-sl`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-tp`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-liq`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-trail`);
       this._openPositionLines.delete(orderId);
     }
 

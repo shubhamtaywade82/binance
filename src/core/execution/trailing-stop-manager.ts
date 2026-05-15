@@ -122,15 +122,47 @@ export class TrailingStopManager {
   }
 
   private update(pos: OpenPosition, high: number, low: number, ref: number, source: string): void {
+    let trail: number;
     if (pos.side === 'LONG') {
       if (Number.isFinite(high) && high > pos.highWater) pos.highWater = high;
-      const trail = Math.max(pos.initialStop, pos.highWater - pos.atrMult * pos.atr);
+      trail = Math.max(pos.initialStop, pos.highWater - pos.atrMult * pos.atr);
+      this.emitTrailUpdate(pos, trail);
       if (ref <= trail) this.requestClose(pos, ref, 'TRAIL', source);
     } else {
       if (Number.isFinite(low) && low < pos.lowWater) pos.lowWater = low;
-      const trail = Math.min(pos.initialStop, pos.lowWater + pos.atrMult * pos.atr);
+      trail = Math.min(pos.initialStop, pos.lowWater + pos.atrMult * pos.atr);
+      this.emitTrailUpdate(pos, trail);
       if (ref >= trail) this.requestClose(pos, ref, 'TRAIL', source);
     }
+  }
+
+  /** Throttled: max one trail.update per second per symbol. */
+  private lastTrailEmit = new Map<string, number>();
+  private emitTrailUpdate(pos: OpenPosition, trail: number): void {
+    const now = marketClock.now();
+    const last = this.lastTrailEmit.get(pos.symbol) ?? 0;
+    if (now - last < 1000) return;
+    this.lastTrailEmit.set(pos.symbol, now);
+    this.seq += 1;
+    this.eventBus.publish({
+      id: `trail-${pos.symbol}-${now}-${this.seq}`,
+      type: 'trail.update',
+      ts: now,
+      source: 'trailing-stop-manager',
+      symbol: pos.symbol,
+      payload: {
+        orderId: pos.orderId,
+        symbol: pos.symbol,
+        side: pos.side,
+        entry: pos.entry,
+        initialStop: pos.initialStop,
+        currentTrail: trail,
+        highWater: pos.highWater,
+        lowWater: pos.lowWater,
+        atr: pos.atr,
+        atrMult: pos.atrMult,
+      },
+    });
   }
 
   private requestClose(pos: OpenPosition, price: number, reason: string, source: string): void {

@@ -96,7 +96,20 @@ const fmtUsdt = (v: number, digits = 2): string => {
   return `${sign}${Math.abs(v).toFixed(digits)}`;
 };
 
+import { usePnLWebSocket } from '@/hooks/usePnLWebSocket';
+
 // --- Components ---
+
+function LiveIndicator({ connected }: { connected: boolean }) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10">
+      <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-bull animate-pulse shadow-[0_0_8px_rgba(0,230,118,0.8)]' : 'bg-gray-600'}`} />
+      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">
+        {connected ? 'Live Stream' : 'Offline'}
+      </span>
+    </div>
+  );
+}
 
 function KpiCard({ label, value, subValue, color, icon }: { 
   label: string; 
@@ -106,16 +119,17 @@ function KpiCard({ label, value, subValue, color, icon }: {
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="glass-card p-4 flex flex-col gap-1">
-      <div className="flex items-center justify-between">
+    <div className="glass-card p-4 flex flex-col gap-1 relative overflow-hidden group">
+      <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] to-transparent pointer-events-none" />
+      <div className="flex items-center justify-between relative z-10">
         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">{label}</span>
         {icon}
       </div>
-      <div className={`text-2xl font-mono tabular-nums font-bold ${color || 'text-white'}`}>
+      <div className={`text-2xl font-mono tabular-nums font-bold relative z-10 ${color || 'text-white'}`}>
         {value}
       </div>
       {subValue && (
-        <div className="text-[10px] font-mono text-gray-500 truncate">
+        <div className="text-[10px] font-mono text-gray-500 truncate relative z-10">
           {subValue}
         </div>
       )}
@@ -136,12 +150,15 @@ function SectionHeader({ title, subtitle, right }: { title: string; subtitle?: s
 }
 
 export default function UnifiedDashboard() {
-  const { data: stats } = useSWR<TradeStats>('/trades/stats', swrFetcher, { refreshInterval: 5000 });
-  const { data: equitySeries } = useSWR<EquityPoint[]>('/equity/curve?limit=1000', swrFetcher, { refreshInterval: 10000 });
-  const { data: wallet } = useSWR<WalletState>('/wallet', swrFetcher, { refreshInterval: 3000 });
-  const { data: fx } = useSWR<FxState>('/wallet/fx', swrFetcher, { refreshInterval: 30000 });
-  const { data: positions } = useSWR<Position[]>('/positions', swrFetcher, { refreshInterval: 2000 });
-  const { data: trades } = useSWR<Trade[]>('/trades?limit=50', swrFetcher, { refreshInterval: 5000 });
+  const { isConnected } = usePnLWebSocket();
+
+  // Polling intervals increased significantly or disabled as WebSocket mutates the cache
+  const { data: stats } = useSWR<TradeStats>('/trades/stats', swrFetcher, { refreshInterval: 60000 });
+  const { data: equitySeries } = useSWR<EquityPoint[]>('/equity/curve?limit=1000', swrFetcher, { refreshInterval: 60000 });
+  const { data: wallet } = useSWR<WalletState>('/wallet', swrFetcher, { refreshInterval: 30000 });
+  const { data: fx } = useSWR<FxState>('/wallet/fx', swrFetcher, { refreshInterval: 300000 });
+  const { data: positions } = useSWR<Position[]>('/positions', swrFetcher, { refreshInterval: 30000 });
+  const { data: trades } = useSWR<Trade[]>('/trades?limit=50', swrFetcher, { refreshInterval: 60000 });
 
   const fxRate = wallet?.inr_per_usdt ?? fx?.inr_per_usdt ?? 85;
   const lastEq = equitySeries && equitySeries.length > 0 ? equitySeries[equitySeries.length - 1] : null;
@@ -157,7 +174,18 @@ export default function UnifiedDashboard() {
   return (
     <div className="space-y-8 max-w-[1600px] mx-auto animate-in fade-in duration-700">
       
-      {/* Top Row: Core KPIs */}
+      {/* Header with Live Indicator */}
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">
+            Terminal <span className="text-accent not-italic font-normal opacity-50">v2.1</span>
+          </h1>
+          <LiveIndicator connected={isConnected} />
+        </div>
+        <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest hidden sm:block">
+          System Clock: <span className="text-gray-300">{new Date().toLocaleTimeString()}</span>
+        </div>
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <KpiCard 
           label="Portfolio Equity" 

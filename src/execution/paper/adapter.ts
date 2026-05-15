@@ -273,6 +273,8 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     liqPrice: number;
     openedAt: number;
     unrealizedUsdt: number;
+    stopLoss?: number;
+    takeProfit?: number;
   }> {
     return Array.from(this.positions.values()).map((p) => ({
       orderId: p.orderId,
@@ -285,6 +287,8 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       liqPrice: p.liqPrice,
       openedAt: p.openedAt,
       unrealizedUsdt: this.unrealizedByOrder.get(p.orderId) ?? 0,
+      stopLoss: p.stopLoss,
+      takeProfit: p.takeProfit,
     }));
   }
 

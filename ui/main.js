@@ -367,6 +367,54 @@ const dispatch = (msg) => {
       break;
     }
 
+    /* ── Event-bus position lifecycle (instant updates) ─ */
+    case 'position_opened': {
+      const orderId = String(msg.orderId || '');
+      if (!orderId) break;
+      const existing = lastOpenPositions.find((p) => p.orderId === orderId);
+      const merged = {
+        orderId,
+        symbol: msg.symbol,
+        side: msg.side,
+        entryPrice: msg.price,
+        quantity: msg.quantity,
+        stopLoss: msg.stopLoss,
+        takeProfit: msg.takeProfit,
+        openedAt: msg.timestamp || Date.now(),
+        leverage: msg.leverage,
+        unrealizedUsdt: 0,
+      };
+      if (existing) Object.assign(existing, merged);
+      else lastOpenPositions.push(merged);
+      refreshOpenPositionOverlay();
+      break;
+    }
+    case 'position_closed': {
+      const orderId = String(msg.orderId || '');
+      lastOpenPositions = lastOpenPositions.filter((p) => p.orderId !== orderId);
+      refreshOpenPositionOverlay();
+      break;
+    }
+    case 'trail_update': {
+      const orderId = String(msg.orderId || '');
+      const pos = lastOpenPositions.find((p) => p.orderId === orderId);
+      if (pos) {
+        pos.currentTrail = msg.currentTrail;
+        pos.highWater = msg.highWater;
+        pos.lowWater = msg.lowWater;
+        refreshOpenPositionOverlay();
+      }
+      break;
+    }
+    case 'strategy_signal': {
+      // Optional: surface signals in UI (deferred — sidebar tab Phase 2).
+      break;
+    }
+    case 'order_rejected': {
+      // Optional: toast in UI (deferred).
+      break;
+    }
+
     /* ── Forced Liquidation Orders ─ */
     case 'force_order': {
       if (!appliesToActiveWatch(msg)) break;

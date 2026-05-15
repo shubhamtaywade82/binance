@@ -139,6 +139,27 @@ const main = async (): Promise<void> => {
         });
       }
       log.info('event_bus_execution_wired', { adapter: adapter.name });
+
+      // Push event-bus state to the dashboard WS so the chart + sidebar render
+      // entries/exits/trails in real time without polling the adapter.
+      if (dashboardBridge) {
+        const bridge = dashboardBridge;
+        defaultEventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'position_opened', ...e.payload }),
+        );
+        defaultEventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'position_closed', ...e.payload }),
+        );
+        defaultEventBus.subscribe('execution.order.rejected', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'order_rejected', ...e.payload }),
+        );
+        defaultEventBus.subscribe('trail.update', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'trail_update', ...e.payload }),
+        );
+        defaultEventBus.subscribe('strategy.signal', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'strategy_signal', symbol: e.symbol, ...e.payload }),
+        );
+      }
     }
   }
 
