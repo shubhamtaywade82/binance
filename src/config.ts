@@ -46,7 +46,7 @@ export const AppConfigSchema = z.object({
    */
   BINANCE_WATCHLIST: z
     .string()
-    .default('')
+    .default('ETHUSDT,BTCUSDT,XRPUSDT')
     .transform((s) =>
       [...new Set(s.split(',').map((p) => p.trim().toUpperCase()).filter((p) => p.length > 0))],
     ),
