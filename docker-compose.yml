@@ -18,8 +18,12 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Host port 6380 (6379 typically already bound by a host-side redis-server).
+    # Bot reads REDIS_URL — point at whichever instance you want:
+    #   redis://localhost:6379  → host's redis (if you already run one)
+    #   redis://localhost:6380  → this docker container
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     volumes:
       - redisdata:/data
