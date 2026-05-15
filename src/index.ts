@@ -19,7 +19,10 @@ import { EventStore } from './persistence/event-store';
 import { MarketEventPublisher } from './market/distribution/event-publisher';
 import { mergeMultiplexCallbacks } from './binance/merge-multiplex-callbacks';
 
+import { ActorSystem } from './core/actors/actor-system';
+
 let orch: HybridOrchestrator | null = null;
+let actorSystem: ActorSystem | null = null;
 let dashboardBridge: DashboardBridge | null = null;
 let controlServer: ControlHttpServer | null = null;
 
@@ -84,6 +87,12 @@ const main = async (): Promise<void> => {
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
     eventStore.startRecording();
+  }
+
+  actorSystem = new ActorSystem(cfg, defaultEventBus);
+  const allSymbols = multiplexBinanceSymbols(cfg);
+  for (const sym of allSymbols) {
+    actorSystem.spawnSymbolActor(sym);
   }
 
   if (cfg.DASHBOARD_ENABLED) {
@@ -158,6 +167,9 @@ const main = async (): Promise<void> => {
     lifecycle.register('multiplex_ws', () => mx.stop(), { timeoutMs: 3000 });
   }
   lifecycle.register('orchestrator', () => orch!.stop(), { timeoutMs: 3000 });
+  if (actorSystem) {
+    lifecycle.register('actor_system', () => actorSystem!.shutdown(), { timeoutMs: 2000 });
+  }
   if (dashboardBridge) {
     lifecycle.register('dashboard', () => dashboardBridge!.stop(), { timeoutMs: 3000 });
   }

@@ -64,11 +64,40 @@ export const SignalPayloadSchema = z.object({
 });
 export type SignalPayload = z.infer<typeof SignalPayloadSchema>;
 
+export const OrderRequestedPayloadSchema = z.object({
+  symbol: z.string(),
+  side: z.enum(['LONG', 'SHORT']),
+  quantity: z.number(),
+  type: z.enum(['MARKET', 'LIMIT']).default('MARKET'),
+  price: z.number().optional(),
+  takeProfit: z.number().optional(),
+  stopLoss: z.number().optional(),
+  strategyId: z.string(),
+  correlationId: z.string().optional(),
+});
+export type OrderRequestedPayload = z.infer<typeof OrderRequestedPayloadSchema>;
+
+export const OrderValidatedPayloadSchema = z.object({
+  symbol: z.string(),
+  side: z.enum(['LONG', 'SHORT']),
+  quantity: z.number(),
+  type: z.enum(['MARKET', 'LIMIT']),
+  price: z.number().optional(),
+  takeProfit: z.number().optional(),
+  stopLoss: z.number().optional(),
+  strategyId: z.string(),
+  correlationId: z.string().optional(),
+  riskMetrics: z.record(z.unknown()).optional(),
+});
+export type OrderValidatedPayload = z.infer<typeof OrderValidatedPayloadSchema>;
+
 export const OrderSubmittedPayloadSchema = z.object({
   orderId: z.string(),
+  symbol: z.string(),
   side: z.enum(['BUY', 'SELL']),
   type: z.string(),
   quantity: z.number(),
   price: z.number().optional(),
+  strategyId: z.string().optional(),
 });
 export type OrderSubmittedPayload = z.infer<typeof OrderSubmittedPayloadSchema>;

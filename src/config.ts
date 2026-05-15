@@ -461,6 +461,12 @@ export const AppConfigSchema = z.object({
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
 
+  /** Max total exposure across all symbols in USDT. */
+  MAX_TOTAL_EXPOSURE_USDT: numFromString(100_000),
+
+  /** Max number of symbols with open positions. */
+  MAX_OPEN_SYMBOLS: numFromString(5),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
