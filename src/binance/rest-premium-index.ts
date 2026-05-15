@@ -1,6 +1,5 @@
 import axios from 'axios';
-import type { AppConfig } from '../config';
-import { binanceRestBase } from '../config';
+import { binanceRestBase, isBinanceUsdmProduct, type AppConfig } from '../config';
 
 /** Binance USD-M `GET /fapi/v1/premiumIndex` single-symbol row. */
 export interface PremiumIndexRow {
@@ -10,7 +9,7 @@ export interface PremiumIndexRow {
 }
 
 export const fetchUsdmMarkFromRest = async (cfg: AppConfig, symbolUpper: string): Promise<{ markPrice: number; eventTime: number } | null> => {
-  if (cfg.BINANCE_PRODUCT !== 'usdm') return null;
+  if (!isBinanceUsdmProduct(cfg.BINANCE_PRODUCT)) return null;
   const base = binanceRestBase(cfg);
   const url = `${base}/fapi/v1/premiumIndex`;
   const { data } = await axios.get<PremiumIndexRow>(url, {

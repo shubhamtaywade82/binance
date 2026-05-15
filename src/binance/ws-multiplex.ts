@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import type { Candle } from '../types';
+import { isBinanceUsdmProduct } from '../config';
 import { normalizeBinanceKlineRow } from './rest-klines';
 import type { DepthDiff } from './orderbook';
 import {
@@ -180,20 +181,20 @@ export const buildStreamList = (opts: MultiplexOptions): string[] => {
     const lower = s.toLowerCase();
     for (const tf of opts.timeframes) out.push(`${lower}@kline_${tf}`);
     /** Last traded price (`c`) — USD-M needs this for LTP; mark stream alone is not last. */
-    if (opts.product === 'spot' || opts.product === 'usdm') out.push(`${lower}@ticker`);
+    if (opts.product === 'spot' || isBinanceUsdmProduct(opts.product)) out.push(`${lower}@ticker`);
     if (opts.useBookTicker) out.push(`${lower}@bookTicker`);
     if (opts.depthLevels > 0) out.push(`${lower}@depth${opts.depthLevels}@${opts.depthSpeed}`);
     else out.push(`${lower}@depth@${opts.depthSpeed}`);
     if (opts.useAggTrade) out.push(`${lower}@aggTrade`);
-    if (opts.useMarkPrice && opts.product === 'usdm') out.push(`${lower}@markPrice@1s`);
-    if (opts.useForceOrder && opts.product === 'usdm') out.push(`${lower}@forceOrder`);
+    if (opts.useMarkPrice && isBinanceUsdmProduct(opts.product)) out.push(`${lower}@markPrice@1s`);
+    if (opts.useForceOrder && isBinanceUsdmProduct(opts.product)) out.push(`${lower}@forceOrder`);
     if (opts.useMiniTicker) out.push(`${lower}@miniTicker`);
   }
-  if (opts.useGlobalForceOrder && opts.product === 'usdm') out.push('!forceOrder@arr');
+  if (opts.useGlobalForceOrder && isBinanceUsdmProduct(opts.product)) out.push('!forceOrder@arr');
   if (opts.useGlobalTicker) out.push('!ticker@arr');
   if (opts.useGlobalMiniTicker) out.push('!miniTicker@arr');
   if (opts.useGlobalBookTicker) out.push('!bookTicker');
-  if (opts.useContractInfo && opts.product === 'usdm') out.push('!contractInfo');
+  if (opts.useContractInfo && isBinanceUsdmProduct(opts.product)) out.push('!contractInfo');
   return out;
 }
 

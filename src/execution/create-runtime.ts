@@ -62,8 +62,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         throw new Error(`BINANCE_EXECUTION_ADAPTER=true requires ${keyVar}.`);
       }
 
-      // Require explicit opt-in before sending real orders to mainnet.
-      if (!cfg.BINANCE_FUTURES_TESTNET && !cfg.CONFIRMED_LIVE_TRADING) {
+      // Require explicit opt-in before sending real orders to mainnet (not demo-fapi).
+      const isLiveMainnetUsdm = cfg.BINANCE_PRODUCT === 'usdm' && !cfg.BINANCE_FUTURES_TESTNET;
+      if (isLiveMainnetUsdm && !cfg.CONFIRMED_LIVE_TRADING) {
         throw new Error(
           'CONFIRMED_LIVE_TRADING must be set to true to enable live trading on mainnet. ' +
           'This guard prevents accidental real-money orders.',

@@ -23,6 +23,12 @@ const main = async (): Promise<void> => {
   const cfg = loadConfig();
   const log = createAppLogger(cfg);
 
+  if (cfg.BINANCE_PRODUCT === 'usdm_demo') {
+    log.warn('binance_usdm_demo_product', {
+      hint:
+        'BINANCE_PRODUCT=usdm_demo uses REST https://demo-fapi.binance.com (virtual balances) and WS wss://fstream.binancefuture.com per Binance USD-M testnet docs. Liquidity and fills are not comparable to mainnet fapi.',
+    });
+  }
   if (cfg.SHADOW_MODE) {
     log.warn('shadow_mode_active', {
       hint:
