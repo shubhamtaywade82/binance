@@ -74,7 +74,7 @@ export class EventToPostgresBridge {
     const quantity = Number(p?.quantity) || 0;
     const entryPrice = Number(p?.price) || 0;
     if (quantity <= 0 || entryPrice <= 0) return;
-    const leverage = Number(this.cfg.LEVERAGE) || 1;
+    const leverage = Number(p?.leverage) || Number(this.cfg.LEVERAGE) || 1;
     const notional = quantity * entryPrice;
     const marginUsdt = notional / leverage;
 
@@ -86,7 +86,7 @@ export class EventToPostgresBridge {
       entryPrice,
       leverage,
       marginUsdt,
-      liqPrice: 0, // adapter-internal; not exposed on fill event yet (Phase 2: include)
+      liqPrice: Number(p?.liqPrice) || 0,
       openedAt: marketClock.now(),
       unrealizedPnl: 0,
     });

@@ -90,6 +90,8 @@ export class ExecutionBridge {
             feeUsdt: result.fill.feeUsdt,
             slippageUsdt: result.fill.slippageUsdt,
             latencyMs: result.fill.latencyMs,
+            liqPrice: this.lookupLiqPrice(result.orderId),
+            leverage: req.leverage,
             strategyId: p.strategyId,
             correlationId: p.correlationId,
             reason: (p as any).reason,
@@ -101,6 +103,17 @@ export class ExecutionBridge {
     } catch (err) {
       this.publishRejected(p, (err as Error).message || 'ADAPTER_THREW', marketClock.now());
     }
+  }
+
+  /** Best-effort lookup of liquidation price for the just-filled order. Paper adapter
+   *  exposes getOpenPositions; live adapters don't, so this returns 0 there. */
+  private lookupLiqPrice(orderId: string): number {
+    const adapter = this.adapter as any;
+    if (typeof adapter.getOpenPositions === 'function') {
+      const pos = adapter.getOpenPositions().find((p: any) => p.orderId === orderId);
+      if (pos && Number.isFinite(pos.liqPrice)) return pos.liqPrice;
+    }
+    return 0;
   }
 
   private publishRejected(p: OrderRequestedPayload | OrderValidatedPayload, reason: string, ts: number): void {

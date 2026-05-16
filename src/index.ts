@@ -105,6 +105,20 @@ const main = async (): Promise<void> => {
     actorSystem.spawnSymbolActor(sym);
   }
 
+  // Restart safety: PaperWallet survives via wallet.json but RiskEngine
+  // exposure is in-memory only. Without seeding, a restart while in-position
+  // would let opposite-side signals bypass OPPOSITE_SIDE_OPEN_POSITION and
+  // the adapter would record REVERSAL trades.
+  if (execution.paperAdapter) {
+    const open = execution.paperAdapter.getOpenPositions();
+    if (open.length > 0) {
+      actorSystem.getRiskEngine().seedPositions(
+        open.map((p) => ({ symbol: p.symbol, side: p.side, quantity: p.quantity, entryPrice: p.entryPrice })),
+      );
+      log.info('risk_engine_seeded', { positions: open.length });
+    }
+  }
+
   if (cfg.EVENT_BUS_EXECUTION_ENABLED) {
     const adapter = execution.paperAdapter ?? execution.adapter;
     if (!adapter) {

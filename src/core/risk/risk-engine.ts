@@ -64,6 +64,22 @@ export class RiskEngine {
     return { total: this.totalNotional, symbols: this.positions.size, positions: new Map(this.positions) };
   }
 
+  /**
+   * Recover in-memory exposure from a previously-open snapshot. Call on
+   * startup after restoring PaperWallet so the engine doesn't think the
+   * account is flat while the adapter still holds positions — without this,
+   * a restart while in-position would let strategies emit opposite-side
+   * orders unimpeded and the adapter would record them as REVERSAL.
+   */
+  public seedPositions(positions: Array<{ symbol: string; side: 'LONG' | 'SHORT'; quantity: number; entryPrice: number }>): void {
+    for (const p of positions) {
+      if (!p.symbol || p.quantity <= 0 || p.entryPrice <= 0) continue;
+      const notional = p.quantity * p.entryPrice;
+      this.positions.set(p.symbol, { side: p.side, quantity: p.quantity, notional, entryPrice: p.entryPrice });
+      this.totalNotional += notional;
+    }
+  }
+
   private subscribe(): void {
     // When SignalAllocator is wired it republishes accepted candidates onto
     // `execution.order.requested.allocated`. Subscribing only to that channel

@@ -67,6 +67,7 @@ export class SeykotaTrendModule extends StrategyModule {
   private lastEntryPrice = 0;
   private pyramidCount = 0;
   private inPosition = false;
+  private currentSide: 'LONG' | 'SHORT' | null = null;
 
   constructor(ctx: StrategyContext, private readonly cfg: SeykotaConfig = DEFAULT_SEYKOTA) {
     super(ctx);
@@ -76,6 +77,8 @@ export class SeykotaTrendModule extends StrategyModule {
       if (sym === this.ctx.symbol) {
         this.inPosition = true;
         this.lastEntryPrice = Number((e.payload as any).price);
+        const fillSide = (e.payload as any).side;
+        if (fillSide === 'LONG' || fillSide === 'SHORT') this.currentSide = fillSide;
         if ((e.payload as any).reason === 'PYRAMID') {
           this.pyramidCount++;
         } else {
@@ -88,6 +91,7 @@ export class SeykotaTrendModule extends StrategyModule {
       if (sym === this.ctx.symbol && (e.payload as any).reason !== 'PARTIAL_TP') {
         this.inPosition = false;
         this.pyramidCount = 0;
+        this.currentSide = null;
       }
     });
   }
@@ -128,15 +132,19 @@ export class SeykotaTrendModule extends StrategyModule {
     if (!Number.isFinite(atrLast) || atrLast <= 0) return null;
     if (atrLast / candle.close < this.cfg.minAtrPct) return null;
 
-    // Pyramiding Check
+    // Pyramiding Check — only when current bias matches existing position side.
+    // Without this guard a bias flip emits a same-symbol opposite-side order,
+    // which the adapter treats as REVERSAL (close + flip) and bypasses the
+    // RiskEngine's OPPOSITE_SIDE_OPEN_POSITION rejection in stamp races.
     if (this.inPosition) {
+      if (this.currentSide && this.currentSide !== htfBias) return null;
       if (!this.cfg.pyramidMaxAdds || this.pyramidCount >= this.cfg.pyramidMaxAdds) return null;
-      
+
       const rDist = (this.cfg.pyramidRDistance ?? 1.0) * atrLast;
-      const isProfitableEnough = htfBias === 'LONG' 
+      const isProfitableEnough = htfBias === 'LONG'
         ? candle.close >= this.lastEntryPrice + rDist
         : candle.close <= this.lastEntryPrice - rDist;
-      
+
       if (!isProfitableEnough) return null;
     }
 
