@@ -75,6 +75,7 @@ export interface SmcAnalysis {
   choch: SmcDirection;
   bosLine: SmcStructureLine | null;
   chochLine: SmcStructureLine | null;
+  idmLine: SmcStructureLine | null;
   score: number;
   liquidity: LiquidityEngineResult | null;
   trend: 'bullish' | 'bearish' | 'range';
@@ -552,14 +553,15 @@ class BosChochDetector {
     private trend: 'bullish' | 'bearish' | 'range'
   ) {}
 
-  detect(): { bos: SmcDirection; choch: SmcDirection; bosLine: SmcStructureLine | null; chochLine: SmcStructureLine | null } {
+  detect(): { bos: SmcDirection; choch: SmcDirection; bosLine: SmcStructureLine | null; chochLine: SmcStructureLine | null; idmLine: SmcStructureLine | null } {
     let bos: SmcDirection = 'NONE';
     let choch: SmcDirection = 'NONE';
     let bosLine: SmcStructureLine | null = null;
     let chochLine: SmcStructureLine | null = null;
+    let idmLine: SmcStructureLine | null = null;
 
     if (this.cleanSwings.length < 2) {
-      return { bos, choch, bosLine, chochLine };
+      return { bos, choch, bosLine, chochLine, idmLine };
     }
 
     const lastHighs = this.cleanSwings.filter(s => s.kind === 'high');
@@ -568,7 +570,7 @@ class BosChochDetector {
     const lastHigh = lastHighs.length > 0 ? lastHighs[lastHighs.length - 1] : null;
     const lastLow = lastLows.length > 0 ? lastLows[lastLows.length - 1] : null;
 
-    if (!lastHigh || !lastLow) return { bos, choch, bosLine, chochLine };
+    if (!lastHigh || !lastLow) return { bos, choch, bosLine, chochLine, idmLine };
 
     const findBreakout = (startIdx: number, price: number, isBullish: boolean): number | null => {
       for (let i = startIdx + 1; i < this.candles.length; i++) {
@@ -584,11 +586,31 @@ class BosChochDetector {
         bos = 'BULLISH';
         bosLine = { startIndex: lastHigh.index, endIndex: breakIdx, price: lastHigh.price };
       }
+      // IDM: Bullish Inducement is the recent internal swing low before lastHigh
+      const idmSwing = lastLows.filter(s => s.index < lastHigh.index).pop();
+      if (idmSwing) {
+        const sweepIdx = findBreakout(lastHigh.index, idmSwing.price, false);
+        if (sweepIdx !== null) {
+          idmLine = { startIndex: idmSwing.index, endIndex: sweepIdx, price: idmSwing.price };
+        } else {
+          idmLine = { startIndex: idmSwing.index, endIndex: this.candles.length - 1, price: idmSwing.price };
+        }
+      }
     } else if (this.trend === 'bearish') {
       const breakIdx = findBreakout(lastLow.index, lastLow.price, false);
       if (breakIdx !== null) {
         bos = 'BEARISH';
         bosLine = { startIndex: lastLow.index, endIndex: breakIdx, price: lastLow.price };
+      }
+      // IDM: Bearish Inducement is the recent internal swing high before lastLow
+      const idmSwing = lastHighs.filter(s => s.index < lastLow.index).pop();
+      if (idmSwing) {
+        const sweepIdx = findBreakout(lastLow.index, idmSwing.price, true);
+        if (sweepIdx !== null) {
+          idmLine = { startIndex: idmSwing.index, endIndex: sweepIdx, price: idmSwing.price };
+        } else {
+          idmLine = { startIndex: idmSwing.index, endIndex: this.candles.length - 1, price: idmSwing.price };
+        }
       }
     }
 
@@ -608,7 +630,7 @@ class BosChochDetector {
       }
     }
 
-    return { bos, choch, bosLine, chochLine };
+    return { bos, choch, bosLine, chochLine, idmLine };
   }
 }
 
@@ -619,6 +641,7 @@ const detectBosChoch = (
   choch: SmcDirection;
   bosLine: SmcStructureLine | null;
   chochLine: SmcStructureLine | null;
+  idmLine: SmcStructureLine | null;
   trend: 'bullish' | 'bearish' | 'range';
   structPoints: StructurePoint[];
   swings: SwingPoint[];
@@ -659,7 +682,7 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
     ...detectSessionRanges(candles)
   ];
   
-  const { bos, choch, bosLine, chochLine, trend, structPoints, swings } = detectBosChoch(candles);
+  const { bos, choch, bosLine, chochLine, idmLine, trend, structPoints, swings } = detectBosChoch(candles);
   const dealingRange = calculateDealingRange(swings);
 
   let score = 0;
@@ -691,6 +714,7 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
     choch,
     bosLine,
     chochLine,
+    idmLine,
     trend,
     structPoints,
     swings,

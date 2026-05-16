@@ -583,6 +583,7 @@ export class ChartManager {
       } else {
         if (smc.bos && smc.bos !== 'NONE') pushSmcStructureSegment(smc.bosLine, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
         if (smc.choch && smc.choch !== 'NONE') pushSmcStructureSegment(smc.chochLine, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
+        if (smc.idmLine) pushSmcStructureSegment(smc.idmLine, '#ffb74d', 'IDM', smc.trend === 'bullish' ? 'bottom' : 'top');
       }
     }
 
