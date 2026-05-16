@@ -1736,8 +1736,6 @@ export class ChartManager {
     this.chart.applyOptions({
       localization: {
         locale: typeof navigator !== 'undefined' ? navigator.language : 'en-US',
-        // Price scale axis always uses min-tick precision (exchange tick size dp, no display offset).
-        priceFormatter: (priceValue) => Number(priceValue).toFixed(dp),
       },
     });
     const pf = { type: 'price', precision: dp, minMove };
@@ -1803,7 +1801,7 @@ export class ChartManager {
     this.volumeSeries = this.chart.addHistogramSeries({
       color: initialTheme.volumeUp,
       base: 0,
-      priceFormat: { type: 'volume' },
+      priceFormat: { type: 'custom', formatter: (val) => Math.round(val).toString() },
       priceScaleId: 'vol',
       scaleMargins: { top: 0.75, bottom: 0 },
     });
