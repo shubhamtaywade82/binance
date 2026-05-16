@@ -153,13 +153,21 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const lastMarkBySym = new Map<string, number>();
   const lastBookBySym = new Map<string, { bid: number; ask: number }>();
 
-  let lastAiBriefAt = 0;
-  let aiBriefInflight = false;
+  /** Per-symbol tracking for AI Briefs */
+  const lastAiBriefAtBySym = new Map<string, number>();
+  const aiBriefInflightBySym = new Set<string>();
+  const latestAiBriefBySym = new Map<string, { text: string; thinking: string; ts: number; error?: string | null }>();
+
   let aiBriefWarnedNoModel = false;
   let aiBriefWarnedCloudKey = false;
   /** Throttle partial `ai_brief` WebSocket frames when streaming. */
   let lastAiBriefStreamBroadcastAt = 0;
   const AI_BRIEF_STREAM_MIN_MS = 75;
+
+  /** Event detection state for AI Brief triggers */
+  const lastSupertrendDirBySym = new Map<string, number>();
+  const lastSmcBosBySym = new Map<string, string>();
+  const lastSmcChochBySym = new Map<string, string>();
 
   const supertrendParamsBySym = new Map<string, { period: number; mult: number }>();
   const lastSupertrendTuneAtBySym = new Map<string, number>();
@@ -516,88 +524,131 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         }
       }
 
-  const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string): void => {
-        if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
-        if (!cfg.OLLAMA_MODEL.trim()) {
-          if (!aiBriefWarnedNoModel) {
-            aiBriefWarnedNoModel = true;
-            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
-          }
-          return;
-        }
-        if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
-          if (!aiBriefWarnedCloudKey) {
-            aiBriefWarnedCloudKey = true;
-            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
-          }
-          return;
-        }
-        const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
-        const now = Date.now();
-        if (aiBriefInflight) return;
-        if (lastAiBriefAt > 0 && now - lastAiBriefAt < gapMs) return;
-
-        const snapshot: MarketSignalsSnapshot = {
-          symbol: watchSymbol,
-          refPrice: signals.refPrice,
-          refPriceTf: signals.refPriceTf,
-          htfBias: String(signals.htfBias),
-          ltfDirection: String(signals.ltfDirection),
-          ltfConfidence: signals.ltfConfidence,
-          ltfScore: signals.ltfScore,
-          ltfSignals: signals.ltfSignals,
-          smc: signals.smc,
-          knnArchitecture: signals.knnArchitecture,
-          solMtf: signals.solMtf,
-        };
-
-        aiBriefInflight = true;
-        void requestMarketBrief(
-          {
-            host: ollamaApiUrl(cfg.OLLAMA_TARGET),
-            model: cfg.OLLAMA_MODEL,
-            apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
-            timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
-            thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
-            streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
-            mcpEnabled: cfg.AI_MCP_ENABLED,
-            mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
-            mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
-            mcpLog: log,
-            onStreamChunk:
-              cfg.AI_BRIEF_STREAM_ENABLED === true
-                ? ({ content, thinking }) => {
-                    const t = Date.now();
-                    if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
-                    lastAiBriefStreamBroadcastAt = t;
-                    broadcast({
-                      type: 'ai_brief',
-                      text: content,
-                      thinking,
-                      partial: true,
-                      ts: t,
-                    });
-                  }
-                : undefined,
-          },
-          snapshot,
-        ).then((r) => {
-          aiBriefInflight = false;
-          lastAiBriefAt = Date.now();
-          const ts = Date.now();
-          if (r.error) {
-            broadcast({ type: 'ai_brief', error: r.error, partial: false, ts });
-            return;
-          }
-          broadcast({
-            type: 'ai_brief',
-            text: r.text ?? '',
-            thinking: r.thinking ?? '',
-            partial: false,
-            ts,
-          });
-        });
+  const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string, force = false): void => {
+    if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
+    if (!cfg.OLLAMA_MODEL.trim()) {
+      if (!aiBriefWarnedNoModel) {
+        aiBriefWarnedNoModel = true;
+        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
       }
+      return;
+    }
+    if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+      if (!aiBriefWarnedCloudKey) {
+        aiBriefWarnedCloudKey = true;
+        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+      }
+      return;
+    }
+
+    const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
+    const now = Date.now();
+    const last = lastAiBriefAtBySym.get(watchSymbol) ?? 0;
+
+    if (aiBriefInflightBySym.has(watchSymbol)) return;
+    // When forced by an event (flip/SMC), we still respect a minimal cooldown to prevent loop spam,
+    // but the intention is that events trigger it immediately if the gap has passed.
+    if (!force && last > 0 && now - last < gapMs) return;
+
+    const snapshot: MarketSignalsSnapshot = {
+      symbol: watchSymbol,
+      refPrice: signals.refPrice,
+      refPriceTf: signals.refPriceTf,
+      htfBias: String(signals.htfBias),
+      ltfDirection: String(signals.ltfDirection),
+      ltfConfidence: signals.ltfConfidence,
+      ltfScore: signals.ltfScore,
+      ltfSignals: signals.ltfSignals,
+      smc: signals.smc,
+      knnArchitecture: signals.knnArchitecture,
+      solMtf: signals.solMtf,
+    };
+
+    aiBriefInflightBySym.add(watchSymbol);
+    void requestMarketBrief(
+      {
+        host: ollamaApiUrl(cfg.OLLAMA_TARGET),
+        model: cfg.OLLAMA_MODEL,
+        apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+        timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+        thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
+        streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+        mcpEnabled: cfg.AI_MCP_ENABLED,
+        mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
+        mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
+        mcpLog: log,
+        onStreamChunk:
+          cfg.AI_BRIEF_STREAM_ENABLED === true
+            ? ({ content, thinking }) => {
+                const t = Date.now();
+                if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
+                lastAiBriefStreamBroadcastAt = t;
+
+                // Only broadcast if this is still an active symbol for some client
+                let anyClientActive = false;
+                for (const client of wss.clients) {
+                  if (getSym(client) === watchSymbol) {
+                    anyClientActive = true;
+                    break;
+                  }
+                }
+                if (!anyClientActive) return;
+
+                broadcast({
+                  type: 'ai_brief',
+                  symbol: watchSymbol,
+                  text: content,
+                  thinking,
+                  partial: true,
+                  ts: t,
+                });
+              }
+            : undefined,
+      },
+      snapshot,
+    ).then((r) => {
+      aiBriefInflightBySym.delete(watchSymbol);
+      lastAiBriefAtBySym.set(watchSymbol, Date.now());
+      const ts = Date.now();
+
+      latestAiBriefBySym.set(watchSymbol, {
+        text: r.text ?? '',
+        thinking: r.thinking ?? '',
+        ts,
+        error: r.error,
+      });
+
+      if (r.error) {
+        broadcast({ type: 'ai_brief', symbol: watchSymbol, error: r.error, partial: false, ts });
+        return;
+      }
+      broadcast({
+        type: 'ai_brief',
+        symbol: watchSymbol,
+        text: r.text ?? '',
+        thinking: r.thinking ?? '',
+        partial: false,
+        ts,
+      });
+    });
+  }
+
+  const sendStoredAiBrief = (client: WebSocket, symbol: string): void => {
+    const stored = latestAiBriefBySym.get(symbol);
+    if (stored) {
+      client.send(
+        JSON.stringify({
+          type: 'ai_brief',
+          symbol,
+          text: stored.text,
+          thinking: stored.thinking,
+          error: stored.error,
+          partial: false,
+          ts: stored.ts,
+        }),
+      );
+    }
+  }
 
   const supertrendParamsForSymbol = (sym: string): { period: number; mult: number } => {
         return supertrendParamsBySym.get(sym) ?? {
@@ -978,6 +1029,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     watchSymbolByClient.set(ws, symbolUpper);
     const snap = buildSnapshot(ws);
     ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
+    sendStoredAiBrief(ws, symbolUpper);
 
     ws.on('message', (raw) => {
       let msg: { type?: string; tf?: string; oldestOpenTime?: number; symbol?: string };
@@ -991,6 +1043,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         if (watchlistSet.has(next)) {
           watchSymbolByClient.set(ws, next);
           ws.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(ws) }));
+          sendStoredAiBrief(ws, next);
         }
         return;
       }
@@ -1101,10 +1154,44 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (isFinal && tf === ltfTf) {
         maybePeriodicSupertrendTune(symU);
         broadcastSignalsPerClient();
+
+        // Detect significant events for AI Brief trigger
         const lead = firstOpenWebSocket();
-        if (lead && lead.readyState === WebSocket.OPEN) {
-          const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
-          void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
+        const leadSym = lead ? getSym(lead) : symbolUpper;
+        const leadTf = lead ? (refTfByClient.get(lead) ?? defaultChartRefTf()) : defaultChartRefTf();
+        const signals = computeSignalsForSymbol(symU, leadTf);
+
+        let significantEvent = false;
+
+        // 1. SuperTrend Flip detection
+        const stDir = (signals.ltfSignals as any)?.supertrend?.dir;
+        const lastStDir = lastSupertrendDirBySym.get(symU);
+        if (stDir !== undefined && lastStDir !== undefined && stDir !== lastStDir) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_supertrend_flip', { symbol: symU, from: lastStDir, to: stDir });
+        }
+        if (stDir !== undefined) lastSupertrendDirBySym.set(symU, stDir);
+
+        // 2. SMC Structural Change detection (BOS/CHoCH)
+        const bos = signals.smc.bos;
+        const choch = signals.smc.choch;
+        const lastBos = lastSmcBosBySym.get(symU);
+        const lastChoch = lastSmcChochBySym.get(symU);
+
+        if (bos !== 'NONE' && bos !== lastBos) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_smc_bos', { symbol: symU, bos });
+        }
+        if (choch !== 'NONE' && choch !== lastChoch) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_smc_choch', { symbol: symU, choch });
+        }
+        lastSmcBosBySym.set(symU, bos);
+        lastSmcChochBySym.set(symU, choch);
+
+        // Trigger AI Brief if significant event OR if this is the lead symbol (on kline close)
+        if (significantEvent || symU === leadSym) {
+          void maybeRefreshAiBrief(signals, symU, significantEvent);
         }
       }
     },
@@ -1243,11 +1330,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             maybePeriodicSupertrendTune(s);
           }
           broadcastSignalsPerClient();
-          const lead = firstOpenWebSocket();
-          if (lead && lead.readyState === WebSocket.OPEN) {
-            const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
-            void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
-          }
+          // Periodic AI brief trigger removed in favor of event-based + kline-based triggers
         }, 60_000);
 
         validationTimer = setInterval(() => {

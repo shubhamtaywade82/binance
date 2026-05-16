@@ -185,9 +185,10 @@ export class PositionManager {
     // Force cleanup of any existing positions for the same base asset
     for (const [key, pos] of this.positions.entries()) {
       if (this.getBaseAsset(key) === base || pos.pair === args.pair) {
-        this.log.info('open_clobber_existing', { symbol: key, newSide: args.side });
+        this.log.info('open_clobber_existing', { symbol: pos.symbol, newSide: args.side });
         this.positions.delete(key);
-        this.pgWriter?.removePositionBySymbol(key).catch(() => {});
+        this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+        this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
       }
     }
 
@@ -258,7 +259,7 @@ export class PositionManager {
       notionalUsdt: sized.notionalUsdt,
       marginInr: sized.marginInr,
       orderId: result.orderId,
-      symbol: symbolKey,
+      symbol: args.symbol,
       tier: tier?.tier,
       leverage,
       liqPrice: result.positionId ? 0 : 0, // Placeholder for calculated liq if needed
@@ -476,12 +477,13 @@ export class PositionManager {
       netUsdt: pnl.netUsdt,
       closedAt: Date.now(),
       attribution: this.attributions.get(key),
-    } as any, key).catch(() => {});
+    } as any, pos.symbol).catch(() => {});
     this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+    this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
 
     this.pgWriter?.writeOrder({
       orderId: pos.orderId,
-      symbol: key,
+      symbol: pos.symbol,
       side: pos.side === 'LONG' ? 'SHORT' : 'LONG', // Exit side
       quantity: pos.quantity,
       price: exitPrice,
@@ -535,7 +537,7 @@ export class PositionManager {
     this.closingInProgress.delete(base);
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
     const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
-    this.appendCsv(symbol, event);
+    this.appendCsv(pos.symbol, event);
 
     this.pgWriter?.writeTrade({
       ...pos,
@@ -547,11 +549,12 @@ export class PositionManager {
       netUsdt: pnl.netUsdt,
       closedAt: Date.now(),
       attribution: this.attributions.get(symbol),
-    } as any, symbol).catch(() => {});
-    this.pgWriter?.removePositionBySymbol(symbol).catch(() => {});
+    } as any, pos.symbol).catch(() => {});
+    this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+    this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
     this.attributions.delete(symbol);
     this.log.info('position_closed', {
-      symbol,
+      symbol: pos.symbol,
       side: pos.side,
       entry: pos.entryPrice,
       exit: exitPrice,
