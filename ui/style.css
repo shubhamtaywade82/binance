@@ -550,11 +550,102 @@ body::before {
   display: flex;
   flex-direction: column;
 }
+
+.chart-nav-group {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  padding: 2px;
+  gap: 1px;
+}
+
+.tf-btn-nav {
+  min-width: 54px !important;
+  font-size: 9px !important;
+  height: 20px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-dim) !important;
+}
+
+.tf-btn-nav:hover {
+  color: var(--text-primary) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.chart-scroll-live-btn {
+  position: absolute;
+  bottom: 20px;
+  right: 80px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(124, 77, 255, 0.5);
+  color: var(--accent);
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.9;
+}
+.chart-scroll-live-btn:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  opacity: 1;
+}
+.chart-scroll-live-btn[hidden] {
+  display: none !important;
+}
 #chart-container {
   flex: 1;
   min-height: 0;
   position: relative;
   padding: 0;
+}
+
+/* ── Chart Scroll to Live Button ───────────────────────────────────────── */
+.chart-scroll-live-btn {
+  position: absolute;
+  bottom: 24px;
+  right: 70px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: rgba(8, 11, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.chart-scroll-live-btn:hover {
+  background: rgba(18, 24, 38, 0.95);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 194, 255, 0.2);
+}
+.chart-scroll-live-btn:active {
+  transform: translateY(0);
+}
+.chart-scroll-live-btn[hidden] {
+  display: none !important;
 }
 
 .chart-signal-hud {

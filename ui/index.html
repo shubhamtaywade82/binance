@@ -90,7 +90,10 @@
               <input type="checkbox" id="toggle-book-top" checked />
               <span>Book</span>
             </label>
-            <button id="btn-scroll-realtime" class="tf-btn" title="Scroll chart to the most recent bar">▶ Recent</button>
+            <div class="chart-nav-group">
+              <button id="btn-scroll-start" class="tf-btn tf-btn-nav" title="Scroll to oldest bar">⇤ Start</button>
+              <button id="btn-scroll-realtime" class="tf-btn tf-btn-nav" title="Scroll to most recent bar">▶ Recent</button>
+            </div>
             <div class="candle-theme-wrap" id="candle-theme-wrap">
               <span id="candle-theme-heading" class="candle-theme-label">Candles</span>
               <button
@@ -162,6 +165,13 @@
           <div id="chart-signal-hud" class="chart-signal-hud" hidden aria-live="polite"></div>
           <div id="chart-container"></div>
           <div id="micro-chart-container" style="width:100%; height:100px; display:none; border-top: 1px solid rgba(255,255,255,0.06);"></div>
+          <button id="btn-chart-scroll-live" class="chart-scroll-live-btn" hidden title="Scroll to most recent bar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="13 17 18 12 13 7"></polyline>
+              <polyline points="6 17 11 12 6 7"></polyline>
+            </svg>
+            <span>Back to Live</span>
+          </button>
         </div>
       </div>
     </section>

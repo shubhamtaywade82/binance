@@ -1865,8 +1865,44 @@ export class ChartManager {
     this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
     this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
 
+    const scrollLiveBtn = document.getElementById('btn-chart-scroll-live');
+    const scrollRealtimeBtn = document.getElementById('btn-scroll-realtime');
+    
+    const scrollToLive = () => {
+      if (this.chart) {
+        this.chart.timeScale().scrollToRealTime();
+      }
+    };
+
+    if (scrollLiveBtn) scrollLiveBtn.addEventListener('click', scrollToLive);
+    if (scrollRealtimeBtn) scrollRealtimeBtn.addEventListener('click', scrollToLive);
+
+    const scrollStartBtn = document.getElementById('btn-scroll-start');
+    if (scrollStartBtn) {
+      scrollStartBtn.addEventListener('click', () => {
+        if (this.chart) {
+          const raw = this.candleMap[this.currentTf] || [];
+          if (raw.length > 0) {
+            this.chart.timeScale().setVisibleLogicalRange({
+              from: 0,
+              to: DEFAULT_VISIBLE_BARS[this.currentTf] ?? 120,
+            });
+          }
+        }
+      });
+    }
+
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((lr) => {
       this._maybeRequestHistory(lr);
+      if (scrollLiveBtn && lr && lr.to != null) {
+        const raw = this.candleMap[this.currentTf] || [];
+        const totalBars = raw.length;
+        if (totalBars > 0 && lr.to < totalBars - 3) {
+          scrollLiveBtn.hidden = false;
+        } else {
+          scrollLiveBtn.hidden = true;
+        }
+      }
     });
 
     this._resizeObs = new ResizeObserver(() => this._handleResize());
@@ -2066,15 +2102,6 @@ export class ChartManager {
         this._bookTopLinesEnabled = bookTopToggle.checked;
         storeBookTopLinesEnabled(this._bookTopLinesEnabled);
         this._syncBookTopLines();
-      });
-    }
-
-    const scrollRealtimeBtn = document.getElementById('btn-scroll-realtime');
-    if (scrollRealtimeBtn) {
-      scrollRealtimeBtn.addEventListener('click', () => {
-        if (this.chart) {
-          this.chart.timeScale().scrollToRealTime();
-        }
       });
     }
 
