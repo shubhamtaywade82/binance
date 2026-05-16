@@ -108,12 +108,13 @@ export class PgWriter {
     unrealizedPnl?: number;
     markPrice?: number;
     tier?: string;
+    mode?: string;
   }): Promise<void> {
     if (!this.pool) return;
     try {
       await this.pool.query(
-        `INSERT INTO positions (order_id, symbol, side, qty, entry_price, leverage, margin_usdt, liq_price, opened_at, updated_at, unrealized_pnl, mark_price, tier)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        `INSERT INTO positions (order_id, symbol, side, qty, entry_price, leverage, margin_usdt, liq_price, opened_at, updated_at, unrealized_pnl, mark_price, tier, mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (symbol) DO UPDATE SET
            order_id = EXCLUDED.order_id,
            side = EXCLUDED.side,
@@ -126,10 +127,11 @@ export class PgWriter {
            unrealized_pnl = EXCLUDED.unrealized_pnl,
            mark_price = EXCLUDED.mark_price,
            updated_at = EXCLUDED.updated_at,
-           tier = EXCLUDED.tier`,
+           tier = EXCLUDED.tier,
+           mode = EXCLUDED.mode`,
         [
           p.orderId, p.symbol, p.side, p.quantity, p.entryPrice, p.leverage,
-          p.marginUsdt, p.liqPrice, p.openedAt, Date.now(), p.unrealizedPnl ?? 0, p.markPrice ?? null, p.tier ?? null
+          p.marginUsdt, p.liqPrice, p.openedAt, Date.now(), p.unrealizedPnl ?? 0, p.markPrice ?? null, p.tier ?? null, p.mode ?? 'paper'
         ]
       );
     } catch (err) {

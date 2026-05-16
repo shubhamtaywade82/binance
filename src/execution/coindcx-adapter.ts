@@ -110,10 +110,13 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId, fill };
   }
 
+  private onTradeCloseCb?: (trade: ClosedPosition) => void;
+
   async closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
     const open = this.orders.get(orderId);
     if (!open) throw new Error(`live_close_unknown_order:${orderId}`);
-    const qtyToClose = quantity ?? open.quantity;
+    const isPartial = quantity !== undefined && quantity < open.quantity;
+    const qtyToClose = isPartial ? quantity : open.quantity;
     let exitPrice = open.entryPrice;
     try {
       await this.opts.client.exitFuturesPosition({ pair: open.pair, quantity: qtyToClose });
@@ -142,11 +145,12 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     }
 
     const sideMul = open.side === 'LONG' ? 1 : -1;
-    const gross = (exitPrice - open.entryPrice) * open.quantity * sideMul;
-    const exitNotional = exitPrice * open.quantity;
+    const gross = (exitPrice - open.entryPrice) * qtyToClose * sideMul;
+    const exitNotional = exitPrice * qtyToClose;
     const exitFee = exitNotional * this.opts.takerFee;
-    const fees = open.entryFeeUsdt + exitFee;
-    const funding = open.entryPrice * open.quantity * this.opts.fundingFeeEst;
+    const entryFeeAttributed = open.entryFeeUsdt * (qtyToClose / open.quantity);
+    const fees = entryFeeAttributed + exitFee;
+    const funding = open.entryPrice * qtyToClose * this.opts.fundingFeeEst;
     const net = gross - fees - funding;
     const closed: ClosedPosition = {
       orderId,
@@ -154,7 +158,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       leverage: open.leverage,
       entryPrice: open.entryPrice,
       exitPrice,
-      quantity: open.quantity,
+      quantity: qtyToClose,
       reason,
       grossUsdt: gross,
       feesUsdt: fees,
@@ -163,11 +167,84 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       openedAt: open.openedAt,
       closedAt: Date.now(),
     };
-    this.orders.delete(orderId);
+
+    if (isPartial) {
+      open.quantity -= qtyToClose;
+      open.entryFeeUsdt -= entryFeeAttributed;
+    } else {
+      this.orders.delete(orderId);
+    }
+
+    this.onTradeCloseCb?.(closed);
     return closed;
   }
 
   async setLeverage(pair: string, lev: number): Promise<void> {
     await this.opts.client.updatePositionLeverage({ pair, leverage: lev });
   }
+
+  async getWalletState(): Promise<any> {
+    try {
+      const [accountDetails, wallets] = await Promise.allSettled([
+        this.opts.client.getFuturesAccountDetails(),
+        this.opts.client.getFuturesWallets(),
+      ]);
+
+      const account = accountDetails.status === 'fulfilled' ? (accountDetails.value as Record<string, any>) : {};
+      const walletsArr = wallets.status === 'fulfilled' ? (wallets.value as any[]) : [];
+      const usdtWallet = (walletsArr || []).find((w: any) => w.currency_short_name === 'USDT') || {};
+
+      const balanceUsdt = Number(usdtWallet.balance) || Number(account.total_wallet_balance) || (Number(account.total_account_equity) - Number(account.pnl)) || 0;
+      const availableUsdt = Number(account.available_balance_cross) || Number(usdtWallet.balance) || 0;
+      const usedMarginUsdt = Number(usdtWallet.locked_balance) || (balanceUsdt - availableUsdt) || 0;
+      const unrealizedPnlUsdt = Number(account.pnl) || 0;
+      const equityUsdt = Number(account.total_account_equity) || (balanceUsdt + unrealizedPnlUsdt) || 0;
+
+      return {
+        balanceUsdt,
+        availableUsdt,
+        usedMarginUsdt,
+        unrealizedPnlUsdt,
+        realizedPnlUsdt: 0,
+        equityUsdt,
+        updatedAt: Date.now(),
+      };
+    } catch {
+      return {
+        balanceUsdt: 0,
+        availableUsdt: 0,
+        usedMarginUsdt: 0,
+        unrealizedPnlUsdt: 0,
+        realizedPnlUsdt: 0,
+        equityUsdt: 0,
+        updatedAt: Date.now(),
+      };
+    }
+  }
+
+  async getOpenPositions(): Promise<any[]> {
+    try {
+      const data = (await this.opts.client.getFuturesPositions()) as any[];
+      return (data || []).map((p) => ({
+        orderId: p.position_id,
+        symbol: p.pair,
+        side: p.side === 'buy' ? 'LONG' : 'SHORT',
+        entryPrice: p.avg_price,
+        quantity: p.active_pos,
+        leverage: p.leverage,
+        marginUsdt: p.user_margin,
+        liqPrice: p.liquidation_price,
+        openedAt: p.created_at || Date.now(),
+        unrealizedUsdt: p.pnl,
+        mode: 'live',
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  setOnTradeClose(cb: (trade: ClosedPosition) => void): void {
+    this.onTradeCloseCb = cb;
+  }
 }
+

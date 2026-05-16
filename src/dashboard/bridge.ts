@@ -63,9 +63,9 @@ export interface DashboardFeeds {
    * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits only).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
-  paperWallet?: () => WalletState | null;
-  paperPositions?: () => DashboardPosition[] | null;
-  livePositions?: () => DashboardPosition[] | null;
+  paperWallet?: () => WalletState | null | Promise<WalletState | null>;
+  paperPositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
+  livePositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
 }
 
 export interface DashboardBridge {
@@ -186,10 +186,10 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     return s.endsWith('.P') ? s.slice(0, -2) : s;
   };
 
-  const getOpenPositions = (): DashboardPosition[] => {
-    const paper = feeds.paperPositions?.();
-    if (Array.isArray(paper)) return paper;
-    const live = feeds.livePositions?.();
+  const getOpenPositions = async (): Promise<DashboardPosition[]> => {
+    const paper = await feeds.paperPositions?.();
+    if (Array.isArray(paper) && paper.length > 0) return paper;
+    const live = await feeds.livePositions?.();
     if (Array.isArray(live)) return live;
     return [];
   };
@@ -219,7 +219,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const chatOllamaHost = cfg.OLLAMA_TARGET === 'cloud' ? ollamaApiUrl('cloud') : ollamaApiUrl('local');
   const chatApiKey = (cfg.OLLAMA_API_KEY || '').trim();
 
-  const buildMarketContext = (activeSymbol: string): string => {
+  const buildMarketContext = async (activeSymbol: string): Promise<string> => {
     const s = computeSignalsForSymbol(activeSymbol, defaultChartRefTf());
     const watchlistPrices: Record<string, number> = {};
     for (const sym of watchlistSymbols) {
@@ -254,8 +254,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     parts.push(`Order Book Top (Bids): ${topBook.bids.slice(0, 2).map(b => `${b.price}@${b.qty}`).join(', ')}`);
     parts.push(`Recent Trades: ${recentTrades.slice(0, 5).map(t => `${t.makerSide ? 'S' : 'B'} ${t.price}@${t.qty}`).join(' | ')}`);
 
-    const openPos = getOpenPositions();
-    const wallet = feeds.paperWallet?.() || null;
+    const openPos = await getOpenPositions();
+    const wallet = (await feeds.paperWallet?.()) || null;
     if (openPos.length > 0) {
       parts.push(`Open Positions: ${openPos.map(p => `${p.symbol} ${p.side} x${p.leverage} @${p.entryPrice} (pnl: ${(p.unrealizedUsdt ?? 0).toFixed(2)})`).join(', ')}`);
     } else {
@@ -309,7 +309,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
 
     let systemMsg = `You are QuantumTrade AI, an expert crypto trading assistant.`;
     if (includeContext) {
-      systemMsg += `\n\nYou have real-time market data for ${activeSymbol}:\n\n${buildMarketContext(activeSymbol)}\n\n`;
+      systemMsg += `\n\nYou have real-time market data for ${activeSymbol}:\n\n${await buildMarketContext(activeSymbol)}\n\n`;
     }
 
     if (isNanopineMode) {
@@ -504,7 +504,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     if (anyFixed) {
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
-        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+        client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
       log.info('candle_store_resynced', { reason: 'periodic_validation' });
     }
@@ -529,7 +529,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
         if (getSym(client) !== sym) continue;
-        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+        client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
       log.info('force_resync_complete', { symbol: sym });
     }
@@ -1024,39 +1024,40 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
       }
 
-  const buildSnapshot = (forWs: WebSocket): Record<string, unknown> => {
-        const sym = getSym(forWs);
-        const rows = getCandlesByChartTf(sym);
-        const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
-        const signals = computeSignalsForClient(forWs, refTf);
-        const book = lastBookBySym.get(sym);
-        const mark = lastMarkBySym.get(sym);
-        const precPayload = buildInstrumentPrecisionPayload(sym);
-        return {
-          symbol: sym,
-          watchlist: watchlistSymbols,
-          executionSymbol: symbolUpper,
-          availableTimeframes: [...chartTfsOnStream],
-          mark: mark !== undefined ? mark : null,
-          bestBid: book?.bid ?? null,
-          bestAsk: book?.ask ?? null,
-          ...precPayload,
-          candles: {
-            '1m': rows['1m'],
-            '5m': rows['5m'],
-            '15m': rows['15m'],
-            '1h': rows['1h'],
-            '4h': rows['4h'],
-            '1d': rows['1d'],
-          },
-          depth: obFor(sym).topLevels(depthLevelsUi),
-          trades: tapeFor(sym).recent(60),
-          microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
-          indicators: computeIndicatorsFromRows(rows, sym),
-          signals,
-          positions: getOpenPositions(),
-        };
-      }
+  const buildSnapshot = async (forWs: WebSocket): Promise<Record<string, unknown>> => {
+    const sym = getSym(forWs);
+    const rows = getCandlesByChartTf(sym);
+    const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
+    const signals = computeSignalsForClient(forWs, refTf);
+    const book = lastBookBySym.get(sym);
+    const mark = lastMarkBySym.get(sym);
+    const precPayload = buildInstrumentPrecisionPayload(sym);
+    const positions = await getOpenPositions();
+    return {
+      symbol: sym,
+      watchlist: watchlistSymbols,
+      executionSymbol: symbolUpper,
+      availableTimeframes: [...chartTfsOnStream],
+      mark: mark !== undefined ? mark : null,
+      bestBid: book?.bid ?? null,
+      bestAsk: book?.ask ?? null,
+      ...precPayload,
+      candles: {
+        '1m': rows['1m'],
+        '5m': rows['5m'],
+        '15m': rows['15m'],
+        '1h': rows['1h'],
+        '4h': rows['4h'],
+        '1d': rows['1d'],
+      },
+      depth: obFor(sym).topLevels(depthLevelsUi),
+      trades: tapeFor(sym).recent(60),
+      microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
+      indicators: computeIndicatorsFromRows(rows, sym),
+      signals,
+      positions,
+    };
+  };
 
   const handleClientLoadHistory = async (ws: WebSocket, tf: string, oldestOpenTime: number): Promise<void> => {
         if (!allowedHistoryTfs.has(tf)) return;
@@ -1110,15 +1111,15 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         }
       }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', async (ws) => {
     log.info('dashboard_client_connected', { clients: wss.clients.size });
     refTfByClient.set(ws, defaultChartRefTf());
     watchSymbolByClient.set(ws, symbolUpper);
-    const snap = buildSnapshot(ws);
+    const snap = await buildSnapshot(ws);
     ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
     sendStoredAiBrief(ws, symbolUpper);
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let msg: { type?: string; tf?: string; oldestOpenTime?: number; symbol?: string };
       try {
         msg = JSON.parse(String(raw)) as typeof msg;
@@ -1130,7 +1131,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
         if (watchlistSet.has(next)) {
           watchSymbolByClient.set(ws, next);
-          ws.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(ws) }));
+          ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
           sendStoredAiBrief(ws, next);
         }
         return;
@@ -1402,11 +1403,15 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         }, 10_000);
 
         if (feeds.paperWallet || feeds.paperPositions || feeds.livePositions) {
-          paperStateTimer = setInterval(() => {
-            const wallet = feeds.paperWallet?.();
-            if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
-            const positions = getOpenPositions();
-            broadcast({ type: 'position_update', mode: feeds.paperPositions ? 'paper' : 'live', positions });
+          paperStateTimer = setInterval(async () => {
+            const wallet = await feeds.paperWallet?.();
+            const mode = feeds.paperPositions ? 'paper' : 'live';
+            if (wallet) {
+              broadcast({ type: 'paper_wallet', mode, ...wallet });
+              broadcast({ type: 'wallet', mode, ...wallet });
+            }
+            const positions = await getOpenPositions();
+            broadcast({ type: 'position_update', mode, positions });
             if (feeds.paperPositions) {
               broadcast({ type: 'paper_position_update', positions });
             }

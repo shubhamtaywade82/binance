@@ -70,10 +70,24 @@ export interface ClosedPosition {
   attribution?: TradeAttribution;
 }
 
+export interface WalletState {
+  balanceUsdt: number;
+  availableUsdt: number;
+  usedMarginUsdt: number;
+  unrealizedPnlUsdt: number;
+  realizedPnlUsdt: number;
+  equityUsdt: number;
+  updatedAt: number;
+}
+
 export interface ExecutionAdapter {
   name: ExecutionMode;
   placeOrder(req: OrderRequest): Promise<OrderResult>;
   closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition>;
   onMark?(symbol: string, markPrice: number): void;
   setLeverage?(pair: string, lev: number): Promise<void>;
+  getWalletState?(): WalletState | Promise<WalletState>;
+  getOpenPositions?(): any[] | Promise<any[]>;
+  setOnTradeClose?(cb: (trade: ClosedPosition) => void): void;
 }
+

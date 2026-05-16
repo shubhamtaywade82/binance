@@ -421,6 +421,7 @@ export class HybridOrchestrator {
     this.scheduleRestMarkPoll();
     this.mlRecorder?.start();
     this.scheduleHeartbeat();
+    this.scheduleLiveWalletPoller();
     this.log.info('orchestrator_started', {
       tradingAsset: this.cfg.TRADING_ASSET,
       binance: this.pairs.binanceSymbol,
@@ -445,6 +446,7 @@ export class HybridOrchestrator {
 
   stop(): void {
     this.clearHeartbeat();
+    this.clearLiveWalletPoller();
     this.fxRate.stop();
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
@@ -663,6 +665,62 @@ export class HybridOrchestrator {
     }
   }
 
+  private liveWalletTimer: ReturnType<typeof setInterval> | null = null;
+
+  private scheduleLiveWalletPoller(): void {
+    if (this.cfg.EXECUTION_MODE !== 'live') return;
+    const sec = this.cfg.PAPER_EQUITY_SNAPSHOT_SEC || 5;
+    this.liveWalletTimer = setInterval(() => {
+      void this.pollLiveWallet();
+    }, sec * 1000);
+  }
+
+  private clearLiveWalletPoller(): void {
+    if (this.liveWalletTimer) {
+      clearInterval(this.liveWalletTimer);
+      this.liveWalletTimer = null;
+    }
+  }
+
+  private async pollLiveWallet(): Promise<void> {
+    if (!this.execution.adapter.getWalletState) return;
+    try {
+      const w = await this.execution.adapter.getWalletState();
+      if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+      this.currentDrawdownPct = this.sessionPeakEquity > 0
+        ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+        : 0;
+
+      const openPositions = this.positionManager.getOpenPositionCount();
+
+      if (this.execution.pgWriter?.isConnected) {
+        void this.execution.pgWriter.writeEquitySnapshot(
+          w,
+          this.currentDrawdownPct,
+          openPositions,
+          this.fxRate.getInrPerUsdt(),
+        );
+      }
+
+      if (this.execution.redisState) {
+        const now = Date.now();
+        void this.execution.redisState.setWallet(w);
+        void this.execution.redisState.appendEquity({
+          ts: now,
+          equityUsdt: w.equityUsdt,
+          balanceUsdt: w.balanceUsdt,
+          unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+          realizedPnlUsdt: w.realizedPnlUsdt,
+          usedMarginUsdt: w.usedMarginUsdt,
+          inrPerUsdt: this.fxRate.getInrPerUsdt(),
+        });
+        void this.execution.redisState.publishUpdate('wallet', { equityUsdt: w.equityUsdt });
+      }
+    } catch (e) {
+      this.log.warn('live_wallet_poll_failed', { err: (e as Error).message });
+    }
+  }
+
   private logHeartbeat(): void {
     const htfBias = this.reversalTrendBias();
     const ltfBias = biasFromCandles(this.c15);
@@ -698,66 +756,63 @@ export class HybridOrchestrator {
     }
   }
 
-  private emitPaperStatusLine(): void {
-    if (this.cfg.EXECUTION_MODE !== 'paper') return;
-    const paper = this.execution.paperAdapter;
-    if (!paper) return;
-    const w = paper.getWalletState();
-    if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
-    this.currentDrawdownPct = this.sessionPeakEquity > 0
-      ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
-      : 0;
-    const openPositions = this.positionManager.getOpenPositionCount();
-    const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
-    const line = formatStatusLine({
-      equityUsdt: w.equityUsdt,
-      balanceUsdt: w.balanceUsdt,
-      unrealizedPnlUsdt: w.unrealizedPnlUsdt,
-      realizedPnlUsdt: w.realizedPnlUsdt,
-      drawdownPct: this.currentDrawdownPct,
-      inrPerUsdt: this.fxRate.getInrPerUsdt(),
-      openPositions,
-      positionPnls,
-    });
-    console.log(line);
+  private async emitPaperStatusLine(): Promise<void> {
+    const adapter = this.execution.paperAdapter || this.execution.cdcxAdapter || this.execution.adapter;
+    if (!adapter || !adapter.getWalletState) return;
 
-    // Persist equity snapshot to Postgres so the PnL dashboard + Grafana can
-    // render the equity curve in both USDT and INR. PaperLedger writes JSONL
-    // locally; this adds the SQL row with the current FX rate.
-    if (this.execution.pgWriter?.isConnected) {
-      void this.execution.pgWriter.writeEquitySnapshot(
-        w,
-        this.currentDrawdownPct,
+    try {
+      const w = await adapter.getWalletState();
+      if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+      this.currentDrawdownPct = this.sessionPeakEquity > 0
+        ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+        : 0;
+      const openPositions = this.positionManager.getOpenPositionCount();
+      const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
+      const line = formatStatusLine({
+        equityUsdt: w.equityUsdt,
+        balanceUsdt: w.balanceUsdt,
+        unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+        realizedPnlUsdt: w.realizedPnlUsdt,
+        drawdownPct: this.currentDrawdownPct,
+        inrPerUsdt: this.fxRate.getInrPerUsdt(),
         openPositions,
-        this.fxRate.getInrPerUsdt(),
-      );
+        positionPnls,
+      });
+      console.log(line);
 
-      // Refresh positions.unrealized_pnl per heartbeat so the FastAPI
-      // /positions endpoint shows current unrealized instead of the 0 stamped
-      // at fill time. PnL dashboard's WS push already covers fast updates;
-      // this keeps the DB in sync for analytics + cold-load.
-      const writer = this.execution.pgWriter;
-      for (const p of paper.getOpenPositions()) {
-        void writer.upsertPosition({
-          orderId: p.orderId,
-          symbol: p.symbol,
-          side: p.side,
-          quantity: p.quantity,
-          entryPrice: p.entryPrice,
-          leverage: p.leverage,
-          marginUsdt: p.marginUsdt,
-          liqPrice: p.liqPrice,
-          openedAt: p.openedAt,
-          unrealizedPnl: p.unrealizedUsdt,
-        });
+      // Persist equity snapshot to Postgres
+      if (this.execution.pgWriter?.isConnected) {
+        void this.execution.pgWriter.writeEquitySnapshot(
+          w,
+          this.currentDrawdownPct,
+          openPositions,
+          this.fxRate.getInrPerUsdt(),
+        );
+
+        // Refresh positions.unrealized_pnl per heartbeat
+        const writer = this.execution.pgWriter;
+        const positions = adapter.getOpenPositions ? await adapter.getOpenPositions() : [];
+        for (const p of positions) {
+          void writer.upsertPosition({
+            orderId: p.orderId,
+            symbol: p.symbol,
+            side: p.side,
+            quantity: p.quantity,
+            entryPrice: p.entryPrice,
+            leverage: p.leverage,
+            marginUsdt: p.marginUsdt,
+            liqPrice: p.liqPrice,
+            openedAt: p.openedAt,
+            unrealizedPnl: p.unrealizedUsdt ?? 0,
+            mode: this.cfg.EXECUTION_MODE,
+          });
+        }
       }
+    } catch (e) {
+      this.log.warn('status_line_failed', { err: (e as Error).message });
     }
   }
 
-  /**
-   * For each open position, compute unrealized PnL pct relative to entry, using
-   * the latest mark from the per-symbol book/tape (or entry price as a fallback).
-   */
   private computePerSymbolPnls(): Array<{ symbol: string; unrealizedPct: number }> {
     const out: Array<{ symbol: string; unrealizedPct: number }> = [];
     for (const pos of this.positionManager.getOpenPositions()) {

@@ -29,9 +29,12 @@ export interface ExecutionRuntime {
   router?: ExecutionRouter;
   /** Present only when EXECUTION_MODE=paper. */
   paperAdapter?: PaperExecutionAdapter;
+  /** Present when EXECUTION_MODE=live and BINANCE_EXECUTION_ADAPTER=false. */
+  cdcxAdapter?: CoinDcxExecutionAdapter;
   paperFundingEngine?: FundingEngine;
   /** Shared database writer for dashboard persistence. */
   pgWriter?: PgWriter;
+  redisState?: RedisPaperStateStore;
 }
 
 /**
@@ -83,6 +86,13 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
       throw new Error('EXECUTION_MODE=live but READ_ONLY=true. Set READ_ONLY=false to enable live execution.');
     }
 
+    let redisState: RedisPaperStateStore | undefined;
+    if (cfg.REDIS_URL) {
+      const client = getRedisClient(cfg.REDIS_URL);
+      const ns = String((cfg as any).REDIS_NAMESPACE || 'binance');
+      if (client) redisState = new RedisPaperStateStore(client, ns, 'live');
+    }
+
     // ── Binance live adapter ──────────────────────────────────────────────
     if (cfg.BINANCE_EXECUTION_ADAPTER) {
       const { apiKey, apiSecret } = binanceApiCredentials(cfg);
@@ -125,6 +135,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         binanceRestClient,
         router,
         pgWriter,
+        redisState,
         stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
       };
     }
@@ -144,7 +155,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
       adapter: cdcxRouter,
       book,
       router: cdcxRouter,
+      cdcxAdapter,
       pgWriter,
+      redisState,
       stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
     };
   }
@@ -169,7 +182,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   if ((cfg as any).PAPER_STATE_REDIS && cfg.REDIS_URL) {
     const client = getRedisClient(cfg.REDIS_URL);
     const ns = String((cfg as any).REDIS_NAMESPACE || 'binance');
-    if (client) redisState = new RedisPaperStateStore(client, ns);
+    if (client) redisState = new RedisPaperStateStore(client, ns, 'paper');
   }
 
   const paperAdapter = new PaperExecutionAdapter({
@@ -198,6 +211,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     paperAdapter,
     paperFundingEngine: funding,
     pgWriter,
+    redisState,
     stopFunding: () => funding.stop(),
     stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
   };

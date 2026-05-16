@@ -1,15 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+import type { WalletState } from '../types';
+export type { WalletState };
 
-export interface WalletState {
-  balanceUsdt: number;
-  availableUsdt: number;
-  usedMarginUsdt: number;
-  unrealizedPnlUsdt: number;
-  realizedPnlUsdt: number;
-  equityUsdt: number;
-  updatedAt: number;
-}
 
 export class PaperWallet {
   private balanceUsdt: number;

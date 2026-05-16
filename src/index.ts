@@ -91,7 +91,6 @@ const main = async (): Promise<void> => {
     readOnly: cfg.READ_ONLY,
   });
   const execution = createExecutionRuntime(cfg, cdcx);
-  const paperAdapter = execution.paperAdapter ?? null;
 
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
@@ -262,15 +261,22 @@ const main = async (): Promise<void> => {
       marketFeeds,
       orderBookSnapshotRing,
       precisionBySymbol,
-      paperWallet: paperAdapter ? () => paperAdapter.getWalletState() : undefined,
-      paperPositions: paperAdapter
-        ? () => paperAdapter.getOpenPositions().map((p) => ({ ...p, mode: 'paper' as const }))
-        : undefined,
+      paperWallet: async () => {
+        const adapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
+        if (adapter.getWalletState) return adapter.getWalletState();
+        return null;
+      },
+      paperPositions: async () => {
+        const adapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
+        if (adapter.getOpenPositions) return adapter.getOpenPositions();
+        return [];
+      },
       livePositions: () => orch?.getDashboardPositions() ?? null,
     });
 
-    if (paperAdapter) {
-      paperAdapter.setOnTradeClose((trade) => dashboardBridge!.broadcastPaperTrade(trade));
+    const activeAdapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
+    if (activeAdapter.setOnTradeClose) {
+      activeAdapter.setOnTradeClose((trade) => dashboardBridge!.broadcastPaperTrade(trade));
     }
 
     orch = new HybridOrchestrator(cfg, log, {

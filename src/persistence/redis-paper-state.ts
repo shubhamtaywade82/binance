@@ -26,14 +26,15 @@ export class RedisPaperStateStore {
   private readonly pubsubPrefix: string;
   private static readonly STREAM_MAX_LEN = 10_000;
 
-  constructor(private readonly redis: Redis, namespace = 'binance') {
+  constructor(private readonly redis: Redis, namespace = 'binance', mode: 'paper' | 'live' = 'paper') {
     const ns = namespace.replace(/:+$/, '');
-    this.walletKey = `${ns}:paper:wallet`;
-    this.positionsKey = `${ns}:paper:positions`;
-    this.equityStream = `${ns}:paper:equity`;
-    this.marksKey = `${ns}:paper:last_marks`;
-    this.pubsubPrefix = `${ns}:paper:updates`;
+    this.walletKey = `${ns}:${mode}:wallet`;
+    this.positionsKey = `${ns}:${mode}:positions`;
+    this.equityStream = `${ns}:${mode}:equity`;
+    this.marksKey = `${ns}:${mode}:last_marks`;
+    this.pubsubPrefix = `${ns}:${mode}:updates`;
   }
+
 
   async setWallet(state: WalletState): Promise<void> {
     try {

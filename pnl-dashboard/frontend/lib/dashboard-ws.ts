@@ -58,6 +58,7 @@ interface ApiWallet {
   inr_per_usdt: number;
   open_positions: number;
   ts: number;
+  mode?: string;
 }
 
 const toApiPosition = (p: DashboardPaperPosition): ApiPosition => ({
@@ -115,7 +116,8 @@ export function useDashboardLiveUpdates(url: string = DEFAULT_URL): void {
             break;
           }
 
-          case 'paper_wallet': {
+          case 'paper_wallet':
+          case 'wallet': {
             const wallet: ApiWallet = {
               balance_usdt: msg.balanceUsdt ?? 0,
               equity_usdt: msg.equityUsdt ?? 0,
@@ -126,6 +128,7 @@ export function useDashboardLiveUpdates(url: string = DEFAULT_URL): void {
               inr_per_usdt: 0,
               open_positions: 0,
               ts: Date.now(),
+              mode: msg.mode ?? 'paper',
             };
             void mutate('/wallet', wallet, { revalidate: false });
             break;
