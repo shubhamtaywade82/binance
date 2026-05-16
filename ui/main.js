@@ -11,7 +11,7 @@
 
 import { escapeHtml, renderAiBriefMarkdown } from './ai-brief-render.js';
 import { ChartManager } from './chart.js';
-import { fmtLtpMovement, fmtSpreadMovement } from './ltp-precision.js';
+import { fmtLtpMovement, fmtSpreadMovement, getMinTickDecimalPlaces } from './ltp-precision.js';
 import { OrderBookManager } from './orderbook.js';
 import { TradeTapeManager } from './trades.js';
 import { SignalsPanel }     from './signals.js';
@@ -235,6 +235,8 @@ const dispatch = (msg) => {
 
       // Feed order book
       if (msg.depth) {
+        const dp = getMinTickDecimalPlaces();
+        obMgr.resetForSymbol(1 / (10 ** dp));
         obMgr.update(msg.depth);
       }
 
