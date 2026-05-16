@@ -182,8 +182,9 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const indicatorDebounceBySym = new Map<string, ReturnType<typeof setTimeout>>();
 
   const getSym = (client: WebSocket): string => {
-        return watchSymbolByClient.get(client) ?? symbolUpper;
-      }
+    const s = watchSymbolByClient.get(client) ?? symbolUpper;
+    return s.endsWith('.P') ? s.slice(0, -2) : s;
+  };
 
   const getOpenPositions = (): DashboardPosition[] => {
     const paper = feeds.paperPositions?.();
@@ -301,7 +302,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       return;
     }
 
-    const activeSymbol = (body.symbol || symbolUpper).toUpperCase();
+    const rawSymbol = (body.symbol || symbolUpper).toUpperCase();
+    const activeSymbol = rawSymbol.endsWith('.P') ? rawSymbol.slice(0, -2) : rawSymbol;
     const includeContext = body.context !== false;
     const isNanopineMode = body.nanopine === true;
 
@@ -1124,7 +1126,8 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         return;
       }
       if (msg.type === 'set_watch_symbol' && typeof msg.symbol === 'string') {
-        const next = msg.symbol.trim().toUpperCase();
+        const nextRaw = msg.symbol.trim().toUpperCase();
+        const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
         if (watchlistSet.has(next)) {
           watchSymbolByClient.set(ws, next);
           ws.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(ws) }));
