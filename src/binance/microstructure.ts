@@ -100,7 +100,8 @@ export const depthPressure = (book: LocalOrderBook, levels: number): DepthPressu
 
   const bidP = pressureSide(bids);
   const askP = pressureSide(asks);
-  return { depthPressure: bidP - askP, bidPressure: bidP, askPressure: askP };
+  const denom = bidP + askP;
+  return { depthPressure: denom > 0 ? (bidP - askP) / denom : 0, bidPressure: bidP, askPressure: askP };
 };
 
 // ─── Order Flow Imbalance (OFI) ─────────────────────────────────────────

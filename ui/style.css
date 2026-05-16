@@ -6,12 +6,12 @@
 /* ── Tokens ──────────────────────────────────────────────────────────────── */
 :root {
   /* Backgrounds */
-  --bg-base:         #080b14;
-  --bg-panel:        rgba(13, 17, 30, 0.82);
-  --bg-panel-hover:  rgba(16, 22, 40, 0.9);
-  --bg-header:       rgba(8, 11, 20, 0.96);
-  --bg-row-hover:    rgba(255, 255, 255, 0.04);
-  --bg-input:        rgba(255, 255, 255, 0.06);
+  --bg-base:         #000000;
+  --bg-panel:        rgba(5, 5, 5, 0.85);
+  --bg-panel-hover:  rgba(10, 10, 10, 0.92);
+  --bg-header:       rgba(0, 0, 0, 0.96);
+  --bg-row-hover:    rgba(255, 255, 255, 0.06);
+  --bg-input:        rgba(255, 255, 255, 0.08);
 
   /* Border */
   --border:          rgba(255, 255, 255, 0.07);

@@ -71,7 +71,7 @@ export class PartialPriceLinesPrimitive {
         price: opts.price,
         title: opts.title ?? '',
         axisLabelColor: opts.axisLabelColor ?? 'rgba(136,146,164,0.9)',
-        axisLabelTextColor: opts.axisLabelTextColor ?? '#c8cdd5',
+        axisLabelTextColor: opts.axisLabelTextColor ?? '#000000',
       });
       if (opts.axisLabelColor) existing.applyOptions({ axisLabelColor: opts.axisLabelColor });
       if (opts.axisLabelTextColor) existing.applyOptions({ axisLabelTextColor: opts.axisLabelTextColor });
@@ -86,7 +86,7 @@ export class PartialPriceLinesPrimitive {
       axisLabelVisible: true,
       title: opts.title ?? '',
       axisLabelColor: opts.axisLabelColor ?? 'rgba(136,146,164,0.9)',
-      axisLabelTextColor: opts.axisLabelTextColor ?? '#c8cdd5',
+      axisLabelTextColor: opts.axisLabelTextColor ?? '#000000',
     });
     this._labelLines.set(id, pl);
   }

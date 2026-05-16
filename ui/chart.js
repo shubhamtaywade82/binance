@@ -59,7 +59,7 @@ const COLORS = {
   ema9: '#ffd740',
   ema21: '#00b0ff',
   ema50: '#ff9100',
-  bg: '#080b14',
+  bg: '#000000',
   grid: 'rgba(255,255,255,0.04)',
   text: '#8892a4',
   crosshair: 'rgba(255,255,255,0.15)',
@@ -379,6 +379,7 @@ export class ChartManager {
       axisLabelVisible: showAxis,
       title: showAxis ? title : '',
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
     });
     this._smcSignalPriceLines.push(line);
   }
@@ -1000,12 +1001,12 @@ export class ChartManager {
     const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
     this._partialLinesPrimitive.setLine('bid', {
       startTimeSec: startTime, price: bid, color: 'rgba(0,200,220,0.82)',
-      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#e0f7fa',
+      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#000000',
       extendLeft: true,
     });
     this._partialLinesPrimitive.setLine('ask', {
       startTimeSec: startTime, price: ask, color: 'rgba(255,160,0,0.82)',
-      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#fff3e0',
+      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#000000',
       extendLeft: true,
     });
   }
@@ -1336,6 +1337,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
       title: label,
     });
   }
@@ -1375,6 +1377,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
       title: label,
     });
   }
@@ -1438,6 +1441,7 @@ export class ChartManager {
       dash: [1, 4],
       title: label,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
     });
   }
 
@@ -1613,6 +1617,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: COLORS.bear,
+      axisLabelTextColor: '#000000',
     });
   }
 
@@ -1632,7 +1637,7 @@ export class ChartManager {
     this._partialLinesPrimitive.setLine('ltp', {
       startTimeSec: startTime, price, color,
     });
-    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color });
+    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color, axisLabelTextColor: '#000000' });
   }
 
   _ltpAnimStep() {
