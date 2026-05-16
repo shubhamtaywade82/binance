@@ -489,9 +489,19 @@ export class ChartManager {
               stroke = 'rgba(0,188,212,0.6)'; 
               textColor = 'rgba(178,235,242,0.95)'; 
             } else if (blk.type === 'SESSION') { 
-              fill = 'rgba(100,181,246,0.15)'; 
-              stroke = 'rgba(100,181,246,0.4)'; 
-              textColor = 'rgba(187,222,251,0.95)'; 
+              if (blk.subType === 'LONDON') {
+                fill = 'rgba(149,117,205,0.15)'; 
+                stroke = 'rgba(149,117,205,0.4)'; 
+                textColor = 'rgba(209,196,233,0.95)';
+              } else if (blk.subType === 'NY') {
+                fill = 'rgba(255,183,77,0.15)'; 
+                stroke = 'rgba(255,183,77,0.4)'; 
+                textColor = 'rgba(255,224,130,0.95)';
+              } else {
+                fill = 'rgba(100,181,246,0.15)'; 
+                stroke = 'rgba(100,181,246,0.4)'; 
+                textColor = 'rgba(187,222,251,0.95)'; 
+              }
             }
             smcZones.push({ t1, t2, top: blk.high, bottom: blk.low, fill, stroke, text: blk.subType, textColor });
           }

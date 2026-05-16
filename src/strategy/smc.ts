@@ -353,32 +353,66 @@ const detectSessionRanges = (candles: Candle[]): SmcBlock[] => {
   const n = candles.length;
   const zones: SmcBlock[] = [];
   let currentAsia: { start: number; high: number; low: number } | null = null;
+  let currentLondon: { start: number; high: number; low: number } | null = null;
+  let currentNY: { start: number; high: number; low: number } | null = null;
   
   for (let i = Math.max(0, n - 300); i < n; i++) {
     const c = candles[i]!;
     const date = new Date(c.openTime);
     const hour = date.getUTCHours();
     
-    const isAsia = hour >= 0 && hour < 8;
+    // 1. ASIA (00:00 - 06:00 UTC)
+    const isAsia = hour >= 0 && hour < 6;
     if (isAsia) {
-      if (!currentAsia) {
-        currentAsia = { start: i, high: c.high, low: c.low };
-      } else {
+      if (!currentAsia) currentAsia = { start: i, high: c.high, low: c.low };
+      else {
         currentAsia.high = Math.max(currentAsia.high, c.high);
         currentAsia.low = Math.min(currentAsia.low, c.low);
       }
     } else if (currentAsia) {
       zones.push({
-        type: 'SESSION',
-        subType: 'ASIA',
-        low: currentAsia.low,
-        high: currentAsia.high,
-        startIndex: currentAsia.start,
-        endIndex: i - 1,
-        isMitigated: false,
-        isInvalidated: false
+        type: 'SESSION', subType: 'ASIA',
+        low: currentAsia.low, high: currentAsia.high,
+        startIndex: currentAsia.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
       });
       currentAsia = null;
+    }
+
+    // 2. LONDON (07:00 - 11:00 UTC)
+    const isLondon = hour >= 7 && hour < 11;
+    if (isLondon) {
+      if (!currentLondon) currentLondon = { start: i, high: c.high, low: c.low };
+      else {
+        currentLondon.high = Math.max(currentLondon.high, c.high);
+        currentLondon.low = Math.min(currentLondon.low, c.low);
+      }
+    } else if (currentLondon) {
+      zones.push({
+        type: 'SESSION', subType: 'LONDON',
+        low: currentLondon.low, high: currentLondon.high,
+        startIndex: currentLondon.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
+      });
+      currentLondon = null;
+    }
+
+    // 3. NEW YORK (12:00 - 16:00 UTC)
+    const isNY = hour >= 12 && hour < 16;
+    if (isNY) {
+      if (!currentNY) currentNY = { start: i, high: c.high, low: c.low };
+      else {
+        currentNY.high = Math.max(currentNY.high, c.high);
+        currentNY.low = Math.min(currentNY.low, c.low);
+      }
+    } else if (currentNY) {
+      zones.push({
+        type: 'SESSION', subType: 'NY',
+        low: currentNY.low, high: currentNY.high,
+        startIndex: currentNY.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
+      });
+      currentNY = null;
     }
   }
   return zones;
