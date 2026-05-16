@@ -968,10 +968,12 @@ export class ChartManager {
     this._partialLinesPrimitive.setLine('bid', {
       startTimeSec: startTime, price: bid, color: 'rgba(0,200,220,0.82)',
       title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#e0f7fa',
+      extendLeft: true,
     });
     this._partialLinesPrimitive.setLine('ask', {
       startTimeSec: startTime, price: ask, color: 'rgba(255,160,0,0.82)',
       title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#fff3e0',
+      extendLeft: true,
     });
   }
 

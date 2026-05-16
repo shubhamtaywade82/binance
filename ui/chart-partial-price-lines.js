@@ -134,11 +134,15 @@ class PartialLinesPaneView {
               const y = Math.round(yCss * vRp) + 0.5;
 
               let xStart;
-              const xCss = timeScale.timeToCoordinate(ln.startTimeSec);
-              if (xCss !== null) {
-                xStart = xCss * hRp;
-              } else {
+              if (ln.extendLeft) {
                 xStart = 0;
+              } else {
+                const xCss = timeScale.timeToCoordinate(ln.startTimeSec);
+                if (xCss !== null) {
+                  xStart = xCss * hRp;
+                } else {
+                  xStart = 0;
+                }
               }
 
               if (xStart >= rightEdge) continue;
