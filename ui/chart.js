@@ -1691,13 +1691,22 @@ export class ChartManager {
 
   _syncPriceLocalization() {
     if (!this.chart) return;
+    const dp = getMinTickDecimalPlaces();
+    const minMove = 1 / (10 ** dp);
     this.chart.applyOptions({
       localization: {
         locale: typeof navigator !== 'undefined' ? navigator.language : 'en-US',
         // Price scale axis always uses min-tick precision (exchange tick size dp, no display offset).
-        priceFormatter: (priceValue) => Number(priceValue).toFixed(getMinTickDecimalPlaces()),
+        priceFormatter: (priceValue) => Number(priceValue).toFixed(dp),
       },
     });
+    const pf = { type: 'price', precision: dp, minMove };
+    if (this.candleSeries) this.candleSeries.applyOptions({ priceFormat: pf });
+    if (this.ema9Series) this.ema9Series.applyOptions({ priceFormat: pf });
+    if (this.ema21Series) this.ema21Series.applyOptions({ priceFormat: pf });
+    if (this.ema50Series) this.ema50Series.applyOptions({ priceFormat: pf });
+    if (this.stSeries) this.stSeries.applyOptions({ priceFormat: pf });
+    if (this._vwapSeries) this._vwapSeries.applyOptions({ priceFormat: pf });
   }
 
   _smoothLtpTo(price) {
