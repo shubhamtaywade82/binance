@@ -589,7 +589,7 @@ const detectBosChoch = (
   structPoints: StructurePoint[];
   swings: SwingPoint[];
 } => {
-  const detector = new SwingDetector(candles, 3, 3);
+  const detector = new SwingDetector(candles, 10, 10);
   const rawSwings = detector.detect();
   
   const cleaner = new SwingSequenceCleaner(rawSwings);

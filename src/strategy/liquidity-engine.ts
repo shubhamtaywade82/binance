@@ -22,6 +22,8 @@ export interface LiquidityPoolView {
   price: number;
   /** Bar index in `candles` where the pool was last reinforced. */
   createdBarIndex: number;
+  /** First bar index in the equal highs / lows cluster. */
+  startIndex?: number;
   strength: number;
   touches: number;
   timeframe: string;
@@ -115,10 +117,10 @@ const avgVolume = (candles: Candle[], endIdx: number, lookback: number): number 
   return s / slice.length;
 }
 
-const clusterSwingPrices = (points: { index: number; price: number }[], equalPct: number): { meanPrice: number; maxIndex: number; touches: number }[] => {
+const clusterSwingPrices = (points: { index: number; price: number }[], equalPct: number): { meanPrice: number; minIndex: number; maxIndex: number; touches: number }[] => {
   if (points.length === 0) return [];
   const sorted = [...points].sort((a, b) => a.price - b.price);
-  const clusters: { meanPrice: number; maxIndex: number; touches: number }[] = [];
+  const clusters: { meanPrice: number; minIndex: number; maxIndex: number; touches: number }[] = [];
   let cur: typeof sorted = [sorted[0]!];
   for (let k = 1; k < sorted.length; k++) {
     const p = sorted[k]!;
@@ -128,6 +130,7 @@ const clusterSwingPrices = (points: { index: number; price: number }[], equalPct
     } else {
       clusters.push({
         meanPrice: mean(cur.map((x) => x.price)),
+        minIndex: Math.min(...cur.map((x) => x.index)),
         maxIndex: Math.max(...cur.map((x) => x.index)),
         touches: cur.length,
       });
@@ -136,6 +139,7 @@ const clusterSwingPrices = (points: { index: number; price: number }[], equalPct
   }
   clusters.push({
     meanPrice: mean(cur.map((x) => x.price)),
+    minIndex: Math.min(...cur.map((x) => x.index)),
     maxIndex: Math.max(...cur.map((x) => x.index)),
     touches: cur.length,
   });
@@ -310,6 +314,7 @@ export const runLiquidityEngine = (candles: Candle[], timeframeLabel: string, op
       kind: 'buyside',
       price: cl.meanPrice,
       createdBarIndex: cl.maxIndex,
+      startIndex: cl.minIndex,
       strength: decayedStrength(cl.touches * 2, cl.maxIndex, lastIdx, o.decayPerBar),
       touches: cl.touches,
       timeframe: timeframeLabel,
@@ -321,6 +326,7 @@ export const runLiquidityEngine = (candles: Candle[], timeframeLabel: string, op
       kind: 'sellside',
       price: cl.meanPrice,
       createdBarIndex: cl.maxIndex,
+      startIndex: cl.minIndex,
       strength: decayedStrength(cl.touches * 2, cl.maxIndex, lastIdx, o.decayPerBar),
       touches: cl.touches,
       timeframe: timeframeLabel,

@@ -241,6 +241,7 @@ export class ChartManager {
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
     this._smcSignalPriceLines = [];
+    this._smcPartialLineIds = [];
     /** SMC markers (separate from liquidation markers, merged via _paintAllMarkers). */
     this._lastSmcMarkers = [];
     /** Open-position markers and entry lines. */
@@ -335,6 +336,12 @@ export class ChartManager {
       }
     }
     this._smcSignalPriceLines = [];
+    if (this._partialLinesPrimitive && this._smcPartialLineIds?.length) {
+      for (const id of this._smcPartialLineIds) {
+        this._partialLinesPrimitive.removeLine(id);
+      }
+    }
+    this._smcPartialLineIds = [];
     this._lastSmcMarkers = [];
     this._paintAllMarkers();
     this._smcZonePrimitive?.setZones([]);
@@ -381,7 +388,7 @@ export class ChartManager {
     if ((!this._smcSignalsOverlayEnabled && !this._knnArchitectureEnabled) || !this._lastSignalsForChart || !this.candleSeries) return;
     
     const s = this._lastSignalsForChart;
-    const refTf = s.refPriceTf || this.currentTf;
+    const refTf = s.smcTf || s.refPriceTf || this.currentTf;
 
     const smc = this._smcSignalsOverlayEnabled ? s.smc : null;
     const knn = (this._knnArchitectureEnabled && s.knnArchitecture) ? s.knnArchitecture : null;
@@ -503,12 +510,6 @@ export class ChartManager {
           const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) : null;
           markers.push({ time: tChoch ?? lastT, position: 'belowBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#80cbc4', text: 'CHoCH', id: 'smc-choch' });
         }
-        if (Array.isArray(smc.swings)) {
-          for (const sw of smc.swings) {
-            const tSw = this._signalBarTimeSec(refTf, sw.index);
-            if (tSw) markers.push({ time: tSw, position: sw.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)', size: 0.2 });
-          }
-        }
       }
 
       // 7. Structural Labels
@@ -527,7 +528,20 @@ export class ChartManager {
         for (const p of pools) {
           if (Number.isFinite(p.price)) {
             const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
-            this._addSmcPriceLine(p.price, bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)', bullPool ? 'LQ↑' : 'LQ↓', LineStyle.Dotted);
+            const t1 = p.startIndex != null ? this._signalBarTimeSec(refTf, p.startIndex) : null;
+            const t2 = p.createdBarIndex != null ? this._signalBarTimeSec(refTf, p.createdBarIndex) : null;
+            if (t1 != null && t2 != null) {
+              smcStructLines.push({
+                t1,
+                t2,
+                price: p.price,
+                color: bullPool ? 'rgba(255,128,171,0.8)' : 'rgba(128,203,255,0.8)',
+                label: bullPool ? 'EQH' : 'EQL',
+                position: bullPool ? 'top' : 'bottom',
+                lineWidth: 2,
+                lineStyle: 1
+              });
+            }
           }
         }
         const pr = liq.primaryRejection;

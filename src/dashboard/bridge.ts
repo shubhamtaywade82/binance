@@ -81,6 +81,7 @@ export interface DashboardBridge {
 export interface DashboardSignalsPayload {
   refPrice: number;
   refPriceTf: string;
+  smcTf?: string;
   htfBias: string;
   ltfDirection: string;
   ltfConfidence: number;
@@ -862,6 +863,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         return {
           refPrice,
           refPriceTf: effectiveTf,
+          smcTf: refSeries.length >= SMC_MIN_BARS ? effectiveTf : ltfTf,
           htfBias: String(htfBiasRaw),
           ltfDirection: ltfTrend.direction,
           ltfConfidence: +ltfTrend.confidence.toFixed(3),

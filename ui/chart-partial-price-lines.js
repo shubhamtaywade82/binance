@@ -126,6 +126,31 @@ class PartialLinesPaneView {
       draw: (target) => {
         try {
           target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hRp, verticalPixelRatio: vRp }) => {
+            const getVisibleRange = () => {
+              const r = timeScale.getVisibleRange();
+              if (!r) return null;
+              const from = (typeof r.from === 'number') ? r.from : (r.from.year ? new Date(r.from.year, r.from.month - 1, r.from.day).getTime() / 1000 : null);
+              const to = (typeof r.to === 'number') ? r.to : (r.to.year ? new Date(r.to.year, r.to.month - 1, r.to.day).getTime() / 1000 : null);
+              if (from === null || to === null) return null;
+              return { from, to };
+            };
+
+            const vRange = getVisibleRange();
+            if (!vRange) return;
+
+            const getX = (t) => {
+              const xCss = timeScale.timeToCoordinate(t);
+              if (xCss !== null) return xCss * hRp;
+              
+              if (t > vRange.to) return bitmapSize.width + (100 * hRp);
+              if (t < vRange.from) return -100 * hRp;
+              
+              const totalTime = vRange.to - vRange.from;
+              if (totalTime <= 0) return null;
+              const ratio = (t - vRange.from) / totalTime;
+              return ratio * bitmapSize.width;
+            };
+
             const rightEdge = bitmapSize.width;
 
             for (const ln of lines) {
@@ -137,15 +162,18 @@ class PartialLinesPaneView {
               if (ln.extendLeft) {
                 xStart = 0;
               } else {
-                const xCss = timeScale.timeToCoordinate(ln.startTimeSec);
-                if (xCss !== null) {
-                  xStart = xCss * hRp;
+                const calcX = getX(ln.startTimeSec);
+                if (calcX !== null) {
+                  xStart = calcX;
                 } else {
                   xStart = 0;
                 }
               }
 
-              if (xStart >= rightEdge) continue;
+              if (xStart >= rightEdge || xStart < 0) {
+                if (xStart >= rightEdge) continue;
+                xStart = 0;
+              }
 
               ctx.save();
               ctx.strokeStyle = ln.color;
