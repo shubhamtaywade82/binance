@@ -650,7 +650,7 @@ export class ChartManager {
       }
     }
 
-    if (Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
+    if (this._signalHudEnabled && Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
     this._smcZonePrimitive?.setZones(smcZones);
     this._smcZonePrimitive?.setLines(smcStructLines);
     this._lastSmcMarkers = markers;
@@ -1919,6 +1919,7 @@ export class ChartManager {
         this._signalHudEnabled = hudToggle.checked;
         storeSignalHudEnabled(this._signalHudEnabled);
         this.updateStrategyHud(this._lastSignalsForChart);
+        this._paintSmcFromStoredSignals();
       });
     }
 
