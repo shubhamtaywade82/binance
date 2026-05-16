@@ -190,14 +190,15 @@ const main = async (): Promise<void> => {
             log.warn('funding_exit_no_engine', { hint: 'paper adapter did not expose FundingEngine' });
           }
         }
-        log.info('seykota_trend_follower_wired', {
+        const strategyTag = (cfg as any).ADAPTIVE_STRATEGY_ENABLED ? 'adaptive' : 'seykota';
+        log.info('exit_managers_wired', {
+          strategy: strategyTag,
           htf: (cfg as any).SEYKOTA_HTF,
-          adxThreshold: (cfg as any).SEYKOTA_ADX_THRESHOLD,
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
-          riskPct: (cfg as any).SEYKOTA_RISK_PCT,
-          klineOnly: (cfg as any).SEYKOTA_KLINE_ONLY,
-          partialTpR: (cfg as any).SEYKOTA_PARTIAL_TP_R,
-          smcExit: (cfg as any).SEYKOTA_SMC_EXIT_ENABLED,
+          intrabarTrail: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR),
+          structureExit: Boolean((cfg as any).STRUCTURE_EXIT_ENABLED),
+          timeStop: Boolean((cfg as any).TIME_STOP_ENABLED),
+          fundingExit: Boolean((cfg as any).FUNDING_EXIT_ENABLED),
         });
       }
       log.info('event_bus_execution_wired', { adapter: adapter.name });
