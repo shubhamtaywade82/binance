@@ -327,7 +327,9 @@ const main = async (): Promise<void> => {
   }
 
   try {
-    await orch.start();
+    // Bind the dashboard HTTP/WS server FIRST so vite proxy stops spamming
+    // ECONNREFUSED while orch.start() does its REST history backfill (which
+    // can take 10-30s for 2000 bars × N symbols × N timeframes).
     if (dashboardBridge) {
       await dashboardBridge.listen();
     }
@@ -335,6 +337,7 @@ const main = async (): Promise<void> => {
       await controlServer.listen(cfg.CONTROL_PORT);
       log.info('control_server_started', { port: cfg.CONTROL_PORT });
     }
+    await orch.start();
   } catch (err) {
     log.warn('startup_failed', { err: (err as Error).message });
     await lifecycle.shutdown('startup_error');
