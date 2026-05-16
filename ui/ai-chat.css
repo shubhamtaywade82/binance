@@ -282,3 +282,87 @@
 .ai-page .nanopine-toolbar {
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
+
+/* ── AI Markdown Formatting ─────────────────────────────────────────────── */
+
+.ai-bubble-content .ai-heading {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin: 1rem 0 0.5rem 0;
+  line-height: 1.3;
+}
+.ai-bubble-content .ai-heading:first-child { margin-top: 0; }
+
+.ai-bubble-content .ai-h1 { font-size: 1.15rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.3rem; }
+.ai-bubble-content .ai-h2 { font-size: 1.05rem; }
+.ai-bubble-content .ai-h3 { font-size: 0.95rem; color: var(--accent); }
+.ai-bubble-content .ai-h4 { font-size: 0.88rem; }
+
+.ai-bubble-content .ai-paragraph {
+  margin: 0.4rem 0;
+  line-height: 1.6;
+}
+.ai-bubble-content .ai-paragraph:first-child { margin-top: 0; }
+.ai-bubble-content .ai-paragraph:last-child { margin-bottom: 0; }
+
+.ai-bubble-content .ai-spacing {
+  height: 0.5rem;
+}
+
+.ai-bubble-content .ai-hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 1rem 0;
+}
+
+.ai-bubble-content .ai-list {
+  margin: 0.5rem 0 0.5rem 1.2rem;
+  padding: 0;
+  list-style-type: disc;
+}
+.ai-bubble-content .ai-list li {
+  margin: 0.25rem 0;
+  line-height: 1.5;
+}
+
+.ai-bubble-content .ai-table-wrapper {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+}
+
+.ai-bubble-content .ai-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  text-align: left;
+}
+
+.ai-bubble-content .ai-table th {
+  background: rgba(255,255,255,0.05);
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.72rem;
+}
+
+.ai-bubble-content .ai-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--text-primary);
+  vertical-align: top;
+}
+
+.ai-bubble-content .ai-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ai-bubble-content .ai-table tbody tr:hover {
+  background: rgba(255,255,255,0.02);
+}
+

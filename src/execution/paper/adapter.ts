@@ -80,13 +80,20 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
           if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
           const fill = await this.calculateFill(req, symbol);
           
+          const addedMargin = (fill.price * fill.quantity) / p.leverage;
+          const totalRequired = addedMargin + fill.feeUsdt;
+          
+          if (!this.opts.wallet.reserveMargin(totalRequired)) {
+            return { ok: false, orderId: id, fill, error: 'insufficient_margin' };
+          }
+          
           const newQty = p.quantity + fill.quantity;
           const newNotional = (p.entryPrice * p.quantity) + (fill.price * fill.quantity);
           const newEntry = newNotional / newQty;
           
           p.entryPrice = newEntry;
           p.quantity = newQty;
-          p.marginUsdt += (fill.price * fill.quantity) / p.leverage;
+          p.marginUsdt += addedMargin;
           p.entryFeeUsdt += fill.feeUsdt;
           
           this.positions.set(id, p);

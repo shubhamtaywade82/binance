@@ -253,6 +253,17 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     parts.push(`Order Book Top (Bids): ${topBook.bids.slice(0, 2).map(b => `${b.price}@${b.qty}`).join(', ')}`);
     parts.push(`Recent Trades: ${recentTrades.slice(0, 5).map(t => `${t.makerSide ? 'S' : 'B'} ${t.price}@${t.qty}`).join(' | ')}`);
 
+    const openPos = getOpenPositions();
+    const wallet = feeds.paperWallet?.() || null;
+    if (openPos.length > 0) {
+      parts.push(`Open Positions: ${openPos.map(p => `${p.symbol} ${p.side} x${p.leverage} @${p.entryPrice} (pnl: ${(p.unrealizedUsdt ?? 0).toFixed(2)})`).join(', ')}`);
+    } else {
+      parts.push(`Open Positions: NONE`);
+    }
+    if (wallet) {
+      parts.push(`Wallet: balance=${wallet.balanceUsdt.toFixed(2)}, available=${wallet.availableUsdt.toFixed(2)}, used=${wallet.usedMarginUsdt.toFixed(2)}`);
+    }
+
     parts.push(`Timeframe: ${s.signalMeta?.trendSeriesTf ?? 'unknown'}, HTF: ${s.signalMeta?.htf ?? 'unknown'}`);
     return parts.join('\n');
   };
