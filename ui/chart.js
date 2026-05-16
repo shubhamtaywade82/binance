@@ -2052,6 +2052,106 @@ export class ChartManager {
         this._onTfChange?.(this.currentTf);
       });
     });
+
+    this._initCandleTooltip(container);
+  }
+
+  _initCandleTooltip(container) {
+    const tooltip = document.createElement('div');
+    tooltip.className = 'chart-candle-tooltip';
+    tooltip.hidden = true;
+    tooltip.innerHTML = `
+      <div class="chart-candle-tooltip-head" id="candle-tt-time"></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">O</span><span class="chart-candle-tooltip-val" id="candle-tt-o"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">H</span><span class="chart-candle-tooltip-val" id="candle-tt-h"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">L</span><span class="chart-candle-tooltip-val" id="candle-tt-l"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">C</span><span class="chart-candle-tooltip-val" id="candle-tt-c"></span></div>
+      <div class="chart-candle-tooltip-row" id="candle-tt-vol-row"><span class="chart-candle-tooltip-lbl">Vol</span><span class="chart-candle-tooltip-val" id="candle-tt-vol"></span></div>
+    `;
+    container.appendChild(tooltip);
+
+    const timeEl = tooltip.querySelector('#candle-tt-time');
+    const oEl = tooltip.querySelector('#candle-tt-o');
+    const hEl = tooltip.querySelector('#candle-tt-h');
+    const lEl = tooltip.querySelector('#candle-tt-l');
+    const cEl = tooltip.querySelector('#candle-tt-c');
+    const volRow = tooltip.querySelector('#candle-tt-vol-row');
+    const volEl = tooltip.querySelector('#candle-tt-vol');
+
+    this.chart.subscribeCrosshairMove((param) => {
+      if (!param.time || param.point.x < 0 || param.point.y < 0 || !param.seriesData) {
+        tooltip.hidden = true;
+        return;
+      }
+      const candleData = param.seriesData.get(this.candleSeries);
+      if (!candleData || candleData.open == null) {
+        tooltip.hidden = true;
+        return;
+      }
+
+      tooltip.hidden = false;
+
+      let timeStr = String(param.time);
+      if (typeof param.time === 'number') {
+        const d = new Date(param.time * 1000);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const min = String(d.getMinutes()).padStart(2, '0');
+        timeStr = `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+      } else if (param.time.year != null) {
+        timeStr = `${param.time.year}-${String(param.time.month).padStart(2, '0')}-${String(param.time.day).padStart(2, '0')}`;
+      }
+
+      timeEl.textContent = timeStr;
+
+      const fmt = (val) => {
+        if (val == null) return '';
+        if (this._lastPrecision != null) {
+          return val.toFixed(this._lastPrecision);
+        }
+        return String(val);
+      };
+
+      const o = candleData.open;
+      const h = candleData.high;
+      const l = candleData.low;
+      const c = candleData.close;
+
+      oEl.textContent = fmt(o);
+      hEl.textContent = fmt(h);
+      lEl.textContent = fmt(l);
+      cEl.textContent = fmt(c);
+
+      cEl.className = 'chart-candle-tooltip-val ' + (c >= o ? 'bull' : 'bear');
+
+      const volData = this.volumeSeries ? param.seriesData.get(this.volumeSeries) : null;
+      if (volData != null && volData.value != null) {
+        volRow.style.display = 'flex';
+        volEl.textContent = volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : volData.value >= 1000 ? (volData.value / 1000).toFixed(2) + 'K' : String(Math.round(volData.value));
+      } else {
+        volRow.style.display = 'none';
+      }
+
+      const containerWidth = container.clientWidth;
+      const tooltipWidth = tooltip.offsetWidth || 130;
+      const tooltipHeight = tooltip.offsetHeight || 120;
+
+      let left;
+      if (param.point.x > containerWidth / 2) {
+        left = param.point.x - tooltipWidth - 20;
+      } else {
+        left = param.point.x + 20;
+      }
+
+      let top = param.point.y - tooltipHeight / 2;
+      if (top < 10) top = 10;
+      if (top + tooltipHeight > container.clientHeight - 30) top = container.clientHeight - tooltipHeight - 30;
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+    });
   }
 
   _addLineSeries(color, width, title, targetChart) {

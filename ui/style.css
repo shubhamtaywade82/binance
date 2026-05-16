@@ -1837,3 +1837,54 @@ body::before {
 .ms-rv-val { font-size: 11px; font-weight: 600; color: var(--text-primary); }
 
 .ms-stat-val { font-size: 11px; font-weight: 600; }
+
+/* ── Candle Hover Tooltip Panel ──────────────────────────────────────────── */
+.chart-candle-tooltip {
+  position: absolute;
+  z-index: 50;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 20, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 130px;
+  transition: opacity 0.15s ease;
+}
+.chart-candle-tooltip[hidden] {
+  display: none !important;
+}
+.chart-candle-tooltip-head {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+}
+.chart-candle-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.chart-candle-tooltip-lbl {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.chart-candle-tooltip-val {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.chart-candle-tooltip-val.bull { color: var(--bull); }
+.chart-candle-tooltip-val.bear { color: var(--bear); }
