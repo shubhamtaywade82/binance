@@ -26,6 +26,7 @@ import { TrailingStopManager } from './core/execution/trailing-stop-manager';
 import { StructureExitManager } from './core/execution/structure-exit-manager';
 import { TimeStopManager } from './core/execution/time-stop-manager';
 import { FundingExitManager } from './core/execution/funding-exit-manager';
+import { TpLadderManager } from './core/execution/tp-ladder-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
@@ -151,7 +152,12 @@ const main = async (): Promise<void> => {
       if (execution.pgWriter) {
         new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
       }
-      if ((cfg as any).SEYKOTA_ENABLED) {
+      // TpLadderManager fires partial closes at strategy-defined absolute price
+      // targets. AdaptiveStrategy uses it; SeykotaTrendModule's inline partialTpR
+      // path (inside TrailingStopManager) remains for the swing-only profile.
+      new TpLadderManager(defaultEventBus, { intrabar: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR) });
+
+      if ((cfg as any).SEYKOTA_ENABLED || (cfg as any).ADAPTIVE_STRATEGY_ENABLED) {
         const intrabar = Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR);
         new TrailingStopManager(defaultEventBus, {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,

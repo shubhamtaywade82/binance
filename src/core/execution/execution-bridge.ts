@@ -95,6 +95,13 @@ export class ExecutionBridge {
             strategyId: p.strategyId,
             correlationId: p.correlationId,
             reason: (p as any).reason,
+            // Forward strategy-attached exit metadata so the TpLadderManager
+            // and other exit managers can consume it without re-querying.
+            tpLadder: (p as any).tpLadder,
+            trailAfterLadder: (p as any).trailAfterLadder,
+            regime: (p as any).regime,
+            modeId: (p as any).modeId,
+            maxHoldBars: (p as any).maxHoldBars,
           },
         });
       } else {

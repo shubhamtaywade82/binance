@@ -3,6 +3,7 @@ import { SymbolActor } from './symbol-actor';
 import { RiskEngine } from '../risk/risk-engine';
 import { AppConfig } from '../../config';
 import { SmcStrategyModule } from '../../strategy/smc-module';
+import { AdaptiveStrategy } from '../../strategy/adaptive-strategy';
 import { SolMtfStrategyModule } from '../../strategy/sol-mtf-strategy-module';
 import { SeykotaTrendModule } from '../../strategy/seykota-module';
 
@@ -41,6 +42,21 @@ export class ActorSystem {
    */
   private attachDefaultStrategies(symbol: string, actor: SymbolActor): void {
     const cfg = this.cfg as any;
+    if (cfg.ADAPTIVE_STRATEGY_ENABLED) {
+      let modeOverrides: any = undefined;
+      if (typeof cfg.ADAPTIVE_MODE_OVERRIDES_JSON === 'string' && cfg.ADAPTIVE_MODE_OVERRIDES_JSON.trim()) {
+        try { modeOverrides = JSON.parse(cfg.ADAPTIVE_MODE_OVERRIDES_JSON); } catch { /* ignore */ }
+      }
+      actor.addStrategy((ctx) => new AdaptiveStrategy(ctx, {
+        htf: cfg.SEYKOTA_HTF || '1h',
+        equityUsdt: Number(cfg.ADAPTIVE_EQUITY_USDT) || Number(cfg.PAPER_INITIAL_BALANCE_USDT) || 10_000,
+        atrPeriod: Number(cfg.SEYKOTA_ATR_PERIOD) || 14,
+        minBars: Number(cfg.SEYKOTA_MIN_BARS) || 80,
+        cooldownMs: Number(cfg.ADAPTIVE_COOLDOWN_MS) || 5 * 60_000,
+        modeOverrides,
+      }));
+      return;
+    }
     if (cfg.SEYKOTA_ENABLED) {
       actor.addStrategy((ctx) => new SeykotaTrendModule(ctx, {
         htf: cfg.SEYKOTA_HTF,

@@ -575,6 +575,16 @@ export const AppConfigSchema = z.object({
   FUNDING_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
   FUNDING_EXIT_THRESHOLD_BPS: numFromString(50),
 
+  // ── Adaptive (regime-aware) strategy ────────────────────────────────────
+  /** Replace SeykotaTrendModule with AdaptiveStrategy when true. Mutually exclusive. */
+  ADAPTIVE_STRATEGY_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** Equity for sizing math (keep aligned with PAPER_INITIAL_BALANCE_USDT). */
+  ADAPTIVE_EQUITY_USDT: numFromString(10_000),
+  /** Cooldown between consecutive entries per symbol (ms). */
+  ADAPTIVE_COOLDOWN_MS: numFromString(5 * 60_000),
+  /** Optional JSON map to override DEFAULT_MODES (see src/strategy/trade-mode.ts). */
+  ADAPTIVE_MODE_OVERRIDES_JSON: z.string().default(''),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
