@@ -95,7 +95,10 @@ export const renderStrategyHud = (container, signals) => {
               : ''
           }`
         : '';
-    smcBlock = `Score ${smc.score}/5 · Sweep ${smc.liquiditySweep ?? '—'}${liqBit} · OB ${obTxt} · ${fvgTxt} · BOS ${DIR_LABEL[smc.bos] ?? smc.bos} · CH ${DIR_LABEL[smc.choch] ?? smc.choch}`;
+    const verdictBit = smc.signalVerdict && smc.signalVerdict !== 'NONE'
+      ? ` · Verdict: ${smc.signalVerdict} (${(smc.signalReasons ?? []).join(', ')})`
+      : '';
+    smcBlock = `Score ${smc.score}/5 · Sweep ${smc.liquiditySweep ?? '—'}${liqBit} · OB ${obTxt} · ${fvgTxt} · BOS ${DIR_LABEL[smc.bos] ?? smc.bos} · CH ${DIR_LABEL[smc.choch] ?? smc.choch}${verdictBit}`;
   }
 
   const mtf = signals.solMtf;

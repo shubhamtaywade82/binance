@@ -101,6 +101,7 @@ export interface DashboardSignalsPayload {
     /** Swing bar → confirmation bar at `price` (for chart BOS segment). */
     bosLine: { startIndex: number; endIndex: number; price: number } | null;
     chochLine: { startIndex: number; endIndex: number; price: number } | null;
+    idmLine: { startIndex: number; endIndex: number; price: number } | null;
     structPoints: any[];
     swings: any[];
     liquidity: LiquidityEngineResult | null;
@@ -109,6 +110,8 @@ export interface DashboardSignalsPayload {
     /** Bar index in `refPriceTf` series for the liquidity raid candle when `liquidityOrderBook` is resolved. */
     sweepCandleIndex: number | null;
     sweepCandleOpenTime: number | null;
+    signalVerdict: string;
+    signalReasons: string[];
   };
   knnArchitecture: KnnArchitectureResult | null;
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
@@ -860,6 +863,40 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           sweepOrderBookMemoBySym.delete(sym);
         }
 
+        // Compute definitive SMC Execution Verdict
+        let signalVerdict: 'BUY' | 'SELL' | 'NONE' = 'NONE';
+        const signalReasons: string[] = [];
+
+        // 1. Check Bullish Confluence (BUY)
+        const isBullishBias = htfBiasRaw === 'LONG' || smc.choch === 'BULLISH';
+        const hasSellsideSweep = smc.liquiditySweep === 'SHORT' || (smc.idmLine && smc.idmLine.endIndex === refSeries.length - 1);
+        const hasBullishObMitigation = smc.orderBlocks.some(ob => ob.type === 'BULLISH' && ob.isMitigated);
+        const hasBullishFvgMitigation = smc.fvgs.some(fvg => fvg.type === 'BULLISH' && fvg.isFilled);
+
+        if (isBullishBias && (hasSellsideSweep || hasBullishObMitigation || hasBullishFvgMitigation)) {
+          signalVerdict = 'BUY';
+          if (htfBiasRaw === 'LONG') signalReasons.push('HTF Bullish Bias');
+          if (smc.choch === 'BULLISH') signalReasons.push('Bullish CHoCH');
+          if (smc.liquiditySweep === 'SHORT') signalReasons.push('Sellside Liquidity Sweep');
+          if (hasBullishObMitigation) signalReasons.push('Bullish OB Mitigation');
+          if (hasBullishFvgMitigation) signalReasons.push('Bullish FVG Mitigation');
+        }
+
+        // 2. Check Bearish Confluence (SELL)
+        const isBearishBias = htfBiasRaw === 'SHORT' || smc.choch === 'BEARISH';
+        const hasBuysideSweep = smc.liquiditySweep === 'LONG' || (smc.idmLine && smc.idmLine.endIndex === refSeries.length - 1);
+        const hasBearishObMitigation = smc.orderBlocks.some(ob => ob.type === 'BEARISH' && ob.isMitigated);
+        const hasBearishFvgMitigation = smc.fvgs.some(fvg => fvg.type === 'BEARISH' && fvg.isFilled);
+
+        if (isBearishBias && (hasBuysideSweep || hasBearishObMitigation || hasBearishFvgMitigation)) {
+          signalVerdict = 'SELL';
+          if (htfBiasRaw === 'SHORT') signalReasons.push('HTF Bearish Bias');
+          if (smc.choch === 'BEARISH') signalReasons.push('Bearish CHoCH');
+          if (smc.liquiditySweep === 'LONG') signalReasons.push('Buyside Liquidity Sweep');
+          if (hasBearishObMitigation) signalReasons.push('Bearish OB Mitigation');
+          if (hasBearishFvgMitigation) signalReasons.push('Bearish FVG Mitigation');
+        }
+
         return {
           refPrice,
           refPriceTf: effectiveTf,
@@ -881,12 +918,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             choch: smc.choch,
             bosLine: smc.bosLine,
             chochLine: smc.chochLine,
+            idmLine: smc.idmLine,
             structPoints: smc.structPoints,
             swings: smc.swings,
             liquidity: smc.liquidity,
             liquidityOrderBook,
             sweepCandleIndex,
             sweepCandleOpenTime,
+            signalVerdict,
+            signalReasons,
           },
           knnArchitecture,
           solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,

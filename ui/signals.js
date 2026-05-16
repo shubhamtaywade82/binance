@@ -20,6 +20,9 @@ export const computeSignalVerdict = (s) => {
   const conf = s.ltfConfidence ?? 0;
   const pass = s.solMtf?.pass;
 
+  if (s.smc?.signalVerdict && s.smc.signalVerdict !== 'NONE') {
+    return { text: `SMC ${s.smc.signalVerdict}`, cls: DIR_CLASS[s.smc.signalVerdict] ?? 'neutral' };
+  }
   if (pass) return { text: `MTF ${s.solMtf.direction}`, cls: DIR_CLASS[s.solMtf.direction] ?? 'neutral' };
   if (htf === ltf && htf !== 'NONE' && conf >= 0.6) {
     return { text: `${htf} SIGNAL`, cls: DIR_CLASS[htf] };

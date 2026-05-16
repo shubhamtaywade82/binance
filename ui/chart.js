@@ -567,6 +567,11 @@ export class ChartManager {
       if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE' && !hasLiqSweepMarker) {
         markers.push({ time: lastT, position: 'inBar', shape: 'circle', color: '#ff80ab', text: 'LS' });
       }
+      if (smc.signalVerdict === 'BUY') {
+        markers.push({ time: lastT, position: 'belowBar', shape: 'arrowUp', color: '#00e676', text: 'BUY (SMC)' });
+      } else if (smc.signalVerdict === 'SELL') {
+        markers.push({ time: lastT, position: 'aboveBar', shape: 'arrowDown', color: '#ff5252', text: 'SELL (SMC)' });
+      }
 
       // 9. Structure Segments
       const pushSmcStructureSegment = (line, color, label, position) => {
