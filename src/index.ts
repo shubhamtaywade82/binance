@@ -138,13 +138,19 @@ const main = async (): Promise<void> => {
         new TrailingStopManager(defaultEventBus, {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
           defaultAtrPct: (cfg as any).SEYKOTA_MIN_ATR_PCT,
-          klineOnly: true,
+          klineOnly: (cfg as any).SEYKOTA_KLINE_ONLY,
+          partialTpR: (cfg as any).SEYKOTA_PARTIAL_TP_R,
+          partialTpPct: (cfg as any).SEYKOTA_PARTIAL_TP_PCT,
+          smcExitEnabled: (cfg as any).SEYKOTA_SMC_EXIT_ENABLED,
         });
         log.info('seykota_trend_follower_wired', {
           htf: (cfg as any).SEYKOTA_HTF,
           adxThreshold: (cfg as any).SEYKOTA_ADX_THRESHOLD,
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
           riskPct: (cfg as any).SEYKOTA_RISK_PCT,
+          klineOnly: (cfg as any).SEYKOTA_KLINE_ONLY,
+          partialTpR: (cfg as any).SEYKOTA_PARTIAL_TP_R,
+          smcExit: (cfg as any).SEYKOTA_SMC_EXIT_ENABLED,
         });
       }
       log.info('event_bus_execution_wired', { adapter: adapter.name });

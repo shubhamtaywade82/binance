@@ -1,6 +1,6 @@
 import { StrategyModule, StrategyContext } from '../core/strategy/strategy-module';
 import { Candle } from '../types';
-import { OrderRequestedPayload } from '@coindcx/contracts';
+import { OrderRequestedPayload, DomainEvent } from '@coindcx/contracts';
 import { ema, atr, adx } from './indicators';
 
 export interface SeykotaConfig {
@@ -29,6 +29,10 @@ export interface SeykotaConfig {
   equityUsdt: number;
   /** Min bars of history before strategy can emit. */
   minBars: number;
+  /** Max pyramiding additions. 0 to disable. */
+  pyramidMaxAdds?: number;
+  /** Distance in R-multiples to add a pyramid position. */
+  pyramidRDistance?: number;
 }
 
 export const DEFAULT_SEYKOTA: SeykotaConfig = {
@@ -43,6 +47,8 @@ export const DEFAULT_SEYKOTA: SeykotaConfig = {
   riskPct: 0.005,
   equityUsdt: 10_000,
   minBars: 80,
+  pyramidMaxAdds: 0,
+  pyramidRDistance: 1.0,
 };
 
 /**
@@ -53,17 +59,37 @@ export const DEFAULT_SEYKOTA: SeykotaConfig = {
  *   3. Regime filter: ADX >= adxThreshold AND ATR/price >= minAtrPct (chop kill)
  *   4. Sizing: position size = (equity * riskPct) / (atrMult * atr)
  *   5. Initial stop emitted on the order; trailing stop handled externally
- *      by TrailingStopManager (subscribes execution.order.filled).
- *   6. Pyramiding intentionally NOT implemented — RiskEngine's opposite-side
- *      guard also blocks adds in same direction by current design.
- *      (Pyramiding will land in Phase 2 with a position-add event type.)
- *
- * Returns OrderRequestedPayload directly so SignalToOrderBridge sizing is
- * bypassed — Seykota owns its own volatility sizing.
+ *      by TrailingStopManager.
+ *   6. Pyramiding: if enabled, emits additional buy/sell signals when the trade 
+ *      moves in favor by pyramidRDistance * ATR from the last fill.
  */
 export class SeykotaTrendModule extends StrategyModule {
+  private lastEntryPrice = 0;
+  private pyramidCount = 0;
+  private inPosition = false;
+
   constructor(ctx: StrategyContext, private readonly cfg: SeykotaConfig = DEFAULT_SEYKOTA) {
     super(ctx);
+    // Subscribe to position events to track local state for pyramiding
+    this.ctx.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => {
+      const sym = e.symbol || (e.payload as any)?.symbol;
+      if (sym === this.ctx.symbol) {
+        this.inPosition = true;
+        this.lastEntryPrice = Number((e.payload as any).price);
+        if ((e.payload as any).reason === 'PYRAMID') {
+          this.pyramidCount++;
+        } else {
+          this.pyramidCount = 0;
+        }
+      }
+    });
+    this.ctx.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => {
+      const sym = e.symbol || (e.payload as any)?.symbol;
+      if (sym === this.ctx.symbol && (e.payload as any).reason !== 'PARTIAL_TP') {
+        this.inPosition = false;
+        this.pyramidCount = 0;
+      }
+    });
   }
 
   public getName(): string {
@@ -84,10 +110,10 @@ export class SeykotaTrendModule extends StrategyModule {
 
     const closes = ltf.map((c) => c.close);
     const fast = ema(closes, this.cfg.fastEma);
-    const last = fast[fast.length - 1];
-    if (!Number.isFinite(last)) return null;
-    if (htfBias === 'LONG' && candle.close < last) return null;
-    if (htfBias === 'SHORT' && candle.close > last) return null;
+    const lastFast = fast[fast.length - 1];
+    if (!Number.isFinite(lastFast)) return null;
+    if (htfBias === 'LONG' && candle.close < lastFast) return null;
+    if (htfBias === 'SHORT' && candle.close > lastFast) return null;
 
     const adxSeries = adx(ltf, this.cfg.adxPeriod);
     const adxLast = adxSeries.adx[adxSeries.adx.length - 1];
@@ -101,6 +127,18 @@ export class SeykotaTrendModule extends StrategyModule {
     const atrLast = atrSeries[atrSeries.length - 1];
     if (!Number.isFinite(atrLast) || atrLast <= 0) return null;
     if (atrLast / candle.close < this.cfg.minAtrPct) return null;
+
+    // Pyramiding Check
+    if (this.inPosition) {
+      if (!this.cfg.pyramidMaxAdds || this.pyramidCount >= this.cfg.pyramidMaxAdds) return null;
+      
+      const rDist = (this.cfg.pyramidRDistance ?? 1.0) * atrLast;
+      const isProfitableEnough = htfBias === 'LONG' 
+        ? candle.close >= this.lastEntryPrice + rDist
+        : candle.close <= this.lastEntryPrice - rDist;
+      
+      if (!isProfitableEnough) return null;
+    }
 
     const stopDistance = this.cfg.atrMult * atrLast;
     if (stopDistance <= 0) return null;
@@ -121,12 +159,13 @@ export class SeykotaTrendModule extends StrategyModule {
       price: candle.close,
       stopLoss,
       strategyId: this.getName(),
+      reason: this.inPosition ? 'PYRAMID' : 'ENTRY',
       score: {
         adx: adxLast,
         atrPct: atrLast / candle.close,
         closeTime: candle.closeTime ?? candle.openTime,
       },
-    };
+    } as any;
   }
 
   /** Fast EMA > slow EMA + fast EMA slope agrees → trend; else FLAT. */

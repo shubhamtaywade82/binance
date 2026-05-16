@@ -49,6 +49,7 @@ export class ExecutionBridge {
       referencePrice: p.price,
       takeProfit: p.takeProfit,
       stopLoss: p.stopLoss,
+      reason: (p as any).reason,
     };
 
     this.seq += 1;
@@ -91,6 +92,7 @@ export class ExecutionBridge {
             latencyMs: result.fill.latencyMs,
             strategyId: p.strategyId,
             correlationId: p.correlationId,
+            reason: (p as any).reason,
           },
         });
       } else {

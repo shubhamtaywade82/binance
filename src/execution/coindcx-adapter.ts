@@ -110,12 +110,13 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId, fill };
   }
 
-  async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
+  async closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
     const open = this.orders.get(orderId);
     if (!open) throw new Error(`live_close_unknown_order:${orderId}`);
+    const qtyToClose = quantity ?? open.quantity;
     let exitPrice = open.entryPrice;
     try {
-      await this.opts.client.exitFuturesPosition({ pair: open.pair, quantity: open.quantity });
+      await this.opts.client.exitFuturesPosition({ pair: open.pair, quantity: qtyToClose });
     } catch {
       // best-effort
     }

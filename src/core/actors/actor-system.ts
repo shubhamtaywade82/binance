@@ -54,6 +54,8 @@ export class ActorSystem {
         riskPct: cfg.SEYKOTA_RISK_PCT,
         equityUsdt: cfg.SEYKOTA_EQUITY_USDT,
         minBars: cfg.SEYKOTA_MIN_BARS,
+        pyramidMaxAdds: cfg.SEYKOTA_PYRAMID_MAX_ADDS,
+        pyramidRDistance: cfg.SEYKOTA_PYRAMID_R_DISTANCE,
       }));
       return;
     }

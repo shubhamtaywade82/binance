@@ -50,6 +50,7 @@ import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
 import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
+import { swingHighsLows } from './strategy/indicators';
 import { evaluateSwingSignal } from './strategy/swing-strategy';
 import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
@@ -60,7 +61,7 @@ import {
   type PositionRiskLike,
 } from './strategy/correlation-guard';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
-import type { Candle, Side, TrendBias, DashboardPosition } from './types';
+import type { Candle, Side, TrendBias, DashboardPosition, CloseReason } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { TradeAttribution } from './execution/types';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
@@ -518,6 +519,23 @@ export class HybridOrchestrator {
       }
     }
     if (!accepted || !isFinal) return;
+
+    // --- Structure Break Logic (SMC) ---
+    if (tf === this.ltfTf || (tierFor(symU) && tf === tierFor(symU)?.ltf)) {
+      const pos = this.positionManager.getPosition(symU);
+      if (pos) {
+        const series = this.store.getSeries(symU, tf);
+        const swings = swingHighsLows(series, 5);
+        if (pos.side === 'LONG' && swings.lows.length > 0) {
+          const lastLow = swings.lows[swings.lows.length - 1].price;
+          this.positionManager.updateStructureBreakPrice(symU, lastLow);
+        } else if (pos.side === 'SHORT' && swings.highs.length > 0) {
+          const lastHigh = swings.highs[swings.highs.length - 1].price;
+          this.positionManager.updateStructureBreakPrice(symU, lastHigh);
+        }
+      }
+    }
+
     if (isPrimary && tf === this.ltfTf) void this.evaluate(candle);
     if (this.cfg.ENABLE_MULTI_ASSET) {
       const tier = tierFor(symU);
@@ -1220,7 +1238,7 @@ export class HybridOrchestrator {
             source: 'exchange_algo',
             ts: Date.now(),
           });
-          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason);
+          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason as CloseReason);
         }
       }
     }
@@ -1399,7 +1417,16 @@ export class HybridOrchestrator {
 
   private async evaluate(ltfBar: Candle): Promise<void> {
     const primary = this.pairs.binanceSymbol.toUpperCase();
-    if (this.positionManager.hasOpenPosition(primary)) return;
+    const existing = this.positionManager.getPosition(primary);
+    
+    // Pyramiding check (placeholder for logic: only add if current position is in profit)
+    const isPyramid = !!existing;
+    if (isPyramid) {
+       // Only pyramid if not already maxed out or if specific conditions met
+       // For now, we still return if position exists unless we explicitly allow it.
+       if (!this.cfg.ALLOW_PYRAMIDING) return;
+    }
+
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;

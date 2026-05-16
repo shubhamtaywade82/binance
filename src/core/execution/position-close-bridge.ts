@@ -33,8 +33,9 @@ export class PositionCloseBridge {
     this.inFlight.add(orderId);
 
     const reason: CloseReason = (p?.reason as CloseReason) ?? 'MANUAL';
+    const quantity: number | undefined = p?.quantity;
     try {
-      const closed = await this.adapter.closePosition(orderId, reason);
+      const closed = await this.adapter.closePosition(orderId, reason, quantity);
       this.seq += 1;
       this.eventBus.publish({
         id: `pos-closed-${orderId}-${this.seq}`,

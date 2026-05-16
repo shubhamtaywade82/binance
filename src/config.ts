@@ -502,6 +502,18 @@ export const AppConfigSchema = z.object({
   SEYKOTA_EQUITY_USDT: numFromString(10_000),
   /** Min bars in history before strategy can fire. */
   SEYKOTA_MIN_BARS: numFromString(80),
+  /** Close on close-of-bar breach only. Set false for intrabar wick protection. */
+  SEYKOTA_KLINE_ONLY: boolFromString(true),
+  /** R-multiple at which to book a partial profit (e.g. 1.0 = entry + 1*ATR_dist). 0 to disable. */
+  SEYKOTA_PARTIAL_TP_R: numFromString(0),
+  /** Fraction of position to close at SEYKOTA_PARTIAL_TP_R (0.5 = 50%). */
+  SEYKOTA_PARTIAL_TP_PCT: numFromString(0.5),
+  /** Enable SMC structure-break (CHoCH) exit. Requires SMC analysis. */
+  SEYKOTA_SMC_EXIT_ENABLED: boolFromString(false),
+  /** Max number of pyramiding additions to a winning trade. 0 to disable. */
+  SEYKOTA_PYRAMID_MAX_ADDS: numFromString(0),
+  /** R-multiple distance between pyramid additions (e.g. 1.0 = add every +1R). */
+  SEYKOTA_PYRAMID_R_DISTANCE: numFromString(1.0),
 
   // ── Paper hot-state Redis cache ─────────────────────────────────────────
   /**
@@ -640,6 +652,10 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
       return n;
     }),
+  /** Optional JSON string for default partial profit targets: `[{"r":1, "pct":0.5}]` */
+  DEFAULT_PARTIAL_TARGETS_JSON: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Allow adding to an existing position in the same direction. */
+  ALLOW_PYRAMIDING: boolFromString(false),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

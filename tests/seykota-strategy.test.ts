@@ -3,6 +3,7 @@ import { adx } from '../src/strategy/indicators';
 import { SeykotaTrendModule, DEFAULT_SEYKOTA } from '../src/strategy/seykota-module';
 import type { StrategyContext } from '../src/core/strategy/strategy-module';
 import type { Candle } from '../src/types';
+import { EventBus } from '../src/core/events/event-bus';
 
 function makeCandles(n: number, gen: (i: number) => Partial<Candle> & { close: number }): Candle[] {
   return Array.from({ length: n }, (_, i) => {
@@ -20,11 +21,12 @@ function makeCandles(n: number, gen: (i: number) => Partial<Candle> & { close: n
   });
 }
 
-function ctx(symbol: string, ltf: Candle[], htf: Candle[]): StrategyContext {
+function ctx(symbol: string, ltf: Candle[], htf: Candle[], bus = new EventBus()): StrategyContext {
   return {
     symbol,
     timeframe: '15m',
     getHistory: (tf?: string) => (tf && tf !== '15m' ? htf : ltf),
+    eventBus: bus,
   };
 }
 
@@ -94,5 +96,30 @@ describe('SeykotaTrendModule', () => {
     const downHtf = makeCandles(160, (i) => ({ close: 200 - i * 0.6 }));
     const s = new SeykotaTrendModule(ctx('BTCUSDT', upLtf, downHtf), cfg);
     expect(s.onKline(upLtf[upLtf.length - 1])).toBeNull();
+  });
+
+  it('emits PYRAMID signal when price moves in favor after first fill', () => {
+    const bus = new EventBus();
+    const up = makeCandles(160, (i) => ({
+      close: 100 + i * 0.6,
+      high: 100 + i * 0.6 + 0.4,
+      low: 100 + i * 0.6 - 0.2,
+    }));
+    const s = new SeykotaTrendModule(ctx('SOLUSDT', up, up, bus), { ...cfg, pyramidMaxAdds: 2 });
+
+    // 1. Initial entry
+    const out1 = s.onKline(up[up.length - 2]);
+    expect(out1?.reason).toBe('ENTRY');
+
+    // 2. Simulate FILL
+    bus.publish({
+      type: 'execution.order.filled',
+      symbol: 'SOLUSDT',
+      payload: { symbol: 'SOLUSDT', side: 'LONG', price: 190, quantity: 10 }
+    });
+
+    // 3. Next kline is further in favor → PYRAMID
+    const out2 = s.onKline(up[up.length - 1]);
+    expect(out2?.reason).toBe('PYRAMID');
   });
 });

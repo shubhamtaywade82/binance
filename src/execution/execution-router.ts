@@ -50,8 +50,8 @@ export class ExecutionRouter implements ExecutionAdapter {
     return this.current.placeOrder(req);
   }
 
-  closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
-    return this.current.closePosition(orderId, reason);
+  closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
+    return this.current.closePosition(orderId, reason, quantity);
   }
 
   onMark(symbol: string, markPrice: number): void {

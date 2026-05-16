@@ -33,6 +33,7 @@ export class SymbolActor {
       symbol: this.symbol,
       timeframe: this.executionTf,
       getHistory: (tf?: string) => this.store.getSeries(this.symbol, tf ?? this.executionTf),
+      eventBus: this.eventBus,
     };
     const strategy = factory(ctx);
     this.strategies.push(strategy);

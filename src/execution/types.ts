@@ -11,6 +11,8 @@ export interface OrderRequest {
   stopLoss?: number;
   /** Optional strategy tier ('scalp' | 'swing') for persistence/dashboard tagging. */
   tier?: string;
+  /** Optional reason for entry (e.g. 'ENTRY', 'PYRAMID'). */
+  reason?: string;
 }
 
 export interface Fill {
@@ -30,7 +32,7 @@ export interface OrderResult {
   error?: string;
 }
 
-export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL';
+export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL' | 'PARTIAL_TP' | 'TRAIL' | 'SMC_EXIT';
 
 export interface TradeAttribution {
   entrySignal?: string;
@@ -61,7 +63,7 @@ export interface ClosedPosition {
 export interface ExecutionAdapter {
   name: ExecutionMode;
   placeOrder(req: OrderRequest): Promise<OrderResult>;
-  closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition>;
+  closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition>;
   onMark?(symbol: string, markPrice: number): void;
   setLeverage?(pair: string, lev: number): Promise<void>;
 }

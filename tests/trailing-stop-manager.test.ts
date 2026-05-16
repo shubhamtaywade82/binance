@@ -66,4 +66,26 @@ describe('TrailingStopManager', () => {
     });
     expect(mgr.getPositions().size).toBe(0);
   });
+
+  it('emits partial close request when target R reached', () => {
+    new TrailingStopManager(bus, { atrMult: 3, partialTpR: 1.0, partialTpPct: 0.5 });
+    pubFill('SOLUSDT', 'LONG', 100, 97); // atr=1
+    pubKline('SOLUSDT', 101.5, 101.6, 101.4); // +1.5R reached
+    
+    const partials = captured.filter((e) => e.payload?.reason === 'PARTIAL_TP');
+    expect(partials).toHaveLength(1);
+    expect(partials[0].payload).toMatchObject({ symbol: 'SOLUSDT', quantity: 0.5 });
+  });
+
+  it('emits close request on BEARISH CHoCH while LONG', () => {
+    new TrailingStopManager(bus, { smcExitEnabled: true });
+    pubFill('SOLUSDT', 'LONG', 100, 97);
+    bus.publish({
+      id: 'k-smc', type: 'market.kline.closed', ts: 4, symbol: 'SOLUSDT',
+      payload: { close: 101, smc: { choch: 'BEARISH' } },
+    });
+    
+    const smcExits = captured.filter((e) => e.payload?.reason === 'SMC_EXIT');
+    expect(smcExits).toHaveLength(1);
+  });
 });

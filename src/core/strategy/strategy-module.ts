@@ -1,10 +1,12 @@
 import { Candle } from '../../types';
 import { SignalPayload, OrderRequestedPayload } from '@coindcx/contracts';
+import { EventBus } from '../events/event-bus';
 
 export interface StrategyContext {
   symbol: string;
   timeframe: string;
   getHistory(timeframe?: string): Candle[];
+  eventBus: EventBus;
 }
 
 export abstract class StrategyModule {

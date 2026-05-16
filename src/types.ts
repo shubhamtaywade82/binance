@@ -13,7 +13,7 @@ export type TrendBias = 'LONG' | 'SHORT' | 'NONE';
 
 export type Side = 'LONG' | 'SHORT';
 
-export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL';
+export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL' | 'PARTIAL_TP' | 'TRAIL' | 'SMC_EXIT';
 
 export interface Position {
   side: Side;
@@ -25,6 +25,7 @@ export interface Position {
   pair: string;
   notionalUsdt: number;
   marginInr: number;
+  initialStopDistance?: number;
 }
 
 export interface DashboardPosition {
