@@ -23,6 +23,9 @@ import { ActorSystem } from './core/actors/actor-system';
 import { SignalToOrderBridge } from './core/execution/signal-to-order-bridge';
 import { ExecutionBridge } from './core/execution/execution-bridge';
 import { TrailingStopManager } from './core/execution/trailing-stop-manager';
+import { StructureExitManager } from './core/execution/structure-exit-manager';
+import { TimeStopManager } from './core/execution/time-stop-manager';
+import { FundingExitManager } from './core/execution/funding-exit-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
@@ -135,14 +138,38 @@ const main = async (): Promise<void> => {
         new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
       }
       if ((cfg as any).SEYKOTA_ENABLED) {
+        const intrabar = Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR);
         new TrailingStopManager(defaultEventBus, {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
           defaultAtrPct: (cfg as any).SEYKOTA_MIN_ATR_PCT,
-          klineOnly: (cfg as any).SEYKOTA_KLINE_ONLY,
-          partialTpR: (cfg as any).SEYKOTA_PARTIAL_TP_R,
-          partialTpPct: (cfg as any).SEYKOTA_PARTIAL_TP_PCT,
-          smcExitEnabled: (cfg as any).SEYKOTA_SMC_EXIT_ENABLED,
+          klineOnly: !intrabar,
+          partialTpR: (cfg as any).PARTIAL_TP_ENABLED ? Number((cfg as any).PARTIAL_TP_R) : 0,
+          partialTpPct: Number((cfg as any).PARTIAL_TP_FRACTION) || 0.5,
+          smcExitEnabled: false, // handled by StructureExitManager below
         });
+
+        if ((cfg as any).STRUCTURE_EXIT_ENABLED) {
+          new StructureExitManager(defaultEventBus, {
+            swingLookback: Number((cfg as any).STRUCTURE_SWING_LOOKBACK) || 5,
+            bufferBars: Math.max(60, Number((cfg as any).STRUCTURE_SWING_LOOKBACK) * 12),
+          });
+        }
+        if ((cfg as any).TIME_STOP_ENABLED) {
+          new TimeStopManager(defaultEventBus, {
+            barsThreshold: Number((cfg as any).TIME_STOP_BARS) || 24,
+          });
+        }
+        if ((cfg as any).FUNDING_EXIT_ENABLED && execution.paperAdapter) {
+          // Reach into the paper runtime to grab the FundingEngine instance.
+          const fundingEngine = (execution as any).paperFundingEngine ?? (execution.paperAdapter as any).opts?.funding;
+          if (fundingEngine) {
+            new FundingExitManager(defaultEventBus, fundingEngine, {
+              perTickThresholdBps: Number((cfg as any).FUNDING_EXIT_THRESHOLD_BPS) || 50,
+            });
+          } else {
+            log.warn('funding_exit_no_engine', { hint: 'paper adapter did not expose FundingEngine' });
+          }
+        }
         log.info('seykota_trend_follower_wired', {
           htf: (cfg as any).SEYKOTA_HTF,
           adxThreshold: (cfg as any).SEYKOTA_ADX_THRESHOLD,

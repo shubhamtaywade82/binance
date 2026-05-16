@@ -553,6 +553,28 @@ export const AppConfigSchema = z.object({
   CORRELATION_PAIRS_JSON: z.string().default(''),
   CORRELATION_THRESHOLD: numFromString(0.7),
 
+  // ── Exit managers (event-bus path) ───────────────────────────────────────
+  /** Trail reacts on every bookticker tick (not only kline.closed). Protects wicks. */
+  SEYKOTA_TRAIL_INTRABAR: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+
+  /** Partial close at +Nx initial-risk distance. PARTIAL_TP_R=1 → +1R. */
+  PARTIAL_TP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  PARTIAL_TP_R: numFromString(1),
+  /** Fraction of qty to close at the partial-TP trigger. */
+  PARTIAL_TP_FRACTION: numFromString(0.5),
+
+  /** Time stop: close if position has been open ≥ N bars AND net is negative. */
+  TIME_STOP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  TIME_STOP_BARS: numFromString(24),
+
+  /** Structure exit: close LONG if recent swing low broken (and vice versa for SHORT). */
+  STRUCTURE_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  STRUCTURE_SWING_LOOKBACK: numFromString(20),
+
+  /** Funding-aware exit: close before next funding tick when |rate|*8h > threshold bps and adverse. */
+  FUNDING_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  FUNDING_EXIT_THRESHOLD_BPS: numFromString(50),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).

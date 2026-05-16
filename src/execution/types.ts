@@ -32,7 +32,17 @@ export interface OrderResult {
   error?: string;
 }
 
-export type CloseReason = 'TP' | 'SL' | 'REVERSAL' | 'LIQUIDATION' | 'MANUAL' | 'PARTIAL_TP' | 'TRAIL' | 'SMC_EXIT';
+export type CloseReason =
+  | 'TP'
+  | 'SL'
+  | 'REVERSAL'
+  | 'LIQUIDATION'
+  | 'MANUAL'
+  | 'PARTIAL_TP'
+  | 'TRAIL'
+  | 'SMC_EXIT'
+  | 'TIME_STOP'
+  | 'FUNDING_KICK';
 
 export interface TradeAttribution {
   entrySignal?: string;

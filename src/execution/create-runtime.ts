@@ -29,6 +29,7 @@ export interface ExecutionRuntime {
   router?: ExecutionRouter;
   /** Present only when EXECUTION_MODE=paper. */
   paperAdapter?: PaperExecutionAdapter;
+  paperFundingEngine?: FundingEngine;
   /** Shared database writer for dashboard persistence. */
   pgWriter?: PgWriter;
 }
@@ -195,6 +196,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     book,
     router: paperRouter,
     paperAdapter,
+    paperFundingEngine: funding,
     pgWriter,
     stopFunding: () => funding.stop(),
     stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
