@@ -2069,6 +2069,15 @@ export class ChartManager {
       });
     }
 
+    const scrollRealtimeBtn = document.getElementById('btn-scroll-realtime');
+    if (scrollRealtimeBtn) {
+      scrollRealtimeBtn.addEventListener('click', () => {
+        if (this.chart) {
+          this.chart.timeScale().scrollToRealTime();
+        }
+      });
+    }
+
     document.querySelectorAll('.tf-btn').forEach((b) => {
       b.classList.toggle('active', b.dataset.tf === this.currentTf);
     });

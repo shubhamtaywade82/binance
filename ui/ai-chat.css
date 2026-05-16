@@ -27,8 +27,12 @@
 }
 
 #ai-main {
+  position: fixed;
+  top: var(--topbar-h);
+  bottom: 0;
+  left: 0;
+  right: 0;
   display: flex;
-  height: calc(100vh - 48px);
   overflow: hidden;
 }
 

@@ -2,12 +2,13 @@ const MAX_STORED_MESSAGES = 100;
 const STORAGE_PREFIX = 'ai-chat-history-';
 
 export class AiChat {
-  constructor({ messagesEl, inputEl, sendBtn, clearBtn, contextToggle, getSymbol }) {
+  constructor({ messagesEl, inputEl, sendBtn, clearBtn, contextToggle, nanopineToggle, getSymbol }) {
     this._messagesEl = messagesEl;
     this._inputEl = inputEl;
     this._sendBtn = sendBtn;
     this._clearBtn = clearBtn;
     this._contextToggle = contextToggle;
+    this._nanopineToggle = nanopineToggle;
     this._getSymbol = getSymbol;
     this._messages = [];
     this._streaming = false;
@@ -73,12 +74,15 @@ export class AiChat {
 
     try {
       const includeContext = this._contextToggle?.checked !== false;
+      const isNanopine = this._nanopineToggle?.checked === true;
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: this._messages.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
           context: includeContext,
+          nanopine: isNanopine,
+          symbol: this._getSymbol(),
         }),
         signal: this._abortController.signal,
       });

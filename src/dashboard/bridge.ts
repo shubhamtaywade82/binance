@@ -218,10 +218,19 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const chatOllamaHost = cfg.OLLAMA_TARGET === 'cloud' ? ollamaApiUrl('cloud') : ollamaApiUrl('local');
   const chatApiKey = (cfg.OLLAMA_API_KEY || '').trim();
 
-  const buildMarketContext = (): string => {
-    const s = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+  const buildMarketContext = (activeSymbol: string): string => {
+    const s = computeSignalsForSymbol(activeSymbol, defaultChartRefTf());
+    const watchlistPrices: Record<string, number> = {};
+    for (const sym of watchlistSymbols) {
+      watchlistPrices[sym] = lastMarkBySym.get(sym) ?? 0;
+    }
+
+    const micro = snapshotMicrostructure(tapeFor(activeSymbol), obFor(activeSymbol));
+    const recentTrades = tapeFor(activeSymbol).recent(10);
+    const topBook = obFor(activeSymbol).topLevels(3);
+
     const parts: string[] = [
-      `Symbol: ${symbolUpper}`,
+      `Active Symbol: ${activeSymbol}`,
       `Price: ${s.refPrice}`,
       `HTF Bias: ${s.htfBias}`,
       `LTF: direction=${s.ltfDirection}, confidence=${s.ltfConfidence}, score=${s.ltfScore}`,
@@ -237,6 +246,13 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     if (s.solMtf) {
       parts.push(`SOL MTF: pass=${s.solMtf.pass}, direction=${s.solMtf.direction}`);
     }
+
+    parts.push(`Watchlist Prices: ${JSON.stringify(watchlistPrices)}`);
+    parts.push(`Microstructure: imbalance30s=${micro.tfi30s.tfi.toFixed(3)}, vwap30s=${(micro.tfi30s.buyVol + micro.tfi30s.sellVol).toFixed(2)}, spreadBps=${micro.spreadBps?.toFixed(1) ?? 'N/A'}, weightedObi10=${micro.weightedObi10.weightedObi.toFixed(3)}`);
+    parts.push(`Order Book Top (Asks): ${topBook.asks.slice(0, 2).map(a => `${a.price}@${a.qty}`).join(', ')}`);
+    parts.push(`Order Book Top (Bids): ${topBook.bids.slice(0, 2).map(b => `${b.price}@${b.qty}`).join(', ')}`);
+    parts.push(`Recent Trades: ${recentTrades.slice(0, 5).map(t => `${t.makerSide ? 'S' : 'B'} ${t.price}@${t.qty}`).join(' | ')}`);
+
     parts.push(`Timeframe: ${s.signalMeta?.trendSeriesTf ?? 'unknown'}, HTF: ${s.signalMeta?.htf ?? 'unknown'}`);
     return parts.join('\n');
   };
@@ -251,14 +267,14 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     let total = 0;
     for await (const chunk of req) {
       total += (chunk as Buffer).length;
-      if (total > 32 * 1024) {
+      if (total > 64 * 1024) { // Increased limit for larger context
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request too large' }));
         return;
       }
       chunks.push(chunk as Buffer);
     }
-    let body: { messages?: { role: string; content: string }[]; context?: boolean };
+    let body: { messages?: { role: string; content: string }[]; context?: boolean; symbol?: string; nanopine?: boolean };
     try {
       body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     } catch {
@@ -274,10 +290,26 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       return;
     }
 
+    const activeSymbol = (body.symbol || symbolUpper).toUpperCase();
     const includeContext = body.context !== false;
-    const systemMsg = includeContext
-      ? `You are QuantumTrade AI, an expert crypto trading assistant. You have real-time market data:\n\n${buildMarketContext()}\n\nUse this data to give specific, actionable trading analysis. Be concise and precise.`
-      : 'You are QuantumTrade AI, an expert crypto trading assistant. Be concise and precise.';
+    const isNanopineMode = body.nanopine === true;
+
+    let systemMsg = `You are QuantumTrade AI, an expert crypto trading assistant.`;
+    if (includeContext) {
+      systemMsg += `\n\nYou have real-time market data for ${activeSymbol}:\n\n${buildMarketContext(activeSymbol)}\n\n`;
+    }
+
+    if (isNanopineMode) {
+      systemMsg += `You are in NANOPINE SCRIPT MODE. Your primary goal is to help the user write, debug, and optimize NanoPine scripts for this trading bot. 
+NanoPine is a domain-specific language for strategy signals.
+Syntax examples:
+- "signal: LONG when close > ema(20)"
+- "signal: SHORT when rsi(14) > 70 and supertrend(10, 3) == -1"
+- "config: { \"riskPct\": 0.01 }"
+Be precise with syntax. Do not explain things unless asked. Focus on generating valid NanoPine code snippets.`;
+    } else {
+      systemMsg += `Give specific, actionable trading analysis based on technical indicators, SMC structure, and order book microstructure. Be concise and professional.`;
+    }
 
     const messages = [
       { role: 'system' as const, content: systemMsg },
