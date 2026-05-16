@@ -218,6 +218,10 @@ export class PgWriter {
     }
   }
 
+  /** Hard cap to prevent OOM when Postgres falls behind. Drops oldest on overflow. */
+  private readonly queueMaxLen = Number(process.env.PG_WRITER_QUEUE_MAX || 10_000);
+  private droppedEvents = 0;
+
   async appendEvent(e: {
     id: string;
     type: string;
@@ -229,6 +233,16 @@ export class PgWriter {
     if (!this.pool) return;
 
     this.eventQueue.push(e);
+
+    if (this.eventQueue.length > this.queueMaxLen) {
+      // Backpressure: drop oldest. Better to lose events than to OOM the bot.
+      const drop = this.eventQueue.length - this.queueMaxLen;
+      this.eventQueue.splice(0, drop);
+      this.droppedEvents += drop;
+      if (this.droppedEvents % 1000 < drop) {
+        console.warn(`[pg-writer] event queue saturated; dropped ${this.droppedEvents} events total`);
+      }
+    }
 
     if (this.eventQueue.length >= this.batchSize) {
       this.flushEvents().catch(err => {
