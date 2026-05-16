@@ -410,11 +410,12 @@ export class ChartManager {
             });
 
             if (lastT != null) {
+              const tObEnd = ob.mitigatedIndex != null ? this._signalBarTimeSec(refTf, ob.mitigatedIndex) : null;
               const isInst = ob.score >= 6;
               const alpha = ob.isMitigated ? 0.08 : (isInst ? 0.45 : 0.30);
               const strokeAlpha = ob.isMitigated ? 0.2 : 0.7;
               smcZones.push({
-                t1: tOb, t2: lastT, top: ob.high, bottom: ob.low,
+                t1: tOb, t2: tObEnd ?? lastT, top: ob.high, bottom: ob.low,
                 fill: bull ? `rgba(38,166,154,${alpha})` : `rgba(239,83,80,${alpha})`,
                 stroke: bull ? `rgba(38,166,154,${strokeAlpha})` : `rgba(239,83,80,${strokeAlpha})`,
                 text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
@@ -428,12 +429,13 @@ export class ChartManager {
       // 2. Fair Value Gaps
       if (Array.isArray(smc.fvgs)) {
         for (const fvg of smc.fvgs) {
-          const tFvg = this._signalBarTimeSec(refTf, fvg.index);
-          if (tFvg != null && lastT != null) {
+          const tFvgStart = fvg.startIndex != null ? this._signalBarTimeSec(refTf, fvg.startIndex) : this._signalBarTimeSec(refTf, fvg.index);
+          const tFvgEnd = fvg.endIndex != null ? this._signalBarTimeSec(refTf, fvg.endIndex) : null;
+          if (tFvgStart != null && lastT != null) {
             const isHighValue = fvg.score >= 2;
             const alpha = isHighValue ? 0.35 : 0.20;
             smcZones.push({
-              t1: tFvg, t2: lastT, top: fvg.high, bottom: fvg.low,
+              t1: tFvgStart, t2: tFvgEnd ?? lastT, top: fvg.high, bottom: fvg.low,
               fill: `rgba(255,193,7,${alpha})`, 
               stroke: `rgba(255,193,7,${isHighValue ? 0.6 : 0.4})`,
               text: isHighValue ? 'Propulsion FVG' : 'FVG',
@@ -456,12 +458,13 @@ export class ChartManager {
       if (Array.isArray(smc.breakers)) {
         for (const bb of smc.breakers) {
           const tBb = this._signalBarTimeSec(refTf, bb.index);
+          const tBbEnd = bb.mitigatedIndex != null ? this._signalBarTimeSec(refTf, bb.mitigatedIndex) : null;
           if (tBb != null && lastT != null) {
             const bull = bb.type === 'BULLISH';
             smcZones.push({
-              t1: tBb, t2: lastT, top: bb.high, bottom: bb.low,
+              t1: tBb, t2: tBbEnd ?? lastT, top: bb.high, bottom: bb.low,
               fill: 'rgba(126,87,194,0.25)', stroke: 'rgba(126,87,194,0.5)',
-              text: bull ? 'Bull Breaker' : 'Bear Breaker', textColor: 'rgba(209,196,233,0.9)',
+              text: (bull ? 'Bull Breaker' : 'Bear Breaker') + (bb.mitigatedIndex != null ? ' (Mit)' : ''), textColor: 'rgba(209,196,233,0.9)',
             });
           }
         }

@@ -8,6 +8,8 @@ export interface OrderBlock {
   low: number;
   high: number;
   index: number;
+  mitigatedIndex?: number;
+  invalidatedIndex?: number;
   isMitigated?: boolean;
   isInvalidated?: boolean;
   score: number;
@@ -24,6 +26,8 @@ export interface FairValueGap {
   low: number;
   high: number;
   index: number;
+  startIndex?: number;
+  endIndex?: number;
   isFilled?: boolean;
   score: number;
 }
@@ -33,6 +37,7 @@ export interface BreakerBlock {
   low: number;
   high: number;
   index: number;
+  mitigatedIndex?: number;
 }
 
 export interface SmcBlock {
@@ -181,23 +186,27 @@ const detectOrderBlocks = (candles: Candle[]): OrderBlock[] => {
         };
         
         let mitigated = false;
+        let mitigatedIndex: number | undefined;
         let invalidated = false;
+        let invalidatedIndex: number | undefined;
         for (let k = j + 1; k < n; k++) {
           const ck = candles[k]!;
           if (ob.type === 'BULLISH') {
-            if (ck.low <= ob.high) mitigated = true;
-            if (ck.close < ob.low) { invalidated = true; break; }
+            if (ck.low <= ob.high && !mitigated) { mitigated = true; mitigatedIndex = k; }
+            if (ck.close < ob.low) { invalidated = true; invalidatedIndex = k; break; }
           } else {
-            if (ck.high >= ob.low) mitigated = true;
-            if (ck.close > ob.high) { invalidated = true; break; }
+            if (ck.high >= ob.low && !mitigated) { mitigated = true; mitigatedIndex = k; }
+            if (ck.close > ob.high) { invalidated = true; invalidatedIndex = k; break; }
           }
         }
         
         if (!invalidated) {
           ob.isMitigated = mitigated;
+          ob.mitigatedIndex = mitigatedIndex;
           obs.push(ob);
         } else {
           ob.isInvalidated = true;
+          ob.invalidatedIndex = invalidatedIndex;
           obs.push(ob);
         }
         break; 
@@ -249,7 +258,9 @@ const detectFVGs = (candles: Candle[]): FairValueGap[] => {
             type, 
             low, 
             high, 
-            index: i, 
+            index: i,
+            startIndex: i - 1,
+            endIndex: i + 1,
             score: body > avgBody * 2.5 ? 2 : 1 
           });
         }
@@ -259,13 +270,27 @@ const detectFVGs = (candles: Candle[]): FairValueGap[] => {
   return fvgs.slice(-6);
 }
 
-const detectBreakers = (_candles: Candle[], invalidatedObs: OrderBlock[]): BreakerBlock[] => {
-  return invalidatedObs.map(ob => ({
-    type: ob.type === 'BULLISH' ? 'BEARISH' : 'BULLISH',
-    low: ob.low,
-    high: ob.high,
-    index: ob.index
-  }));
+const detectBreakers = (candles: Candle[], invalidatedObs: OrderBlock[]): BreakerBlock[] => {
+  const n = candles.length;
+  const breakers: BreakerBlock[] = [];
+  for (const ob of invalidatedObs) {
+    const startIdx = ob.invalidatedIndex ?? ob.index;
+    const breakerType = ob.type === 'BULLISH' ? 'BEARISH' : 'BULLISH';
+    let mitigatedIdx: number | undefined;
+    for (let k = startIdx + 1; k < n; k++) {
+      const ck = candles[k]!;
+      if (breakerType === 'BULLISH' && ck.low <= ob.high) { mitigatedIdx = k; break; }
+      if (breakerType === 'BEARISH' && ck.high >= ob.low) { mitigatedIdx = k; break; }
+    }
+    breakers.push({
+      type: breakerType,
+      low: ob.low,
+      high: ob.high,
+      index: startIdx,
+      mitigatedIndex: mitigatedIdx
+    });
+  }
+  return breakers;
 }
 
 const detectLiquidityZones = (candles: Candle[]): SmcBlock[] => {
@@ -310,7 +335,7 @@ const detectLiquidityZones = (candles: Candle[]): SmcBlock[] => {
           low: isHigh ? avgPrice - (avgPrice * 0.0001) : Math.min(...prices) - (avgPrice * 0.0003),
           high: isHigh ? Math.max(...prices) + (avgPrice * 0.0003) : avgPrice + (avgPrice * 0.0001),
           startIndex: Math.min(...indices),
-          endIndex: n - 1,
+          endIndex: Math.max(...indices),
           isMitigated: false,
           isInvalidated: false
         });
