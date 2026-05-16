@@ -29,6 +29,8 @@
     "pnl:ui": "npm run dev --prefix pnl-dashboard/frontend",
     "stack:up": "docker compose up -d && npm run dashboard:ui",
     "stack:down": "docker compose down",
+    "stack:reset": "docker compose up -d postgres redis && bash scripts/stack-reset.sh",
+    "stack:reset:up": "npm run stack:reset && npm run stack:up",
     "ui:dev": "vite",
     "readiness:binance": "ts-node scripts/binance-live-readiness.ts",
     "gateway": "ts-node gateway/ws-server.ts",
