@@ -464,7 +464,21 @@ const main = async (): Promise<void> => {
   const router = orch.getRouter();
   if (router && cfg.CONTROL_PORT > 0) {
     const redis = getRedisClient(cfg.REDIS_URL);
-    controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition());
+    const authToken = cfg.CONTROL_AUTH_TOKEN?.trim();
+    // Live mode REQUIRES a control token. Anything reachable on localhost
+    // (sidecars, kubectl port-forward, shared shells) can otherwise curl
+    // /runtime/kill or hot-swap the adapter mid-trade. Refuse to start.
+    if (cfg.EXECUTION_MODE === 'live' && !authToken) {
+      throw new Error(
+        'CONTROL_AUTH_TOKEN is required when EXECUTION_MODE=live and CONTROL_PORT>0. ' +
+        'Set it to a long random string (≥16 chars) in your environment, or disable the ' +
+        'control plane with CONTROL_PORT=0.',
+      );
+    }
+    controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition(), {
+      authToken,
+      log,
+    });
 
     // Subscribe to Redis pub/sub config changes (separate connection required for sub mode).
     if (cfg.REDIS_URL) {

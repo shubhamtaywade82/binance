@@ -729,6 +729,17 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
       return n;
     }),
+
+  /**
+   * Shared-secret bearer token required by the runtime control HTTP server.
+   * Every request must include `Authorization: Bearer <CONTROL_AUTH_TOKEN>` —
+   * this protects /runtime/config, /runtime/kill, /runtime/unkill, and /runtime/status
+   * from any process that gains access to localhost (sidecars, kubectl port-forward,
+   * shared user accounts). REQUIRED when `EXECUTION_MODE=live` and `CONTROL_PORT>0`;
+   * startup throws if missing. In paper mode the bot logs a loud warning and the
+   * server runs unauthenticated so local dev tooling still works.
+   */
+  CONTROL_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
   /** Optional JSON string for default partial profit targets: `[{"r":1, "pct":0.5}]` */
   DEFAULT_PARTIAL_TARGETS_JSON: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Allow adding to an existing position in the same direction. */
