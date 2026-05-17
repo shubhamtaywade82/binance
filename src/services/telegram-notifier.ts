@@ -186,7 +186,7 @@ export class TelegramNotifier {
         timeout: 5000,
       });
     } catch (err: any) {
-      this.log.error('telegram_notifier_send_failed', { err: err.message });
+      this.log.warn('telegram_notifier_send_failed', { err: err.message });
     }
   }
 }
