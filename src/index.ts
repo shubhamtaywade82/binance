@@ -34,6 +34,7 @@ import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import type { DomainEvent } from '@coindcx/contracts';
+import { TelegramNotifier } from './services/telegram-notifier';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
@@ -97,6 +98,10 @@ const main = async (): Promise<void> => {
 
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
+
+  const telegram = new TelegramNotifier(cfg, defaultEventBus, log);
+  telegram.start();
+
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
     eventStore.startRecording();
