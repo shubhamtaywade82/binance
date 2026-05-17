@@ -431,6 +431,13 @@ export const AppConfigSchema = z.object({
     .pipe(z.number().int().min(60).max(3600)),
 
   /**
+   * Telegram Bot API credentials for professional AI-trader alerts.
+   * If unset, the TelegramNotifier service remains idle.
+   */
+  TELEGRAM_BOT_TOKEN: z.preprocess(emptyToUndefined, z.string().optional()),
+  TELEGRAM_CHAT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+
+  /**
    * Binance `POST /fapi/v1/countdownCancelAll` period (ms). Each tick renews the timer.
    * 0 = disabled. Example: `120000` = cancel all open orders if renewals stop for 2 minutes.
    */

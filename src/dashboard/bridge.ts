@@ -28,6 +28,7 @@ import {
 } from '../ai/supertrend-tune';
 import type { ClosedPosition } from '../execution/types';
 import type { WalletState } from '../execution/paper/wallet';
+import { defaultEventBus } from '../core/events/event-bus';
 import type { AppLogger } from '../logging/app-logger';
 import { ltpDisplayDecimalPlaces, type InstrumentPrecision } from '../mapping/precision';
 import { assetPrecisionMapper } from '../mapping/asset-precision-mapper';
@@ -678,6 +679,18 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         thinking: r.thinking ?? '',
         partial: false,
         ts,
+      });
+
+      defaultEventBus.publish({
+        id: `ai-brief-${watchSymbol}-${ts}`,
+        type: 'ai.market.brief',
+        ts,
+        source: 'dashboard_bridge',
+        symbol: watchSymbol,
+        payload: {
+          text: r.text ?? '',
+          thinking: r.thinking ?? '',
+        },
       });
     });
   }
