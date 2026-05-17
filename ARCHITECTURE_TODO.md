@@ -4,6 +4,11 @@ This file tracks the architectural pivot from orchestrator-centric runtime
 to event-sourced trading core. Phase 1 has shipped in `architectural-updates`
 (see "Landed" below). Phases 2–3 are scoped here.
 
+> **See also:** [`docs/INSTITUTIONAL_AUDIT_2026-05.md`](docs/INSTITUTIONAL_AUDIT_2026-05.md)
+> — Principal-level audit (2026-05-17) covering 10 CRITICAL and 16 HIGH issues
+> across architecture, execution, market-data, risk, observability, and DR.
+> Items here intersect with that audit's prioritised fix-order (Section 10).
+
 ---
 
 ## Landed (this session)
