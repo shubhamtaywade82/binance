@@ -99,8 +99,8 @@ const main = async (): Promise<void> => {
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
 
-  const telegram = new TelegramNotifier(cfg, defaultEventBus);
-  telegram.init();
+  const telegram = new TelegramNotifier(cfg, defaultEventBus, log);
+  telegram.start();
 
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
