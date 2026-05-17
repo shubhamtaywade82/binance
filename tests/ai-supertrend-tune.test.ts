@@ -98,6 +98,7 @@ describe('requestSupertrendTune', () => {
     host: 'http://127.0.0.1:11434',
     model: 'llama3.2',
     timeoutMs: 5000,
+    contextSize: 2048,
   } as const;
 
   const snapshot = {

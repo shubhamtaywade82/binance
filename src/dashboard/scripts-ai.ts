@@ -10,6 +10,7 @@ import { Ollama } from 'ollama';
 import type http from 'http';
 import type { AppConfig } from '../config';
 import { ollamaApiUrl } from '../config';
+import { formatOllamaRequestError } from '../ai/ollama-request-error';
 
 const SYSTEM_PROMPT = `You are a code generator for NanoPine, a small Pine-script-like indicator DSL embedded in a Binance trading dashboard.
 
@@ -144,6 +145,7 @@ export function createScriptsAi(opts: ScriptsAiOptions): ScriptsAiApi {
         }
         const headers: Record<string, string> | undefined =
           apiKey.length > 0 ? { Authorization: `Bearer ${apiKey}` } : undefined;
+        res.setTimeout(0);
         const ollama = new Ollama({ host, headers });
         const response = await ollama.chat({
           model,
@@ -156,7 +158,11 @@ export function createScriptsAi(opts: ScriptsAiOptions): ScriptsAiApi {
               content: `Write a NanoPine script that does the following:\n\n${prompt}`,
             },
           ],
-          options: { temperature: 0.2, num_predict: 1024 },
+          options: {
+            temperature: 0.2,
+            num_ctx: cfg.AI_CONTEXT_SIZE,
+            num_predict: 1024,
+          },
         });
         const content =
           typeof response?.message?.content === 'string'
@@ -171,7 +177,9 @@ export function createScriptsAi(opts: ScriptsAiOptions): ScriptsAiApi {
         const source = stripCodeFence(content);
         sendJson(res, 200, { source, model });
       } catch (err) {
-        sendJson(res, 500, { error: (err as Error).message });
+        sendJson(res, 500, {
+          error: formatOllamaRequestError(err, cfg.AI_REQUEST_TIMEOUT_MS),
+        });
       }
       return true;
     },

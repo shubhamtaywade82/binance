@@ -417,11 +417,20 @@ export const AppConfigSchema = z.object({
   AI_BRIEF_THINK_ENABLED: boolFromString(false),
   /** When true, stream the brief over the dashboard WebSocket (partial `ai_brief` updates). */
   AI_BRIEF_STREAM_ENABLED: boolFromString(false),
+  /**
+   * The context window size (in tokens) to request from the AI provider.
+   * Higher values allow longer message history and more MCP tool data but use more VRAM/memory.
+   */
+  AI_CONTEXT_SIZE: z
+    .union([z.number(), z.string()])
+    .default(8192)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(2048).max(128_000)),
   AI_REQUEST_TIMEOUT_MS: z
     .union([z.number(), z.string()])
     .default(60_000)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
-    .pipe(z.number().int().min(3000).max(120_000)),
+    .pipe(z.number().int().min(0).max(300_000)),
   /**
    * When true (and dashboard enabled), periodically asks Ollama for SuperTrend `atrPeriod` + `multiplier`;
    * the chart still uses deterministic {@link supertrend} math with those parameters.

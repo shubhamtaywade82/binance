@@ -27,6 +27,8 @@ export interface OllamaSupertrendTuneConfig {
   host: string;
   model: string;
   timeoutMs: number;
+  /** The total context window (input + output) requested in tokens. */
+  contextSize: number;
   apiKey?: string;
 }
 
@@ -167,6 +169,7 @@ export const requestSupertrendTune = async (cfg: OllamaSupertrendTuneConfig, sna
       ],
       options: {
         temperature: 0.15,
+        num_ctx: cfg.contextSize,
         num_predict: 160,
       },
     });

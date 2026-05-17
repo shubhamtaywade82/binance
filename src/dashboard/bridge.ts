@@ -6,6 +6,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AppConfig } from '../config';
 import { multiplexBinanceSymbols, ollamaApiUrl } from '../config';
+import { formatOllamaRequestError } from '../ai/ollama-request-error';
 import type { AggTradeEvent, BookTickerEvent, DepthPartialEvent, ForceOrderEvent, MultiplexCallbacks } from '../binance/ws-multiplex';
 import type { MultiTimeframeStore } from '../binance/multi-tf-store';
 import type { LocalOrderBook, DepthDiff } from '../binance/orderbook';
@@ -172,7 +173,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   let aiBriefWarnedCloudKey = false;
   /** Throttle partial `ai_brief` WebSocket frames when streaming. */
   let lastAiBriefStreamBroadcastAt = 0;
-  const AI_BRIEF_STREAM_MIN_MS = 75;
+  const AI_BRIEF_STREAM_MIN_MS = 250;
 
   /** Event detection state for AI Brief triggers */
   const lastSupertrendDirBySym = new Map<string, number>();
@@ -338,13 +339,21 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     try {
       const headers: Record<string, string> | undefined = chatApiKey ? { Authorization: `Bearer ${chatApiKey}` } : undefined;
       const ollama = new Ollama({ host: chatOllamaHost, headers });
-      const stream = await ollama.chat({ model: chatModel, messages, stream: true });
+      const stream = await ollama.chat({
+        model: chatModel,
+        messages,
+        stream: true,
+        options: {
+          num_ctx: cfg.AI_CONTEXT_SIZE,
+        },
+      });
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       });
+      res.setTimeout(0);
 
       for await (const chunk of stream) {
         if (res.destroyed) break;
@@ -356,9 +365,9 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (err as Error).message }));
+        res.end(JSON.stringify({ error: formatOllamaRequestError(err, cfg.AI_REQUEST_TIMEOUT_MS) }));
       } else {
-        res.write(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: formatOllamaRequestError(err, cfg.AI_REQUEST_TIMEOUT_MS) })}\n\n`);
         res.end();
       }
     }
@@ -542,13 +551,21 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
   };
 
   const broadcast = (msg: object): void => {
-        const raw = JSON.stringify(msg);
-        for (const client of wss.clients) {
-          if (client.readyState === WebSocket.OPEN) {
+    try {
+      const raw = JSON.stringify(msg);
+      for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          try {
             client.send(raw);
+          } catch (e) {
+            log.warn('dashboard_broadcast_send_failed', { err: (e as Error).message });
           }
         }
       }
+    } catch (e) {
+      log.warn('dashboard_broadcast_stringify_failed', { err: (e as Error).message });
+    }
+  };
 
   const getCandlesByChartTf = (sym: string): Record<ChartTf, Candle[]> => {
         const out = {} as Record<ChartTf, Candle[]>;
@@ -641,6 +658,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           ? undefined // or add config if needed
           : cfg.OLLAMA_API_KEY.trim() || undefined,
       timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+      contextSize: cfg.AI_CONTEXT_SIZE,
       thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
       streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
       mcpEnabled: cfg.AI_PROVIDER === 'ollama' ? cfg.AI_MCP_ENABLED : false,
@@ -652,6 +670,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         host: cfg.AI_OPENAI_URL,
         model: cfg.AI_OPENAI_MODEL,
         timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+        contextSize: cfg.AI_CONTEXT_SIZE,
         thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
         streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
       } as any,
@@ -796,6 +815,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
             model: cfg.OLLAMA_MODEL,
             apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+            contextSize: cfg.AI_CONTEXT_SIZE,
           },
           snapshot,
         ).then((r) => {
@@ -1479,6 +1499,9 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           };
 
           httpServer.once('error', errorHandler);
+          httpServer.timeout = 600_000; // 10 minutes
+          httpServer.headersTimeout = 605_000;
+          httpServer.keepAliveTimeout = 600_000;
           httpServer.listen(cfg.DASHBOARD_PORT, cfg.DASHBOARD_BIND, () => {
             httpServer.off('error', errorHandler);
             resolve();

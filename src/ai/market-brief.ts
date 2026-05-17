@@ -34,6 +34,8 @@ export interface MarketBriefConfig {
   host: string;
   model: string;
   timeoutMs: number;
+  /** The total context window (input + output) requested in tokens. */
+  contextSize: number;
   /** Bearer token when using Ollama Cloud or OpenAI. */
   apiKey?: string;
   /**
@@ -123,6 +125,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
 };
 
 const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
+  if (timeoutMs <= 0) return fetch;
   const ms = Math.max(1000, timeoutMs);
   return (input, init) => {
     const t = AbortSignal.timeout(ms);
@@ -200,6 +203,7 @@ const chatRequestShared = (
   model: string,
   thinkEnabled: boolean,
   userJson: string,
+  contextSize: number,
 ): Pick<ChatRequest, 'model' | 'think' | 'messages' | 'options'> => {
   const system = thinkEnabled ? SYSTEM_PROMPT_THINKING_ALLOWED : SYSTEM_PROMPT_NO_EXTENDED_THINK;
   return {
@@ -211,6 +215,7 @@ const chatRequestShared = (
     ],
     options: {
       temperature: 0.25,
+      num_ctx: contextSize,
       num_predict: BRIEF_NUM_PREDICT,
     },
   };
@@ -249,6 +254,7 @@ const runToolCallingLoop = async (
       stream: false,
       options: {
         temperature: 0.25,
+        num_ctx: cfg.contextSize,
         num_predict: BRIEF_NUM_PREDICT,
       },
     });
@@ -307,6 +313,7 @@ const requestOpenAIBrief = async (
     ],
     temperature: 0.25,
     max_tokens: BRIEF_NUM_PREDICT,
+    num_ctx: cfg.contextSize,
     stream: cfg.streamEnabled,
   };
 
@@ -361,7 +368,7 @@ const requestOpenAIBrief = async (
       return { text: content, thinking: null, error: content ? null : 'empty_completion' };
     }
   } catch (e: any) {
-    return { text: null, thinking: null, error: e.message === 'fetch failed' ? `${e.message} (${host})` : e.message };
+    return { text: null, thinking: null, error: formatOllamaRequestError(e, cfg.timeoutMs) };
   }
 };
 
@@ -418,7 +425,7 @@ export const requestMarketBrief = async (
     }
     if (streamEnabled) {
       const stream = await ollama.chat({
-        ...chatRequestShared(model, thinkEnabled, userJson),
+        ...chatRequestShared(model, thinkEnabled, userJson, cfg.contextSize),
         stream: true,
       });
       let contentAcc = '';
@@ -442,7 +449,7 @@ export const requestMarketBrief = async (
     }
 
     const response = await ollama.chat({
-      ...chatRequestShared(model, thinkEnabled, userJson),
+      ...chatRequestShared(model, thinkEnabled, userJson, cfg.contextSize),
       stream: false,
     });
     const { content, thinking } = extractMessageStrings(response);

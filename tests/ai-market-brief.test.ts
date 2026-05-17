@@ -16,6 +16,7 @@ const baseCfg = {
   host: 'http://127.0.0.1:11434',
   model: 'llama3.2',
   timeoutMs: 5000,
+  contextSize: 2048,
 } as const;
 
 const snapshot = {
@@ -61,7 +62,11 @@ describe('requestMarketBrief', () => {
           { role: 'system', content: expect.stringContaining('market-structure') },
           { role: 'user', content: expect.stringContaining('SOLUSDT') },
         ]),
-        options: { temperature: 0.25, num_predict: 1024 },
+        options: {
+          temperature: 0.25,
+          num_ctx: 2048,
+          num_predict: 1024,
+        },
       }),
     );
   });
