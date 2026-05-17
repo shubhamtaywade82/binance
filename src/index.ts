@@ -29,6 +29,7 @@ import { FundingExitManager } from './core/execution/funding-exit-manager';
 import { TpLadderManager } from './core/execution/tp-ladder-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
+import { LiveAccountPoller } from './core/execution/live-account-poller';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import type { DomainEvent } from '@coindcx/contracts';
 
@@ -120,7 +121,7 @@ const main = async (): Promise<void> => {
   }
 
   if (cfg.EVENT_BUS_EXECUTION_ENABLED) {
-    const adapter = execution.paperAdapter ?? execution.adapter;
+    const adapter = execution.paperAdapter ?? execution.cdcxAdapter ?? execution.adapter;
     if (!adapter) {
       log.warn('event_bus_execution_no_adapter', {
         hint: 'EVENT_BUS_EXECUTION_ENABLED=true but no execution adapter resolved. Bridges not wired.',
@@ -150,6 +151,23 @@ const main = async (): Promise<void> => {
       new PositionCloseBridge(defaultEventBus, adapter);
       if (execution.pgWriter) {
         new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
+      }
+
+      // Live mode: poll CoinDCX REST for wallet + positions and project onto
+      // the same event/Postgres/Redis shape paper mode emits. WS user-data
+      // stream replacement can land later without changing consumers.
+      if (cfg.EXECUTION_MODE === 'live' && execution.cdcxAdapter) {
+        const pollMs = Math.max(1000, (cfg.PAPER_EQUITY_SNAPSHOT_SEC || 5) * 1000);
+        const staticFx = { getInrPerUsdt: () => Number(cfg.INR_PER_USDT) || 98 };
+        const poller = new LiveAccountPoller(defaultEventBus, execution.cdcxAdapter, {
+          pollMs,
+          pgWriter: execution.pgWriter,
+          redisState: (execution as any).redisState,
+          fxRate: staticFx,
+        });
+        poller.start();
+        lifecycle.register('live_account_poller', () => poller.stop(), { timeoutMs: 1000 });
+        log.info('live_account_poller_started', { pollMs });
       }
       // TpLadderManager fires partial closes at strategy-defined absolute price
       // targets. AdaptiveStrategy uses it; SeykotaTrendModule's inline partialTpR
@@ -220,6 +238,12 @@ const main = async (): Promise<void> => {
         );
         defaultEventBus.subscribe('strategy.signal', (e: DomainEvent<any>) =>
           bridge.broadcast({ type: 'strategy_signal', symbol: e.symbol, ...e.payload }),
+        );
+        defaultEventBus.subscribe('wallet.update', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'wallet', ...e.payload }),
+        );
+        defaultEventBus.subscribe('position_update', (e: DomainEvent<any>) =>
+          bridge.broadcast({ type: 'paper_position_update', positions: (e.payload as any)?.positions ?? [], mode: (e.payload as any)?.mode }),
         );
       }
     }
