@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { normalizeTradingAsset, TRADING_ASSET_PRESETS } from './config/asset-presets';
 import { parseCorrelationSymbolGroups } from './strategy/correlation-guard';
 
+// 1. Load persistent secrets (API keys, Telegram IDs)
+loadDotenv({ path: '.env.secrets' });
+// 2. Load mode-specific config (templates copied to .env)
 loadDotenv();
 
 export type { TradingAsset } from './config/asset-presets';
