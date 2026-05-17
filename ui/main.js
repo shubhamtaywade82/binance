@@ -33,6 +33,8 @@ const rolling1m = new Rolling1mTradeStats();
 let scripts = null;
 let scriptEditor = null;
 
+const STORAGE_KEY_SYMBOL = 'nanopine_active_symbol';
+
 const topOfBookFromDepth = (depth) => {
   const b = depth?.bids?.[0]?.price;
   const a = depth?.asks?.[0]?.price;
@@ -73,6 +75,8 @@ const initWatchlistBar = (watchlist, _executionSymbol) => {
 
 const selectWatchSymbol = (sym) => {
   if (!sym || sym === activeWatchSymbol) return;
+  localStorage.setItem(STORAGE_KEY_SYMBOL, sym);
+  syncUiWithSymbol(sym);
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: sym }));
   }
@@ -88,6 +92,20 @@ const appliesToActiveWatch = (msg) => {
   if (m == null) return true;
   return m === activeWatchSymbol;
 }
+
+const syncUiWithSymbol = (sym) => {
+  if (!sym) return;
+  const s = sym.toUpperCase();
+  const hdrSym = document.getElementById('hdr-symbol');
+  if (hdrSym) hdrSym.textContent = s;
+
+  const mtfHdr = Array.from(document.querySelectorAll('.sig-section-header'))
+    .find(el => el.textContent.includes('MTF Stack'));
+  if (mtfHdr) {
+    mtfHdr.textContent = `MTF Stack (${s.replace(/USDT$/, '')})`;
+  }
+}
+
 let lastPrice = null;
 /** Last chart LTP (target close) — flash on kline compares to this; header digits follow smoothed line via chart listener. */
 let lastLtpTarget = null;
@@ -157,12 +175,20 @@ let reconnectDelay = 1000;
 let reconnectTimer = null;
 
 const connect = () => {
-  setWsStatus('connecting', `Connecting… (${WS_URL})`);
-  ws = new WebSocket(WS_URL);
+  const storedSym = localStorage.getItem(STORAGE_KEY_SYMBOL) || '';
+  const sep = WS_URL.includes('?') ? '&' : '?';
+  const connectUrl = storedSym ? `${WS_URL}${sep}symbol=${storedSym}` : WS_URL;
+  setWsStatus('connecting', `Connecting… (${connectUrl})`);
+  ws = new WebSocket(connectUrl);
 
   ws.addEventListener('open', () => {
     setWsStatus('connected', 'Live');
     reconnectDelay = 1000;
+
+    const stored = localStorage.getItem(STORAGE_KEY_SYMBOL);
+    if (stored && stored !== activeWatchSymbol) {
+      ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: stored }));
+    }
   });
 
   ws.addEventListener('close', () => {
@@ -217,8 +243,10 @@ const dispatch = (msg) => {
     /* ── Snapshot (initial load) ─ */
     case 'snapshot': {
       activeWatchSymbol = msg.symbol ? String(msg.symbol).toUpperCase() : activeWatchSymbol;
-      const hdrSym = document.getElementById('hdr-symbol');
-      if (hdrSym && activeWatchSymbol) hdrSym.textContent = activeWatchSymbol;
+      if (activeWatchSymbol) {
+        localStorage.setItem(STORAGE_KEY_SYMBOL, activeWatchSymbol);
+        syncUiWithSymbol(activeWatchSymbol);
+      }
       initWatchlistBar(msg.watchlist, msg.executionSymbol);
 
       chart.applyDashboardLtpPrecision(msg);
@@ -678,6 +706,9 @@ const requestForceResync = () => {
 
 // ─── Init ─────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  const storedSym = localStorage.getItem(STORAGE_KEY_SYMBOL);
+  if (storedSym) syncUiWithSymbol(storedSym);
+
   obMgr.init();
   chart.init();
   chart.setLtpDisplayListener((p) => {

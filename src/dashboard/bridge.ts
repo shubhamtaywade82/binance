@@ -1124,13 +1124,27 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         }
       }
 
-  wss.on('connection', async (ws) => {
+  wss.on('connection', async (ws, req) => {
     log.info('dashboard_client_connected', { clients: wss.clients.size });
     refTfByClient.set(ws, defaultChartRefTf());
-    watchSymbolByClient.set(ws, symbolUpper);
+    let initSym = symbolUpper;
+    if (req?.url) {
+      try {
+        const u = new URL(req.url, 'http://localhost');
+        const s = u.searchParams.get('symbol');
+        if (s) {
+          const sUpper = s.trim().toUpperCase();
+          const clean = sUpper.endsWith('.P') ? sUpper.slice(0, -2) : sUpper;
+          if (watchlistSet.has(clean)) {
+            initSym = clean;
+          }
+        }
+      } catch {}
+    }
+    watchSymbolByClient.set(ws, initSym);
     const snap = await buildSnapshot(ws);
     ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
-    sendStoredAiBrief(ws, symbolUpper);
+    sendStoredAiBrief(ws, initSym);
 
     ws.on('message', async (raw) => {
       let msg: { type?: string; tf?: string; oldestOpenTime?: number; symbol?: string };
@@ -1143,6 +1157,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         const nextRaw = msg.symbol.trim().toUpperCase();
         const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
         if (watchlistSet.has(next)) {
+          if (watchSymbolByClient.get(ws) === next) return;
           watchSymbolByClient.set(ws, next);
           ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
           sendStoredAiBrief(ws, next);
