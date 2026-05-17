@@ -78,6 +78,21 @@ const main = async (): Promise<void> => {
     });
   }
 
+  // C-1 single-path interlock: live mode MUST go through the event-bus stack.
+  // The legacy HybridOrchestrator strategy/position-dispatch path still exists
+  // (see TODO_CLEANUP_LEGACY_EXECUTION markers in src/orchestrator.ts) but is
+  // gated off whenever EVENT_BUS_EXECUTION_ENABLED=true so the two paths never
+  // compete on a shared EventBus. Live without the event bus would mean orders
+  // bypass RiskEngine / SignalAllocator / cooldown / opposite-side guard.
+  if (cfg.EXECUTION_MODE === 'live' && !cfg.EVENT_BUS_EXECUTION_ENABLED) {
+    throw new Error(
+      'EVENT_BUS_EXECUTION_ENABLED must be true when EXECUTION_MODE=live. ' +
+      'The legacy HybridOrchestrator dispatch path bypasses the RiskEngine, ' +
+      'SignalAllocator, opposite-side guard, and cooldown. ' +
+      'Set EVENT_BUS_EXECUTION_ENABLED=true (or run paper mode for legacy-path development).',
+    );
+  }
+
   const lifecycle = new Lifecycle({
     defaultTimeoutMs: cfg.SHUTDOWN_TIMEOUT_MS,
     forceExitMs: cfg.SHUTDOWN_FORCE_EXIT_MS,

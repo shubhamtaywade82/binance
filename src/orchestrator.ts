@@ -1152,6 +1152,13 @@ export class HybridOrchestrator {
     if (!Number.isFinite(price)) return;
     const symU = symbol.toUpperCase();
     this.execution.adapter.onMark?.(symU, price);
+    // TODO_CLEANUP_LEGACY_EXECUTION: legacy PositionManager-driven onMark auto
+    // reversal/SL/TP. Under the event-bus path, TrailingStopManager,
+    // StructureExitManager, TimeStopManager, and TpLadderManager own these
+    // decisions (driven off market.* and execution.* events). Letting the
+    // legacy onMark fire concurrently re-introduces the REVERSAL death-spiral
+    // condition that was patched in commit d82da26 for the primary symbol.
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
     if (!this.positionManager.hasOpenPosition(symU)) return;
     const tier = tierFor(symU);
     const htfBias = tier
@@ -1487,6 +1494,16 @@ export class HybridOrchestrator {
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {
+    // TODO_CLEANUP_LEGACY_EXECUTION: when the event-bus path is active the
+    // SymbolActor + SignalToOrderBridge + RiskEngine chain owns strategy
+    // dispatch end-to-end. Running this legacy method in parallel would
+    // bypass RiskEngine / allocator / opposite-side guard, so we early-exit.
+    // The whole function (and its multi-asset sibling below, plus the legacy
+    // PositionManager / RiskManager wiring in the constructor) is slated for
+    // deletion once the event-bus migration is confirmed in production.
+    // Live mode boot-asserts EVENT_BUS_EXECUTION_ENABLED=true (see src/index.ts).
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
+
     const primary = this.pairs.binanceSymbol.toUpperCase();
     const existing = this.positionManager.getPosition(primary);
     
@@ -1654,6 +1671,11 @@ export class HybridOrchestrator {
    * - swing tier: lighter `evaluateSwingSignal` (HTF bias + displacement + zone).
    */
   private async evaluateForSymbol(symbol: string, tier: AssetTierConfig, ltfBar: Candle): Promise<void> {
+    // TODO_CLEANUP_LEGACY_EXECUTION: see evaluate(). Same gating logic — under
+    // the event-bus path, this method is dead weight; remove with the rest of
+    // the legacy strategy dispatch when the migration is finalised.
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
+
     const symU = symbol.toUpperCase();
     if (this.positionManager.hasOpenPosition(symU)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;

@@ -272,3 +272,40 @@ describe('HybridOrchestrator entry gating', () => {
     orch.stop();
   });
 });
+
+describe('HybridOrchestrator legacy execution path gating (C-1)', () => {
+  it('does NOT open a position when EVENT_BUS_EXECUTION_ENABLED=true, even with a strong trend signal', async () => {
+    const cfg = makeCfg({ EVENT_BUS_EXECUTION_ENABLED: true } as Partial<AppConfig>);
+    const orch = new HybridOrchestrator(cfg, noopLog, {
+      cdcx: fakeCdcx(),
+      ws: fakeWs(),
+      seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
+    });
+    const c = trendingCandles(80);
+    orch.injectCandles(c, c);
+    orch.setPrecision({ tickSize: 0.01, stepSize: 0.001, minQty: 0.001 });
+    await orch.evaluateBar(c[c.length - 1]);
+    // Legacy path is gated: position remains flat. The event-bus path
+    // (SignalToOrderBridge → RiskEngine → ExecutionBridge) is wired in
+    // src/index.ts, not here, so this test confirms only the inhibition.
+    expect(orch.hasPosition()).toBe(false);
+  });
+
+  it('DOES open a position when EVENT_BUS_EXECUTION_ENABLED=false (legacy paper-only mode)', async () => {
+    const cfg = makeCfg({ EVENT_BUS_EXECUTION_ENABLED: false } as Partial<AppConfig>);
+    const orch = new HybridOrchestrator(cfg, noopLog, {
+      cdcx: fakeCdcx(),
+      ws: fakeWs(),
+      seedKlines: vi.fn().mockResolvedValue([]),
+      execution: stubRuntime(cfg),
+    });
+    const c = trendingCandles(80);
+    orch.injectCandles(c, c);
+    orch.setPrecision({ tickSize: 0.01, stepSize: 0.001, minQty: 0.001 });
+    await orch.evaluateBar(c[c.length - 1]);
+    // Sanity check that gating doesn't accidentally short-circuit the legacy
+    // path in paper mode (where EVENT_BUS_EXECUTION_ENABLED can stay false).
+    expect(orch.hasPosition()).toBe(true);
+  });
+});
