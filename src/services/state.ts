@@ -1,4 +1,6 @@
-import type Redis from 'ioredis';
+import { Redis } from 'ioredis';
+
+/** Trading state management service. */
 
 /** Write the current open position for a symbol to Redis state. */
 export const setPosition = (redis: Redis | null, symbol: string, data: unknown): void => {
@@ -27,10 +29,16 @@ export const setBalance = (redis: Redis | null, balanceUsdt: number): void => {
 
 /**
  * Returns true when the operator has set the kill-switch key.
- * Activate:   redis-cli SET state:kill_switch 1
- * Deactivate: redis-cli SET state:kill_switch 0
  */
 export const isKillSwitchActive = async (redis: Redis | null): Promise<boolean> => {
   if (!redis) return false;
   return (await redis.get('state:kill_switch').catch(() => null)) === '1';
+};
+
+/**
+ * Set or clear the global trading kill switch.
+ */
+export const setKillSwitch = (redis: Redis | null, active: boolean): void => {
+  if (!redis) return;
+  redis.set('state:kill_switch', active ? '1' : '0').catch(() => undefined);
 };

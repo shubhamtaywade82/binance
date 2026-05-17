@@ -435,6 +435,25 @@ const dispatch = (msg) => {
 
       chart.applyDashboardLtpPrecision(msg);
 
+      if (msg.config) {
+        const c = msg.config;
+        const levEl = document.getElementById('conf-leverage');
+        const capEl = document.getElementById('conf-capital');
+        const envEl = document.getElementById('sys-env-tag');
+        const killEl = document.getElementById('toggle-kill-switch');
+        if (levEl) levEl.value = `${c.leverage}x`;
+        if (capEl) capEl.value = `${c.capitalPerTrade} USDT`;
+        if (envEl) envEl.textContent = c.envTag;
+        if (killEl instanceof HTMLInputElement) {
+          killEl.checked = c.killSwitch;
+          killEl.addEventListener('change', () => {
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'set_kill_switch', active: killEl.checked }));
+            }
+          }, { once: true }); // Avoid double listeners on snapshot resync
+        }
+      }
+
       // Feed chart
       chart.onSnapshot({
         candles: msg.candles,
@@ -581,34 +600,7 @@ const dispatch = (msg) => {
       break;
     }
 
-    /* ── Event-bus position lifecycle (instant updates) ─ */
-    case 'position_opened': {
-      const orderId = String(msg.orderId || '');
-      if (!orderId) break;
-      const existing = lastOpenPositions.find((p) => p.orderId === orderId);
-      const merged = {
-        orderId,
-        symbol: msg.symbol,
-        side: msg.side,
-        entryPrice: msg.price,
-        quantity: msg.quantity,
-        stopLoss: msg.stopLoss,
-        takeProfit: msg.takeProfit,
-        openedAt: msg.timestamp || Date.now(),
-        leverage: msg.leverage,
-        unrealizedUsdt: 0,
-      };
-      if (existing) Object.assign(existing, merged);
-      else lastOpenPositions.push(merged);
-      refreshOpenPositionOverlay();
-      break;
-    }
-    case 'position_closed': {
-      const orderId = String(msg.orderId || '');
-      lastOpenPositions = lastOpenPositions.filter((p) => p.orderId !== orderId);
-      refreshOpenPositionOverlay();
-      break;
-    }
+    /* ── Event-bus position lifecycle handled below in the rich block. ─ */
     case 'trail_update': {
       const orderId = String(msg.orderId || '');
       const pos = lastOpenPositions.find((p) => p.orderId === orderId);
@@ -621,11 +613,61 @@ const dispatch = (msg) => {
       break;
     }
     case 'strategy_signal': {
-      // Optional: surface signals in UI (deferred — sidebar tab Phase 2).
+      pushAlertRow({
+        kind: msg.signal === 'LONG' ? 'long' : (msg.signal === 'SHORT' ? 'short' : 'flat'),
+        icon: msg.signal === 'LONG' ? '🟢' : msg.signal === 'SHORT' ? '🔴' : '⚪',
+        title: `${msg.symbol || '?'} ${msg.signal}`,
+        detail: `${msg.regime || msg.strategyId || ''} conf ${(((msg.confidence || 0) * 100).toFixed(0))}%`,
+      });
       break;
     }
     case 'order_rejected': {
-      // Optional: toast in UI (deferred).
+      const reason = String(msg.reason || msg.payload?.reason || 'UNKNOWN');
+      pushAlertRow({
+        kind: 'reject',
+        icon: '⚠️',
+        title: `Rejected ${msg.symbol || msg.requested?.symbol || ''}`,
+        detail: reason,
+      });
+      showToast(`Order rejected · ${reason}`, 'warn');
+      break;
+    }
+    case 'position_opened': {
+      const oid = String(msg.orderId || '');
+      if (oid) {
+        const existing = lastOpenPositions.find((p) => p.orderId === oid);
+        const merged = {
+          orderId: oid, symbol: msg.symbol, side: msg.side,
+          entryPrice: msg.price, quantity: msg.quantity,
+          stopLoss: msg.stopLoss, takeProfit: msg.takeProfit,
+          openedAt: msg.timestamp || Date.now(), leverage: msg.leverage,
+          unrealizedUsdt: 0,
+        };
+        if (existing) Object.assign(existing, merged);
+        else lastOpenPositions.push(merged);
+        refreshOpenPositionOverlay();
+      }
+      pushAlertRow({
+        kind: msg.side === 'LONG' ? 'long' : 'short',
+        icon: msg.side === 'LONG' ? '🟢' : '🔴',
+        title: `Filled ${msg.symbol || '?'} ${msg.side || ''}`,
+        detail: `@ ${Number(msg.price ?? 0).toFixed(4)} qty ${Number(msg.quantity ?? 0).toFixed(4)}`,
+      });
+      showToast(`${msg.symbol} ${msg.side} filled`, 'info');
+      break;
+    }
+    case 'position_closed': {
+      const oid = String(msg.orderId || '');
+      lastOpenPositions = lastOpenPositions.filter((p) => p.orderId !== oid);
+      refreshOpenPositionOverlay();
+      const net = Number(msg.netUsdt ?? 0);
+      pushAlertRow({
+        kind: net >= 0 ? 'win' : 'loss',
+        icon: net >= 0 ? '💰' : '📉',
+        title: `Closed ${msg.symbol || '?'} · ${msg.reason || ''}`,
+        detail: `Net ${net.toFixed(2)} USDT`,
+      });
+      showToast(`${msg.symbol} closed · ${(net >= 0 ? '+' : '')}${net.toFixed(2)}`, net >= 0 ? 'success' : 'warn');
       break;
     }
 
@@ -914,6 +956,73 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     scripts?.onTfChange(tf);
   });
+
+  const initChartSettingsModal = () => {
+    const btn = document.getElementById('btn-chart-settings');
+    const modal = document.getElementById('chart-settings-modal');
+    const closeBtn = document.getElementById('btn-close-modal');
+    const navItems = modal?.querySelectorAll('.modal-nav-item');
+    const panes = modal?.querySelectorAll('.settings-tab-pane');
+    const titleEl = document.getElementById('settings-tab-title');
+    
+    if (!btn || !modal) return;
+
+    const openModal = () => {
+      modal.hidden = false;
+      modal.removeAttribute('hidden');
+      const activePane = modal.querySelector('.settings-tab-pane.active');
+      const firstCheck = activePane?.querySelector('input[type="checkbox"]');
+      if (firstCheck) firstCheck.focus();
+    };
+
+    const closeModal = () => {
+      modal.hidden = true;
+      modal.setAttribute('hidden', '');
+      btn.focus();
+    };
+
+    const switchTab = (tabId) => {
+      navItems.forEach(item => {
+        const on = item.dataset.settingsTab === tabId;
+        item.classList.toggle('active', on);
+        item.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      panes.forEach(pane => {
+        pane.classList.toggle('active', pane.id === `tab-pane-${tabId}`);
+      });
+      if (titleEl) {
+        const labels = { indicators: 'Indicators & Overlays', risk: 'Risk & Sizing', system: 'System Status' };
+        titleEl.textContent = labels[tabId] || 'Settings';
+      }
+    };
+
+    btn.addEventListener('click', openModal);
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+
+    navItems.forEach(item => {
+      item.addEventListener('click', () => switchTab(item.dataset.settingsTab));
+    });
+
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    // ... (rest of keydown listeners stay same)
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        e.preventDefault();
+        if (modal.hidden) openModal();
+        else closeModal();
+      } else if (e.key === 'Escape' && !modal.hidden) {
+        e.preventDefault();
+        closeModal();
+      }
+    });
+  };
+
+  initChartSettingsModal();
   initSidebarToggle();
   initSidebarTabs();
 
@@ -954,3 +1063,62 @@ window.addEventListener('DOMContentLoaded', () => {
 
   connect();
 });
+
+// ─── Alert feed + toast ───────────────────────────────────────────────────
+const _alertRows = [];
+const _MAX_ALERTS = 200;
+function pushAlertRow({ kind, icon, title, detail }) {
+  const ts = new Date();
+  const hh = String(ts.getHours()).padStart(2, '0');
+  const mm = String(ts.getMinutes()).padStart(2, '0');
+  const ss = String(ts.getSeconds()).padStart(2, '0');
+  const row = { kind, icon, title, detail, time: `${hh}:${mm}:${ss}` };
+  _alertRows.unshift(row);
+  if (_alertRows.length > _MAX_ALERTS) _alertRows.length = _MAX_ALERTS;
+  renderAlerts();
+}
+function renderAlerts() {
+  const el = document.getElementById('alerts-feed');
+  const counter = document.getElementById('alerts-count');
+  if (!el) return;
+  const colors = {
+    long: '#26a69a', short: '#ef5350', flat: '#888',
+    win: '#26a69a', loss: '#ef5350', reject: '#ff9800',
+  };
+  el.innerHTML = _alertRows.map((r) => `
+    <div style="display:flex;gap:6px;padding:6px 4px;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div style="font-size:14px;line-height:14px;">${r.icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="color:${colors[r.kind] || '#ccc'};font-weight:600;font-size:11px;">${escapeHtml(r.title)}</div>
+        <div style="color:#888;font-size:10px;margin-top:2px;">${escapeHtml(r.detail)}</div>
+      </div>
+      <div style="color:#666;font-size:10px;white-space:nowrap;">${r.time}</div>
+    </div>
+  `).join('');
+  if (counter) counter.textContent = String(_alertRows.length);
+}
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+let _toastContainer = null;
+function showToast(text, kind = 'info') {
+  if (!_toastContainer) {
+    _toastContainer = document.createElement('div');
+    _toastContainer.style.cssText = `position:fixed;top:60px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;`;
+    document.body.appendChild(_toastContainer);
+  }
+  const bg = kind === 'warn' ? 'rgba(255,152,0,0.95)'
+    : kind === 'success' ? 'rgba(38,166,154,0.95)'
+    : kind === 'error' ? 'rgba(239,83,80,0.95)'
+    : 'rgba(60,80,100,0.95)';
+  const t = document.createElement('div');
+  t.style.cssText = `background:${bg};color:#fff;padding:8px 12px;border-radius:6px;font-family:'Roboto Mono',monospace;font-size:11px;box-shadow:0 4px 12px rgba(0,0,0,0.4);max-width:280px;opacity:0;transition:opacity .2s ease;`;
+  t.textContent = text;
+  _toastContainer.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => {
+    t.style.opacity = '0';
+    setTimeout(() => t.remove(), 250);
+  }, 5500);
+}

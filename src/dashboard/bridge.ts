@@ -41,7 +41,9 @@ import { createScriptsApi } from './scripts-api';
 import { createScriptsAi } from './scripts-ai';
 import { createScriptAlertRunner } from './script-alert-runner';
 import { Ollama } from 'ollama';
+import { isKillSwitchActive, setKillSwitch } from '../services/state';
 import type { DashboardPosition } from '../types';
+import { Redis } from 'ioredis';
 
 const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 type ChartTf = (typeof CHART_TFS)[number];
@@ -69,6 +71,7 @@ export interface DashboardFeeds {
   livePositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
   /** Add a symbol to the live market feed (multiplex WS). */
   subscribeSymbol?: (sym: string) => void;
+  redis?: Redis | null;
 }
 
 export interface DashboardBridge {
@@ -1072,6 +1075,13 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       indicators: computeIndicatorsFromRows(rows, sym),
       signals,
       positions,
+      config: {
+        leverage: Number(cfg.LEVERAGE) || 1,
+        capitalPerTrade: Number(cfg.CAPITAL_PER_TRADE_USDT) || 0,
+        maxSymbols: Number((cfg as any).MAX_OPEN_SYMBOLS) || 5,
+        killSwitch: await isKillSwitchActive(feeds.redis ?? null),
+        envTag: cfg.BINANCE_PRODUCT === 'usdm_demo' ? 'Binance Testnet' : 'Binance Hybrid Core',
+      },
     };
   };
 
@@ -1150,9 +1160,16 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     sendStoredAiBrief(ws, initSym);
 
     ws.on('message', async (raw) => {
-      let msg: { type?: string; tf?: string; oldestOpenTime?: number; symbol?: string };
+      interface DashboardWsMessage {
+        type?: string;
+        tf?: string;
+        oldestOpenTime?: number;
+        symbol?: string;
+        active?: boolean;
+      }
+      let msg: DashboardWsMessage;
       try {
-        msg = JSON.parse(String(raw)) as typeof msg;
+        msg = JSON.parse(String(raw)) as DashboardWsMessage;
       } catch {
         return;
       }
@@ -1185,6 +1202,12 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           const payload = computeSignalsForClient(ws, tf);
           ws.send(JSON.stringify({ type: 'signals', ...payload }));
         }
+        return;
+      }
+      if (msg.type === 'set_kill_switch' && msg.active !== undefined) {
+        const active = Boolean(msg.active);
+        log.info('dashboard_set_kill_switch', { active });
+        setKillSwitch(feeds.redis ?? null, active);
         return;
       }
       if (msg.type === 'force_resync') {

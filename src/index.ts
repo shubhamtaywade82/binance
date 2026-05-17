@@ -329,6 +329,7 @@ const main = async (): Promise<void> => {
             primaryTape: tradeTape,
           })
         : null;
+    const redis = getRedisClient(cfg.REDIS_URL);
     dashboardBridge = createDashboardBridge(cfg, log, {
       store,
       orderbook,
@@ -336,6 +337,7 @@ const main = async (): Promise<void> => {
       marketFeeds,
       orderBookSnapshotRing,
       precisionBySymbol,
+      redis,
       paperWallet: async () => {
         const adapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
         if (adapter.getWalletState) return adapter.getWalletState();

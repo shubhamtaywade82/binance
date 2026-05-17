@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import './globals.css';
 import LiveUpdates from '../components/LiveUpdates';
+import Toaster from '../components/Toaster';
 
 export const metadata: Metadata = {
   title: 'PnL Dashboard',
@@ -20,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="min-h-screen">
         <LiveUpdates />
+        <Toaster />
         <header className="border-b border-white/5 bg-bg-panel/40 backdrop-blur-md sticky top-0 z-50">
           <div className="max-w-[1600px] mx-auto px-4 sm:px-6 flex items-center justify-between h-16">
             <div className="flex items-center gap-4">
