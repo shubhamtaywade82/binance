@@ -48,13 +48,26 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
   }
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
-    // REVERSAL: if we already have an opposite-side position on this pair,
-    // close it first via /futures/positions/exit so the new entry doesn't
-    // pile onto a wrong-side book. Parity with PaperExecutionAdapter.
+    // Opposite-side guard: if we have a same-pair opposite-side position,
+    // REJECT instead of internally flipping. The event-bus RiskEngine should
+    // have blocked this upstream; reaching here = state desync. Silently
+    // flipping doubles fees + skips the close event downstream consumers
+    // (trail, ladder, risk) need.
     for (const [id, p] of this.orders.entries()) {
       if (p.pair === req.pair && p.side !== req.side) {
-        try { await this.closePosition(id, 'REVERSAL'); } catch { /* best-effort */ }
-        break;
+        return {
+          ok: false,
+          orderId: id,
+          fill: {
+            price: req.referencePrice,
+            quantity: req.quantity,
+            feeUsdt: 0,
+            slippageUsdt: 0,
+            latencyMs: 0,
+            timestamp: Date.now(),
+          },
+          error: 'opposite_side_open_position_no_internal_reversal',
+        };
       }
     }
 

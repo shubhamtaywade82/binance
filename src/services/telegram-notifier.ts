@@ -241,7 +241,7 @@ export class TelegramNotifier {
     const text = String(payload?.text ?? '').slice(0, 3500);
     if (!text) return;
     void this.sendCategory('ai',
-      `🤖 <b>AI Brief</b> · ${escape(symbol ?? '*')}\n\n${escape(text)}`,
+      `🤖 <b>AI Brief</b> · ${escape(symbol ?? '*')}\n\n${mdToHtml(text)}`,
     );
   }
 
@@ -339,3 +339,15 @@ const escape = (s: string): string =>
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+
+const mdToHtml = (s: string): string => {
+  let t = escape(s);
+  t = t.replace(/^#+\s+(.*)$/gm, (_, title) => {
+    const cleanTitle = title.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
+    return `<b><u>${cleanTitle}</u></b>`;
+  });
+  t = t.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+  t = t.replace(/\*([^\*\n]+)\*/g, '<i>$1</i>');
+  t = t.replace(/^\s*-\s+/gm, '• ');
+  return t;
+};

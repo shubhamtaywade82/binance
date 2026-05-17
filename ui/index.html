@@ -23,9 +23,19 @@
         </svg>
         <span class="logo-text">QuantumTrade</span>
       </div>
-      <div class="pair-badge" id="pair-badge">
-        <span id="hdr-symbol">SOLUSDT</span>
-        <span class="badge-tag">PERP</span>
+      <div class="pair-dropdown-wrap">
+        <button type="button" class="pair-badge" id="pair-badge" title="Select Symbol" aria-haspopup="dialog" aria-expanded="false">
+          <span id="hdr-symbol">SOLUSDT</span>
+          <span class="badge-tag">PERP</span>
+          <svg class="pair-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div id="symbol-dropdown" class="symbol-dropdown" hidden>
+          <div class="symbol-search-wrap">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="symbol-search-input" class="symbol-search-input" placeholder="Search symbol..." autocomplete="off" spellcheck="false" />
+          </div>
+          <div id="symbol-list" class="symbol-list" role="listbox"></div>
+        </div>
       </div>
       <div id="watchlist-bar" class="watchlist-bar hidden" role="toolbar" aria-label="Watchlist"></div>
     </div>

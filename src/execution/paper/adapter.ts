@@ -103,8 +103,24 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
           
           return { ok: true, orderId: id, fill };
         }
-        // Opposite side: close it first (market close)
-        await this.closePosition(id, 'REVERSAL');
+        // Opposite side: REJECT. The event-bus path (RiskEngine
+        // OPPOSITE_SIDE_OPEN_POSITION) is supposed to block this upstream.
+        // Reaching the adapter means state desync — silently flipping would
+        // double the risk and starve trailing/structure exits of the close
+        // event they expect. Force callers to close-then-reopen explicitly.
+        return {
+          ok: false,
+          orderId: id,
+          fill: {
+            price: req.referencePrice,
+            quantity: req.quantity,
+            feeUsdt: 0,
+            slippageUsdt: 0,
+            latencyMs: 0,
+            timestamp: Date.now(),
+          },
+          error: 'opposite_side_open_position_no_internal_reversal',
+        };
       }
     }
 

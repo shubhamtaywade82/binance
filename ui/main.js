@@ -50,33 +50,155 @@ const shortWatchLabel = (sym) => {
   return sym.toUpperCase().replace(/USDT$/i, '').replace(/BUSD$/i, '');
 }
 
+let currentWatchlist = [];
+let dropdownOpen = false;
+
 const initWatchlistBar = (watchlist, _executionSymbol) => {
-  const bar = document.getElementById('watchlist-bar');
-  if (!bar) return;
-  if (!Array.isArray(watchlist) || watchlist.length <= 1) {
-    bar.classList.add('hidden');
-    bar.innerHTML = '';
+  if (!Array.isArray(watchlist)) return;
+  currentWatchlist = watchlist.map(s => String(s).toUpperCase());
+  if (dropdownOpen) {
+    const input = document.getElementById('symbol-search-input');
+    renderSymbolDropdownList(input ? input.value : '');
+  }
+};
+
+const renderSymbolDropdownList = (query = '') => {
+  const list = document.getElementById('symbol-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const q = query.trim().toUpperCase();
+  const filtered = currentWatchlist.filter(s => s.includes(q));
+
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'symbol-item';
+    empty.style.color = 'var(--text-dim)';
+    empty.textContent = 'No symbols found';
+    list.appendChild(empty);
     return;
   }
-  bar.classList.remove('hidden');
-  bar.innerHTML = '';
-  for (const raw of watchlist) {
-    const s = String(raw).toUpperCase();
+
+  for (const s of filtered) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'watch-chip' + (s === activeWatchSymbol ? ' active' : '');
+    b.className = 'symbol-item' + (s === activeWatchSymbol ? ' active' : '');
     b.dataset.symbol = s;
-    b.textContent = shortWatchLabel(s);
-    b.setAttribute('aria-pressed', s === activeWatchSymbol ? 'true' : 'false');
-    b.addEventListener('click', () => selectWatchSymbol(s));
-    bar.appendChild(b);
+    b.setAttribute('role', 'option');
+    b.setAttribute('aria-selected', s === activeWatchSymbol ? 'true' : 'false');
+
+    const nameWrap = document.createElement('span');
+    nameWrap.className = 'symbol-item-name';
+    nameWrap.textContent = shortWatchLabel(s);
+
+    const tag = document.createElement('span');
+    tag.className = 'symbol-item-tag';
+    tag.textContent = s.endsWith('USDT') ? 'USDT' : 'PERP';
+
+    b.appendChild(nameWrap);
+    b.appendChild(tag);
+
+    b.addEventListener('click', () => {
+      selectWatchSymbol(s);
+      closeSymbolDropdown();
+    });
+
+    list.appendChild(b);
   }
-}
+};
+
+const toggleSymbolDropdown = (e) => {
+  if (e) e.stopPropagation();
+  const dd = document.getElementById('symbol-dropdown');
+  const badge = document.getElementById('pair-badge');
+  if (!dd || !badge) return;
+
+  dropdownOpen = !dropdownOpen;
+  if (dropdownOpen) {
+    dd.hidden = false;
+    badge.setAttribute('aria-expanded', 'true');
+    renderSymbolDropdownList('');
+    const input = document.getElementById('symbol-search-input');
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+  } else {
+    closeSymbolDropdown();
+  }
+};
+
+const closeSymbolDropdown = () => {
+  const dd = document.getElementById('symbol-dropdown');
+  const badge = document.getElementById('pair-badge');
+  if (!dd || !badge) return;
+  dropdownOpen = false;
+  dd.hidden = true;
+  badge.setAttribute('aria-expanded', 'false');
+};
+
+const initSymbolDropdown = () => {
+  const badge = document.getElementById('pair-badge');
+  const input = document.getElementById('symbol-search-input');
+  const dd = document.getElementById('symbol-dropdown');
+  if (!badge || !input || !dd) return;
+
+  badge.addEventListener('click', toggleSymbolDropdown);
+
+  input.addEventListener('input', (e) => {
+    renderSymbolDropdownList(e.target.value);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(dd.querySelectorAll('.symbol-item[role="option"]'));
+    if (!items.length) return;
+    const activeIdx = items.findIndex(item => item === document.activeElement);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIdx = activeIdx + 1 < items.length ? activeIdx + 1 : 0;
+      items[nextIdx].focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIdx = activeIdx - 1 >= 0 ? activeIdx - 1 : items.length - 1;
+      items[prevIdx].focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSymbolDropdown();
+    }
+  });
+
+  dd.addEventListener('keydown', (e) => {
+    const items = Array.from(dd.querySelectorAll('.symbol-item[role="option"]'));
+    if (!items.length) return;
+    const activeIdx = items.findIndex(item => item === document.activeElement);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIdx = activeIdx + 1 < items.length ? activeIdx + 1 : 0;
+      items[nextIdx].focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIdx = activeIdx - 1 >= 0 ? activeIdx - 1 : items.length - 1;
+      items[prevIdx].focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSymbolDropdown();
+      badge.focus();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (dropdownOpen && !dd.contains(e.target) && !badge.contains(e.target)) {
+      closeSymbolDropdown();
+    }
+  });
+};
 
 const selectWatchSymbol = (sym) => {
   if (!sym || sym === activeWatchSymbol) return;
   localStorage.setItem(STORAGE_KEY_SYMBOL, sym);
   syncUiWithSymbol(sym);
+  updateUrlWithSymbol(sym);
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: sym }));
   }
@@ -104,6 +226,14 @@ const syncUiWithSymbol = (sym) => {
   if (mtfHdr) {
     mtfHdr.textContent = `MTF Stack (${s.replace(/USDT$/, '')})`;
   }
+}
+
+const updateUrlWithSymbol = (sym) => {
+  if (!sym) return;
+  const url = new URL(window.location);
+  if (url.searchParams.get('symbol') === sym.toUpperCase()) return;
+  url.searchParams.set('symbol', sym.toUpperCase());
+  window.history.replaceState({}, '', url);
 }
 
 let lastPrice = null;
@@ -159,25 +289,28 @@ const dashboardWebSocketUrl = () => {
 
   const { protocol, host } = window.location;
   const wsScheme = protocol === 'https:' ? 'wss:' : 'ws:';
+  
+  // Use URL search param or localStorage to decide initial symbol for handshake
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialSym = urlParams.get('symbol') || localStorage.getItem(STORAGE_KEY_SYMBOL);
+  const query = initialSym ? `?symbol=${initialSym}` : '';
+
   if (import.meta.env.DEV) {
-    return `${wsScheme}//${host}/__dashboard_ws`;
+    return `${wsScheme}//${host}/__dashboard_ws${query}`;
   }
 
   const port = import.meta.env?.VITE_DASHBOARD_WS_PORT ?? '4001';
   const hostname = window.location.hostname || 'localhost';
-  return `${wsScheme}//${hostname}:${port}`;
+  return `${wsScheme}//${hostname}:${port}${query}`;
 }
 
 // ─── WebSocket connection ─────────────────────────────────────────────────
-const WS_URL = dashboardWebSocketUrl();
 let ws = null;
 let reconnectDelay = 1000;
 let reconnectTimer = null;
 
 const connect = () => {
-  const storedSym = localStorage.getItem(STORAGE_KEY_SYMBOL) || '';
-  const sep = WS_URL.includes('?') ? '&' : '?';
-  const connectUrl = storedSym ? `${WS_URL}${sep}symbol=${storedSym}` : WS_URL;
+  const connectUrl = dashboardWebSocketUrl();
   setWsStatus('connecting', `Connecting… (${connectUrl})`);
   ws = new WebSocket(connectUrl);
 
@@ -246,6 +379,7 @@ const dispatch = (msg) => {
       if (activeWatchSymbol) {
         localStorage.setItem(STORAGE_KEY_SYMBOL, activeWatchSymbol);
         syncUiWithSymbol(activeWatchSymbol);
+        updateUrlWithSymbol(activeWatchSymbol);
       }
       initWatchlistBar(msg.watchlist, msg.executionSymbol);
 
@@ -706,8 +840,12 @@ const requestForceResync = () => {
 
 // ─── Init ─────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  initSymbolDropdown();
   const storedSym = localStorage.getItem(STORAGE_KEY_SYMBOL);
-  if (storedSym) syncUiWithSymbol(storedSym);
+  if (storedSym) {
+    syncUiWithSymbol(storedSym);
+    updateUrlWithSymbol(storedSym);
+  }
 
   obMgr.init();
   chart.init();

@@ -106,39 +106,143 @@ body::before {
 .logo { display: flex; align-items: center; gap: 8px; }
 .logo-text { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; background: linear-gradient(135deg, #7c4dff, #00b0ff); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 
-/* Pair badge */
-.pair-badge { display: flex; align-items: center; gap: 6px; background: var(--accent-dim); border: 1px solid var(--border-accent); border-radius: var(--radius-sm); padding: 4px 10px; }
-.pair-badge #hdr-symbol { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text-primary); }
-
-.watchlist-bar {
+/* Pair badge dropdown button */
+.pair-dropdown-wrap {
+  position: relative;
+}
+.pair-badge {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  max-width: 320px;
-}
-.watchlist-bar.hidden {
-  display: none !important;
-}
-.watch-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
+  background: var(--accent-dim);
+  border: 1px solid var(--border-accent);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-secondary);
+  padding: 4px 10px;
   cursor: pointer;
-}
-.watch-chip:hover {
-  border-color: var(--border-accent);
+  transition: all 0.2s ease;
+  user-select: none;
   color: var(--text-primary);
 }
-.watch-chip.active {
+.pair-badge:hover, .pair-badge[aria-expanded="true"] {
+  background: var(--accent-glow);
   border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.pair-badge #hdr-symbol { font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.pair-chevron {
   color: var(--accent);
+  transition: transform 0.2s ease;
+}
+.pair-badge[aria-expanded="true"] .pair-chevron {
+  transform: rotate(180deg);
+}
+
+/* Symbol Search Dropdown Modal */
+.symbol-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 300;
+  width: 260px;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(20px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: dropdown-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.symbol-dropdown[hidden] {
+  display: none !important;
+}
+
+@keyframes dropdown-pop {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.symbol-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.symbol-search-wrap .search-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.symbol-search-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  outline: none;
+}
+.symbol-search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.symbol-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+.symbol-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+  width: 100%;
+}
+.symbol-item:hover, .symbol-item:focus-visible {
+  background: var(--bg-row-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+.symbol-item.active {
   background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+  border-left: 3px solid var(--accent);
+  padding-left: 11px;
+}
+.symbol-item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.symbol-item-tag {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.symbol-item.active .symbol-item-tag {
+  color: var(--accent);
+  background: rgba(124, 77, 255, 0.2);
+}
+
+.watchlist-bar {
+  display: none !important;
 }
 .badge-tag { font-size: 10px; font-weight: 600; color: var(--accent); background: rgba(124, 77, 255, 0.2); border-radius: 3px; padding: 1px 5px; }
 

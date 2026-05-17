@@ -538,6 +538,13 @@ export class HybridOrchestrator {
       }
     }
 
+    // CRITICAL: when the event-bus execution path is on, the AdaptiveStrategy /
+    // Seykota module attached to each SymbolActor owns entries — the legacy
+    // PositionManager-driven evaluate() / evaluateForSymbol() must NOT fire,
+    // or both paths place orders on the same adapter and adapter records
+    // REVERSAL (full death spiral observed in production).
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
+
     if (isPrimary && tf === this.ltfTf) void this.evaluate(candle);
     if (this.cfg.ENABLE_MULTI_ASSET) {
       const tier = tierFor(symU);
