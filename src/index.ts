@@ -30,6 +30,7 @@ import { TpLadderManager } from './core/execution/tp-ladder-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
 import { LiveAccountPoller } from './core/execution/live-account-poller';
+import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import type { DomainEvent } from '@coindcx/contracts';
 
@@ -168,6 +169,24 @@ const main = async (): Promise<void> => {
         poller.start();
         lifecycle.register('live_account_poller', () => poller.stop(), { timeoutMs: 1000 });
         log.info('live_account_poller_started', { pollMs });
+
+        // Real-time user-data WS — replaces poller for instant fills + balance.
+        // Poller remains as fallback whenever the WS is disconnected.
+        if (cfg.COINDCX_API_KEY.trim() && cfg.COINDCX_API_SECRET.trim()) {
+          const userWs = new CoinDcxUserDataWs({
+            apiKey: cfg.COINDCX_API_KEY,
+            apiSecret: cfg.COINDCX_API_SECRET,
+            log,
+            eventBus: defaultEventBus,
+            onConnectionChange: (connected) => {
+              if (connected) poller.stop();
+              else poller.start();
+            },
+          });
+          userWs.start();
+          lifecycle.register('coindcx_userdata_ws', () => userWs.stop(), { timeoutMs: 1500 });
+          log.info('coindcx_userdata_ws_started', {});
+        }
       }
       // TpLadderManager fires partial closes at strategy-defined absolute price
       // targets. AdaptiveStrategy uses it; SeykotaTrendModule's inline partialTpR
@@ -196,9 +215,23 @@ const main = async (): Promise<void> => {
             barsThreshold: Number((cfg as any).TIME_STOP_BARS) || 24,
           });
         }
-        if ((cfg as any).FUNDING_EXIT_ENABLED && execution.paperAdapter) {
-          // Reach into the paper runtime to grab the FundingEngine instance.
-          const fundingEngine = (execution as any).paperFundingEngine ?? (execution.paperAdapter as any).opts?.funding;
+        if ((cfg as any).FUNDING_EXIT_ENABLED) {
+          // Prefer the paper adapter's FundingEngine when running paper. For
+          // live, the engine doesn't exist in execution runtime; spin one up
+          // here against the Binance REST API since CoinDCX doesn't expose
+          // funding rates and Binance is the price source either way.
+          let fundingEngine = (execution as any).paperFundingEngine ?? (execution.paperAdapter as any)?.opts?.funding;
+          if (!fundingEngine && cfg.EXECUTION_MODE === 'live') {
+            const { FundingEngine } = await import('./execution/paper/funding');
+            const { binanceRestBase } = await import('./config');
+            fundingEngine = new FundingEngine({
+              binanceRestBase: binanceRestBase(cfg),
+              pollSec: cfg.PAPER_FUNDING_POLL_SEC,
+            });
+            for (const s of multiplexBinanceSymbols(cfg)) fundingEngine.trackSymbol(s);
+            fundingEngine.start();
+            lifecycle.register('live_funding_engine', () => fundingEngine.stop(), { timeoutMs: 1000 });
+          }
           if (fundingEngine) {
             new FundingExitManager(defaultEventBus, fundingEngine, {
               perTickThresholdBps: Number((cfg as any).FUNDING_EXIT_THRESHOLD_BPS) || 50,

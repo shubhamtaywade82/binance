@@ -74,7 +74,12 @@ export class ExecutionBridge {
     try {
       const result = await this.adapter.placeOrder(req);
       const ts = marketClock.now();
-      if (result.ok) {
+      // In live mode, the CoinDCX user-data WS emits the authoritative
+      // execution.order.filled with the exchange's position_id. Skip the
+      // synthetic publish to avoid double-counting in RiskEngine + trail.
+      const suppressFill =
+        this.adapter.name === 'live' && Boolean((this.cfg as any).LIVE_USE_WS_FOR_FILLS);
+      if (result.ok && !suppressFill) {
         this.eventBus.publish({
           id: `order-fill-${result.orderId}`,
           type: 'execution.order.filled',
@@ -104,7 +109,7 @@ export class ExecutionBridge {
             maxHoldBars: (p as any).maxHoldBars,
           },
         });
-      } else {
+      } else if (!result.ok) {
         this.publishRejected(p, result.error ?? 'ADAPTER_FAILURE', ts);
       }
     } catch (err) {

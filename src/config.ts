@@ -586,6 +586,14 @@ export const AppConfigSchema = z.object({
   ADAPTIVE_MODE_OVERRIDES_JSON: z.string().default(''),
 
   /**
+   * When true (default in live mode), ExecutionBridge skips synthesising
+   * execution.order.filled from the adapter's local result and lets the
+   * CoinDcxUserDataWs emit the authoritative fill from the exchange.
+   * Avoids double-counting in RiskEngine + TrailingStopManager.
+   */
+  LIVE_USE_WS_FOR_FILLS: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
+
+  /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
    * Pipe `|` separates clusters; comma separates symbols that should not share same-direction risk.
