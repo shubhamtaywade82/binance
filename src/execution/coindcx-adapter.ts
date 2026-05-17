@@ -32,10 +32,32 @@ interface OpenLiveOrder {
 export class CoinDcxExecutionAdapter implements ExecutionAdapter {
   readonly name = 'live' as const;
   private orders = new Map<string, OpenLiveOrder>();
+  private lastMarkBySymbol = new Map<string, number>();
 
   constructor(private readonly opts: CoinDcxAdapterOptions) {}
 
+  /** Live mark price hook — called by MarkPriceBridge for every market.mark event. */
+  onMark(symbol: string, markPrice: number): void {
+    if (!Number.isFinite(markPrice) || markPrice <= 0) return;
+    this.lastMarkBySymbol.set(symbol.toUpperCase(), markPrice);
+  }
+
+  /** Quote mid for a symbol — fallback when REST snapshot lacks a mark price. */
+  public latestMark(symbol: string): number | undefined {
+    return this.lastMarkBySymbol.get(symbol.toUpperCase());
+  }
+
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
+    // REVERSAL: if we already have an opposite-side position on this pair,
+    // close it first via /futures/positions/exit so the new entry doesn't
+    // pile onto a wrong-side book. Parity with PaperExecutionAdapter.
+    for (const [id, p] of this.orders.entries()) {
+      if (p.pair === req.pair && p.side !== req.side) {
+        try { await this.closePosition(id, 'REVERSAL'); } catch { /* best-effort */ }
+        break;
+      }
+    }
+
     if (!this.opts.skipLeverageUpdate) {
       try {
         await this.opts.client.updatePositionLeverage({ pair: req.pair, leverage: req.leverage });
@@ -143,6 +165,11 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     } catch {
       // keep entry price as fallback
     }
+    if (exitPrice === open.entryPrice) {
+      // REST didn't give us a fresh price — fall back to last live mark.
+      const mark = this.latestMark(open.pair) ?? this.latestMark(open.pair.replace(/^B-/, '').replace('_', ''));
+      if (mark && mark > 0) exitPrice = mark;
+    }
 
     const sideMul = open.side === 'LONG' ? 1 : -1;
     const gross = (exitPrice - open.entryPrice) * qtyToClose * sideMul;
@@ -193,12 +220,24 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       const account = accountDetails.status === 'fulfilled' ? (accountDetails.value as Record<string, any>) : {};
       const walletsArr = wallets.status === 'fulfilled' ? (wallets.value as any[]) : [];
       const usdtWallet = (walletsArr || []).find((w: any) => w.currency_short_name === 'USDT') || {};
+      const inrWallet = (walletsArr || []).find((w: any) => w.currency_short_name === 'INR') || {};
 
       const balanceUsdt = Number(usdtWallet.balance) || Number(account.total_wallet_balance) || (Number(account.total_account_equity) - Number(account.pnl)) || 0;
       const availableUsdt = Number(account.available_balance_cross) || Number(usdtWallet.balance) || 0;
       const usedMarginUsdt = Number(usdtWallet.locked_balance) || (balanceUsdt - availableUsdt) || 0;
       const unrealizedPnlUsdt = Number(account.pnl) || 0;
       const equityUsdt = Number(account.total_account_equity) || (balanceUsdt + unrealizedPnlUsdt) || 0;
+
+      const balanceInr = Number(inrWallet.balance) || 0;
+      const availableInr = Number(inrWallet.balance) - Number(inrWallet.locked_balance ?? 0) || balanceInr;
+      const usedMarginInr = Number(inrWallet.locked_balance) || 0;
+
+      // Aggregate all currency wallets so the UI can show all balances.
+      const allBalances = (walletsArr || []).map((w: any) => ({
+        currency: w.currency_short_name,
+        balance: Number(w.balance) || 0,
+        locked: Number(w.locked_balance) || 0,
+      }));
 
       return {
         balanceUsdt,
@@ -207,6 +246,10 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
         unrealizedPnlUsdt,
         realizedPnlUsdt: 0,
         equityUsdt,
+        balanceInr,
+        availableInr,
+        usedMarginInr,
+        allBalances,
         updatedAt: Date.now(),
       };
     } catch {
@@ -217,6 +260,10 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
         unrealizedPnlUsdt: 0,
         realizedPnlUsdt: 0,
         equityUsdt: 0,
+        balanceInr: 0,
+        availableInr: 0,
+        usedMarginInr: 0,
+        allBalances: [] as Array<{ currency: string; balance: number; locked: number }>,
         updatedAt: Date.now(),
       };
     }

@@ -53,6 +53,13 @@ export class LiveAccountPoller {
     this.timer = null;
   }
 
+  /** Triggered by CoinDcxUserDataWs on balance_update — fetches fresh equity + positions
+   *  so the wallet broadcast reflects the change within ~200ms (REST roundtrip)
+   *  instead of waiting up to PAPER_EQUITY_SNAPSHOT_SEC. */
+  public requestFreshSnapshot(): void {
+    void this.tick();
+  }
+
   private async tick(): Promise<void> {
     const [wallet, positions] = await Promise.all([
       this.adapter.getWalletState().catch(() => null),

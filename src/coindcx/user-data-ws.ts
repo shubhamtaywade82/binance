@@ -30,6 +30,8 @@ export interface CoinDcxUserDataWsOptions {
   eventBus: EventBus;
   /** Notified when WS is connected/disconnected — used to throttle the REST poll fallback. */
   onConnectionChange?: (connected: boolean) => void;
+  /** Called on balance_update — caller usually triggers an immediate REST equity refresh. */
+  onBalanceDelta?: () => void;
 }
 
 const DEFAULT_URL = 'https://stream.coindcx.com';
@@ -195,6 +197,9 @@ export class CoinDcxUserDataWs {
       source: 'coindcx-userdata-ws',
       payload: { ...data, mode: 'live' },
     });
+    // Trigger an immediate REST fetch so the equity broadcast (which is the
+    // aggregate the dashboard renders) reflects the new balance within ~200ms.
+    this.opts.onBalanceDelta?.();
   }
 
   private onTrade(data: any): void {

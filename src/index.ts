@@ -31,6 +31,7 @@ import { PositionCloseBridge } from './core/execution/position-close-bridge';
 import { EventToPostgresBridge } from './core/persistence/event-to-postgres-bridge';
 import { LiveAccountPoller } from './core/execution/live-account-poller';
 import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
+import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import type { DomainEvent } from '@coindcx/contracts';
 
@@ -157,6 +158,13 @@ const main = async (): Promise<void> => {
       // Live mode: poll CoinDCX REST for wallet + positions and project onto
       // the same event/Postgres/Redis shape paper mode emits. WS user-data
       // stream replacement can land later without changing consumers.
+      // Live adapter has no internal book ticker feed — wire MarkPriceBridge
+      // so onMark is fed from Binance market.mark / market.bookticker. Required
+      // for exit managers (trail / structure) that consult adapter marks.
+      if (cfg.EXECUTION_MODE === 'live' && execution.cdcxAdapter) {
+        new MarkPriceBridge(defaultEventBus, execution.cdcxAdapter);
+      }
+
       if (cfg.EXECUTION_MODE === 'live' && execution.cdcxAdapter) {
         const pollMs = Math.max(1000, (cfg.PAPER_EQUITY_SNAPSHOT_SEC || 5) * 1000);
         const staticFx = { getInrPerUsdt: () => Number(cfg.INR_PER_USDT) || 98 };
@@ -182,6 +190,7 @@ const main = async (): Promise<void> => {
               if (connected) poller.stop();
               else poller.start();
             },
+            onBalanceDelta: () => poller.requestFreshSnapshot(),
           });
           userWs.start();
           lifecycle.register('coindcx_userdata_ws', () => userWs.stop(), { timeoutMs: 1500 });

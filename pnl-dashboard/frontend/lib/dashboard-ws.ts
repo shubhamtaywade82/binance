@@ -59,6 +59,10 @@ interface ApiWallet {
   open_positions: number;
   ts: number;
   mode?: string;
+  balance_inr?: number;
+  available_inr?: number;
+  used_margin_inr?: number;
+  all_balances?: Array<{ currency: string; balance: number; locked: number }>;
 }
 
 const toApiPosition = (p: DashboardPaperPosition): ApiPosition => ({
@@ -129,6 +133,10 @@ export function useDashboardLiveUpdates(url: string = DEFAULT_URL): void {
               open_positions: 0,
               ts: Date.now(),
               mode: msg.mode ?? 'paper',
+              balance_inr: msg.balanceInr,
+              available_inr: msg.availableInr,
+              used_margin_inr: msg.usedMarginInr,
+              all_balances: msg.allBalances,
             };
             void mutate('/wallet', wallet, { revalidate: false });
             break;
