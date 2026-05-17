@@ -34,6 +34,7 @@ import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import { reconcilePositionsAtStartup } from './core/execution/reconciliation';
+import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
 
@@ -417,15 +418,20 @@ const main = async (): Promise<void> => {
         // closes positions and downstream state goes stale → strategy
         // keeps emitting same-symbol orders → adapter records REVERSAL on
         // next flip → death spiral.
+        // Canonicalise: the CoinDCX live adapter populates trade.symbol with
+        // 'B-SOL_USDT'-style pairs; exit managers + RiskEngine key by canonical
+        // 'SOLUSDT'. Without this, the close event arrives under the wrong key
+        // and the trailing stop / risk exposure never releases.
+        const closeSymbol = normalizeSymbol((trade as any).symbol ?? (trade as any).pair);
         defaultEventBus.publish({
           id: `adapter-close-${trade.orderId}-${trade.closedAt}`,
           type: 'execution.position.closed',
           ts: trade.closedAt,
           source: `execution:${activeAdapter.name}:adapter-internal`,
-          symbol: (trade as any).symbol ?? (trade as any).pair,
+          symbol: closeSymbol,
           payload: {
             orderId: trade.orderId,
-            symbol: (trade as any).symbol ?? (trade as any).pair,
+            symbol: closeSymbol,
             side: trade.side,
             entryPrice: trade.entryPrice,
             exitPrice: trade.exitPrice,

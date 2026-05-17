@@ -3,6 +3,7 @@ import io from 'socket.io-client';
 import type { EventBus } from '../core/events/event-bus';
 import type { AppLogger } from '../logging/app-logger';
 import { marketClock } from '../core/time/market-clock';
+import { normalizeSymbol } from '../mapping/symbol-normalize';
 
 /**
  * CoinDcxUserDataWs — authenticated socket.io v2.4 stream for user account.
@@ -111,7 +112,11 @@ export class CoinDcxUserDataWs {
   }
 
   private onPosition(data: any): void {
-    const symbol = data?.pair ?? data?.symbol;
+    const rawSymbol = data?.pair ?? data?.symbol;
+    if (!rawSymbol) return;
+    // Canonicalise at the bus boundary so downstream consumers (RiskEngine,
+    // exit managers) match by the same key the rest of the system uses.
+    const symbol = normalizeSymbol(rawSymbol);
     if (!symbol) return;
     const side = (data?.side === 'buy' || data?.side === 'LONG') ? 'LONG' : 'SHORT';
     const ts = marketClock.now();
@@ -169,15 +174,16 @@ export class CoinDcxUserDataWs {
     let type = 'execution.order.submitted';
     if (status === 'filled' || status === 'closed') type = 'execution.order.filled';
     else if (status === 'cancelled' || status === 'rejected') type = 'execution.order.rejected';
+    const symbol = normalizeSymbol(data?.pair);
     this.opts.eventBus.publish({
       id: `coindcx-order-${data?.id ?? ts}-${++this.seq}`,
       type,
       ts,
       source: 'coindcx-userdata-ws',
-      symbol: data?.pair,
+      symbol,
       payload: {
         orderId: String(data?.id ?? ''),
-        symbol: data?.pair,
+        symbol,
         side: data?.side === 'buy' ? 'LONG' : 'SHORT',
         quantity: Number(data?.total_quantity ?? 0),
         price: Number(data?.price ?? data?.avg_price ?? 0),
@@ -211,7 +217,7 @@ export class CoinDcxUserDataWs {
       type: 'execution.order.fill',
       ts,
       source: 'coindcx-userdata-ws',
-      symbol: data?.pair,
+      symbol: normalizeSymbol(data?.pair),
       payload: { ...data, mode: 'live' },
     });
   }

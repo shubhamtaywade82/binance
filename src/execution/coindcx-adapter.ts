@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
+import { normalizeSymbol } from '../mapping/symbol-normalize';
 import type {
   CloseReason,
   ClosedPosition,
@@ -75,12 +76,12 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
   /** Live mark price hook — called by MarkPriceBridge for every market.mark event. */
   onMark(symbol: string, markPrice: number): void {
     if (!Number.isFinite(markPrice) || markPrice <= 0) return;
-    this.lastMarkBySymbol.set(symbol.toUpperCase(), markPrice);
+    this.lastMarkBySymbol.set(normalizeSymbol(symbol), markPrice);
   }
 
   /** Quote mid for a symbol — fallback when REST snapshot lacks a mark price. */
   public latestMark(symbol: string): number | undefined {
-    return this.lastMarkBySymbol.get(symbol.toUpperCase());
+    return this.lastMarkBySymbol.get(normalizeSymbol(symbol));
   }
 
   private pruneIdempotencyCache(now: number): void {
@@ -317,7 +318,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     }
     if (exitPrice === open.entryPrice) {
       // REST didn't give us a fresh price — fall back to last live mark.
-      const mark = this.latestMark(open.pair) ?? this.latestMark(open.pair.replace(/^B-/, '').replace('_', ''));
+      const mark = this.latestMark(normalizeSymbol(open.pair));
       if (mark && mark > 0) exitPrice = mark;
     }
 
@@ -331,7 +332,9 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     const net = gross - fees - funding;
     const closed: ClosedPosition = {
       orderId,
-      symbol: open.pair,
+      // Canonical symbol on the event bus (e.g. SOLUSDT, not B-SOL_USDT) so
+      // exit managers and RiskEngine match the same key everywhere.
+      symbol: normalizeSymbol(open.pair),
       side: open.side,
       leverage: open.leverage,
       entryPrice: open.entryPrice,
@@ -425,7 +428,9 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       const data = (await this.opts.client.getFuturesPositions()) as any[];
       return (data || []).map((p) => ({
         orderId: p.position_id,
-        symbol: p.pair,
+        // Canonicalise so seedPositions / reconciliation feeds the RiskEngine
+        // the same symbol the event bus uses.
+        symbol: normalizeSymbol(p.pair),
         side: p.side === 'buy' ? 'LONG' : 'SHORT',
         entryPrice: p.avg_price,
         quantity: p.active_pos,
