@@ -59,10 +59,14 @@ export class PaperWallet {
       const raw = fs.readFileSync(this.persistPath, 'utf8');
       const j = JSON.parse(raw) as Partial<WalletState>;
       if (typeof j.balanceUsdt === 'number') this.balanceUsdt = j.balanceUsdt;
-      if (typeof j.usedMarginUsdt === 'number') this.usedMarginUsdt = j.usedMarginUsdt;
       if (typeof j.realizedPnlUsdt === 'number') this.realizedPnlUsdt = j.realizedPnlUsdt;
-      if (typeof j.unrealizedPnlUsdt === 'number') this.unrealizedPnlUsdt = j.unrealizedPnlUsdt;
+      // We do not load usedMarginUsdt or unrealizedPnlUsdt from disk because PaperExecutionAdapter
+      // initializes with an empty positions map on boot. Loading previous margin/unrealized PnL
+      // without the corresponding open positions results in ghost margin locks and ghost PnL.
+      this.usedMarginUsdt = 0;
+      this.unrealizedPnlUsdt = 0;
       this.touch();
+      this.flushToDisk();
     } catch {
       // ignore corrupt file; keep in-memory
     }
