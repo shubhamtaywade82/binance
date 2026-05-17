@@ -381,6 +381,17 @@ export const AppConfigSchema = z.object({
    */
   AI_MARKET_BRIEF_ENABLED: boolFromString(false),
   /**
+   * AI Provider: `ollama` (default) or `openai` (for llama.cpp / local OpenAI-compatible APIs).
+   */
+  AI_PROVIDER: z.enum(['ollama', 'openai']).default('ollama'),
+  /**
+   * OpenAI-compatible API base URL (e.g., http://127.0.0.1:8080/v1 for llama.cpp).
+   * Only used when AI_PROVIDER=openai.
+   */
+  AI_OPENAI_URL: z.string().default('http://127.0.0.1:8080/v1'),
+  /** Model name for the OpenAI provider. */
+  AI_OPENAI_MODEL: z.string().default('local-model'),
+  /**
    * Which Ollama API base to use (URLs are fixed in code — see `ollamaApiUrl`).
    * `local` → `http://127.0.0.1:11434` · `cloud` → `https://ollama.com` (set `OLLAMA_API_KEY`).
    */

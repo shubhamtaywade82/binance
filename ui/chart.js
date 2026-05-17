@@ -1870,7 +1870,24 @@ export class ChartManager {
     
     const scrollToLive = () => {
       if (this.chart) {
-        this.chart.timeScale().scrollToRealTime();
+        const raw = this.candleMap[this.currentTf] || [];
+        const len = raw.length;
+        if (len > 0) {
+          const currentRange = this.chart.timeScale().getVisibleLogicalRange();
+          let bars = DEFAULT_VISIBLE_BARS[this.currentTf] ?? 120;
+          if (currentRange && currentRange.from != null && currentRange.to != null) {
+            const currentBars = Math.round(currentRange.to - currentRange.from);
+            if (currentBars > 10 && currentBars < len) {
+              bars = currentBars;
+            }
+          }
+          this.chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, len - bars),
+            to: len - 1,
+          });
+        } else {
+          this.chart.timeScale().scrollToRealTime();
+        }
       }
     };
 

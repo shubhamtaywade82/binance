@@ -246,6 +246,7 @@ const initSymbolDropdown = () => {
 
 const selectWatchSymbol = (sym) => {
   if (!sym || sym === activeWatchSymbol) return;
+  activeWatchSymbol = sym.toUpperCase();
   localStorage.setItem(STORAGE_KEY_SYMBOL, sym);
   syncUiWithSymbol(sym);
   updateUrlWithSymbol(sym);

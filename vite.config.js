@@ -39,7 +39,7 @@ export default defineConfig({
         target: 'http://127.0.0.1:4001',
         changeOrigin: true,
         ws: true,
-        rewrite: () => '/',
+        rewrite: (path) => path.replace(/^\/__dashboard_ws/, ''),
       },
       // NanoPine scripts REST API — same dashboard process, plain HTTP.
       '/api': {
