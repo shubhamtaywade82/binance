@@ -51,11 +51,39 @@ const shortWatchLabel = (sym) => {
 }
 
 let currentWatchlist = [];
+let allAvailableSymbols = [];
 let dropdownOpen = false;
 
-const initWatchlistBar = (watchlist, _executionSymbol) => {
-  if (!Array.isArray(watchlist)) return;
-  currentWatchlist = watchlist.map(s => String(s).toUpperCase());
+const initWatchlistBar = (msg) => {
+  const { watchlist, allSymbols } = msg;
+  if (Array.isArray(watchlist)) {
+    currentWatchlist = watchlist.map(s => String(s).toUpperCase());
+  }
+  if (Array.isArray(allSymbols)) {
+    allAvailableSymbols = allSymbols.map(s => String(s).toUpperCase()).sort();
+  }
+
+  const bar = document.getElementById('watchlist-bar');
+  if (bar) {
+    if (currentWatchlist.length <= 1) {
+      bar.classList.add('hidden');
+      bar.innerHTML = '';
+    } else {
+      bar.classList.remove('hidden');
+      bar.innerHTML = '';
+      for (const s of currentWatchlist) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'watch-chip' + (s === activeWatchSymbol ? ' active' : '');
+        b.dataset.symbol = s;
+        b.textContent = shortWatchLabel(s);
+        b.setAttribute('aria-pressed', s === activeWatchSymbol ? 'true' : 'false');
+        b.addEventListener('click', () => selectWatchSymbol(s));
+        bar.appendChild(b);
+      }
+    }
+  }
+
   if (dropdownOpen) {
     const input = document.getElementById('symbol-search-input');
     renderSymbolDropdownList(input ? input.value : '');
@@ -67,18 +95,40 @@ const renderSymbolDropdownList = (query = '') => {
   if (!list) return;
   list.innerHTML = '';
   const q = query.trim().toUpperCase();
-  const filtered = currentWatchlist.filter(s => s.includes(q));
 
-  if (filtered.length === 0) {
+  let displayed = [];
+  let isSearch = q.length > 0;
+
+  if (isSearch) {
+    // Search across all available symbols
+    displayed = allAvailableSymbols.filter(s => s.includes(q)).slice(0, 50);
+  } else {
+    // Just show current watchlist
+    displayed = currentWatchlist;
+  }
+
+  if (displayed.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'symbol-item';
     empty.style.color = 'var(--text-dim)';
-    empty.textContent = 'No symbols found';
+    empty.textContent = isSearch ? 'No matching symbols' : 'Watchlist empty';
     list.appendChild(empty);
     return;
   }
 
-  for (const s of filtered) {
+  if (!isSearch && currentWatchlist.length > 0) {
+    const head = document.createElement('div');
+    head.className = 'symbol-list-header';
+    head.textContent = 'Watchlist';
+    list.appendChild(head);
+  } else if (isSearch) {
+    const head = document.createElement('div');
+    head.className = 'symbol-list-header';
+    head.textContent = `Search Results (${q})`;
+    list.appendChild(head);
+  }
+
+  for (const s of displayed) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'symbol-item' + (s === activeWatchSymbol ? ' active' : '');
@@ -381,7 +431,7 @@ const dispatch = (msg) => {
         syncUiWithSymbol(activeWatchSymbol);
         updateUrlWithSymbol(activeWatchSymbol);
       }
-      initWatchlistBar(msg.watchlist, msg.executionSymbol);
+      initWatchlistBar(msg);
 
       chart.applyDashboardLtpPrecision(msg);
 

@@ -67,6 +67,8 @@ export interface DashboardFeeds {
   paperWallet?: () => WalletState | null | Promise<WalletState | null>;
   paperPositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
   livePositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
+  /** Add a symbol to the live market feed (multiplex WS). */
+  subscribeSymbol?: (sym: string) => void;
 }
 
 export interface DashboardBridge {
@@ -1049,6 +1051,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     return {
       symbol: sym,
       watchlist: watchlistSymbols,
+      allSymbols: Array.from(precisionBySymbol.keys()),
       executionSymbol: symbolUpper,
       availableTimeframes: [...chartTfsOnStream],
       mark: mark !== undefined ? mark : null,
@@ -1156,12 +1159,23 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       if (msg.type === 'set_watch_symbol' && typeof msg.symbol === 'string') {
         const nextRaw = msg.symbol.trim().toUpperCase();
         const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
-        if (watchlistSet.has(next)) {
-          if (watchSymbolByClient.get(ws) === next) return;
-          watchSymbolByClient.set(ws, next);
-          ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
-          sendStoredAiBrief(ws, next);
+        
+        // Validation: must be a known Binance symbol
+        if (!precisionBySymbol.has(next)) return;
+
+        if (watchSymbolByClient.get(ws) === next) return;
+        
+        // If not in active multiplex, subscribe now
+        if (!watchlistSet.has(next)) {
+          log.info('dashboard_dynamic_subscribe', { symbol: next });
+          feeds.subscribeSymbol?.(next);
+          watchlistSet.add(next);
+          watchlistSymbols.push(next);
         }
+
+        watchSymbolByClient.set(ws, next);
+        ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
+        sendStoredAiBrief(ws, next);
         return;
       }
       if (msg.type === 'set_chart_tf' && typeof msg.tf === 'string') {

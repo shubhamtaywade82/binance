@@ -195,6 +195,16 @@ body::before {
   flex-direction: column;
   padding: 4px 0;
 }
+.symbol-list-header {
+  padding: 8px 14px 4px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  margin-bottom: 4px;
+}
 .symbol-item {
   display: flex;
   align-items: center;

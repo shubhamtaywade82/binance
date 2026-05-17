@@ -347,6 +347,25 @@ const main = async (): Promise<void> => {
         return [];
       },
       livePositions: () => orch?.getDashboardPositions() ?? null,
+      subscribeSymbol: (sym) => {
+        const mx = orch?.getMultiplexWs();
+        if (mx) {
+          const streams = [
+            `${sym.toLowerCase()}@kline_1m`,
+            `${sym.toLowerCase()}@kline_5m`,
+            `${sym.toLowerCase()}@kline_15m`,
+            `${sym.toLowerCase()}@kline_1h`,
+            `${sym.toLowerCase()}@kline_4h`,
+            `${sym.toLowerCase()}@kline_1d`,
+            `${sym.toLowerCase()}@markPrice`,
+            `${sym.toLowerCase()}@bookTicker`,
+            `${sym.toLowerCase()}@aggTrade`,
+          ];
+          mx.subscribe(streams);
+          // Also spawn a SymbolActor so it starts processing/storing events
+          actorSystem?.spawnSymbolActor(sym);
+        }
+      },
     });
 
     const activeAdapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
