@@ -1097,9 +1097,6 @@ function renderAlerts() {
   `).join('');
   if (counter) counter.textContent = String(_alertRows.length);
 }
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 let _toastContainer = null;
 function showToast(text, kind = 'info') {

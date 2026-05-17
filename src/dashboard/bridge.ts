@@ -1167,14 +1167,14 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         symbol?: string;
         active?: boolean;
       }
-      let msg: DashboardWsMessage;
+      let dashboardMsg: DashboardWsMessage;
       try {
-        msg = JSON.parse(String(raw)) as DashboardWsMessage;
+        dashboardMsg = JSON.parse(String(raw)) as DashboardWsMessage;
       } catch {
         return;
       }
-      if (msg.type === 'set_watch_symbol' && typeof msg.symbol === 'string') {
-        const nextRaw = msg.symbol.trim().toUpperCase();
+      if (dashboardMsg.type === 'set_watch_symbol' && typeof dashboardMsg.symbol === 'string') {
+        const nextRaw = dashboardMsg.symbol.trim().toUpperCase();
         const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
         
         // Validation: must be a known Binance symbol
@@ -1195,8 +1195,8 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         sendStoredAiBrief(ws, next);
         return;
       }
-      if (msg.type === 'set_chart_tf' && typeof msg.tf === 'string') {
-        const tf = msg.tf.trim().toLowerCase();
+      if (dashboardMsg.type === 'set_chart_tf' && typeof dashboardMsg.tf === 'string') {
+        const tf = dashboardMsg.tf.trim().toLowerCase();
         if (chartTfBroadcastSet.has(tf)) {
           refTfByClient.set(ws, tf);
           const payload = computeSignalsForClient(ws, tf);
@@ -1204,19 +1204,19 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         }
         return;
       }
-      if (msg.type === 'set_kill_switch' && msg.active !== undefined) {
-        const active = Boolean(msg.active);
+      if (dashboardMsg.type === 'set_kill_switch' && dashboardMsg.active !== undefined) {
+        const active = Boolean(dashboardMsg.active);
         log.info('dashboard_set_kill_switch', { active });
         setKillSwitch(feeds.redis ?? null, active);
         return;
       }
-      if (msg.type === 'force_resync') {
+      if (dashboardMsg.type === 'force_resync') {
         void handleForceResync(ws);
         return;
       }
-      if (msg.type !== 'load_history' || typeof msg.tf !== 'string') return;
-      const oldest = Number(msg.oldestOpenTime);
-      void handleClientLoadHistory(ws, msg.tf, oldest);
+      if (dashboardMsg.type !== 'load_history' || typeof dashboardMsg.tf !== 'string') return;
+      const oldest = Number(dashboardMsg.oldestOpenTime);
+      void handleClientLoadHistory(ws, dashboardMsg.tf, oldest);
     });
 
     ws.on('close', () => {
