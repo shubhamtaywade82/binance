@@ -33,6 +33,7 @@ import { LiveAccountPoller } from './core/execution/live-account-poller';
 import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
+import { reconcilePositionsAtStartup } from './core/execution/reconciliation';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
 
@@ -113,19 +114,39 @@ const main = async (): Promise<void> => {
     actorSystem.spawnSymbolActor(sym);
   }
 
-  // Restart safety: PaperWallet survives via wallet.json but RiskEngine
-  // exposure is in-memory only. Without seeding, a restart while in-position
-  // would let opposite-side signals bypass OPPOSITE_SIDE_OPEN_POSITION and
-  // the adapter would record REVERSAL trades.
-  if (execution.paperAdapter) {
-    const open = execution.paperAdapter.getOpenPositions();
-    if (open.length > 0) {
-      actorSystem.getRiskEngine().seedPositions(
-        open.map((p) => ({ symbol: p.symbol, side: p.side, quantity: p.quantity, entryPrice: p.entryPrice })),
-      );
-      log.info('risk_engine_seeded', { positions: open.length });
-    }
+  // Mandatory startup reconciliation — MUST run before any strategy / bridge
+  // wiring or the first kline close could place an order against unknown
+  // exchange exposure. On `EXECUTION_MODE=live` a transport failure THROWS:
+  // the bot refuses to start rather than trade against an unverified account.
+  // Paper mode reads the local PaperExecutionAdapter (wallet.json was already
+  // reloaded inside createExecutionRuntime), so this is a fast in-memory pass.
+  const reconciled = await reconcilePositionsAtStartup(
+    execution,
+    cfg,
+    allSymbols,
+    log,
+  );
+  if (reconciled.positions.length > 0) {
+    actorSystem.getRiskEngine().seedPositions(reconciled.positions);
+    log.info('risk_engine_seeded', {
+      positions: reconciled.positions.length,
+      source: reconciled.source,
+    });
+  } else {
+    log.info('risk_engine_seed_empty', { source: reconciled.source });
   }
+  defaultEventBus.publish({
+    id: `system-reconciled-${Date.now()}`,
+    type: 'system.reconciled',
+    ts: Date.now(),
+    source: 'startup',
+    payload: {
+      positionsSeeded: reconciled.positions.length,
+      source: reconciled.source,
+      symbols: reconciled.positions.map((p) => p.symbol),
+      errors: reconciled.errors,
+    },
+  });
 
   if (cfg.EVENT_BUS_EXECUTION_ENABLED) {
     const adapter = execution.paperAdapter ?? execution.cdcxAdapter ?? execution.adapter;
