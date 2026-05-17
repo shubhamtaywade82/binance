@@ -24,11 +24,13 @@
     "futures:ltp": "ts-node scripts/futures-ltp-ws.ts",
     "futures:ltp:rest": "ts-node scripts/futures-ltp-rest.ts",
     "fapi:ws:status": "ts-node scripts/binance-fapi-ws-status.ts",
-    "dashboard": "DASHBOARD_ENABLED=true ts-node src/index.ts",
-    "dashboard:ui": "concurrently -n bot,vite -c blue,green \"DASHBOARD_ENABLED=true nodemon --watch src --watch config --ext ts,json --exec ts-node src/index.ts\" \"vite\"",
+    "dashboard": "NODE_OPTIONS='--max-old-space-size=8192' DASHBOARD_ENABLED=true ts-node src/index.ts",
+    "dashboard:ui": "concurrently -n bot,vite -c blue,green \"NODE_OPTIONS='--max-old-space-size=8192' DASHBOARD_ENABLED=true nodemon --watch src --watch config --ext ts,json --exec ts-node src/index.ts\" \"vite\"",
     "pnl:ui": "npm run dev --prefix pnl-dashboard/frontend",
     "stack:up": "docker compose up -d && npm run dashboard:ui",
     "stack:down": "docker compose down",
+    "stack:reset": "docker compose up -d postgres redis && bash scripts/stack-reset.sh",
+    "stack:reset:up": "npm run stack:reset && npm run stack:up",
     "ui:dev": "vite",
     "readiness:binance": "ts-node scripts/binance-live-readiness.ts",
     "gateway": "ts-node gateway/ws-server.ts",
@@ -39,6 +41,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@coindcx/contracts": "workspace:*",
     "@coindcx/indicator-runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/pg": "^8.20.0",
@@ -51,12 +54,14 @@
     "ollama": "^0.5.18",
     "pg": "^8.20.0",
     "prom-client": "^15.1.3",
+    "socket.io-client": "^2.4.0",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
     "@types/node": "^20.17.14",
+    "@types/socket.io-client": "^1.4.36",
     "@types/ws": "^8.5.13",
     "concurrently": "^9.2.1",
     "eslint": "^9.18.0",

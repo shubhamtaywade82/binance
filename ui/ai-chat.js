@@ -2,12 +2,13 @@ const MAX_STORED_MESSAGES = 100;
 const STORAGE_PREFIX = 'ai-chat-history-';
 
 export class AiChat {
-  constructor({ messagesEl, inputEl, sendBtn, clearBtn, contextToggle, getSymbol }) {
+  constructor({ messagesEl, inputEl, sendBtn, clearBtn, contextToggle, nanopineToggle, getSymbol }) {
     this._messagesEl = messagesEl;
     this._inputEl = inputEl;
     this._sendBtn = sendBtn;
     this._clearBtn = clearBtn;
     this._contextToggle = contextToggle;
+    this._nanopineToggle = nanopineToggle;
     this._getSymbol = getSymbol;
     this._messages = [];
     this._streaming = false;
@@ -73,12 +74,15 @@ export class AiChat {
 
     try {
       const includeContext = this._contextToggle?.checked !== false;
+      const isNanopine = this._nanopineToggle?.checked === true;
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: this._messages.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
           context: includeContext,
+          nanopine: isNanopine,
+          symbol: this._getSymbol(),
         }),
         signal: this._abortController.signal,
       });
@@ -185,15 +189,120 @@ export class AiChat {
 
   _formatContent(text) {
     if (!text) return '<span class="ai-typing">Thinking…</span>';
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br>');
+
+    let clean = text.replace(/&/g, '&amp;');
+    clean = clean.replace(/<br\s*\/?>/gi, '[[BR]]');
+    clean = clean.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    clean = clean.replace(/\[\[BR\]\]/g, '<br>');
+
+    const formatInline = (str) => {
+      return str
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    };
+
+    const lines = clean.split('\n');
+    let html = '';
+    let inTable = false;
+    let inList = false;
+    let inCode = false;
+    let codeBlockContent = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('```')) {
+        if (inCode) {
+          html += `<pre><code>${codeBlockContent.trim()}</code></pre>`;
+          inCode = false;
+          codeBlockContent = '';
+        } else {
+          inCode = true;
+          if (inTable) { html += '</tbody></table></div>'; inTable = false; }
+          if (inList) { html += '</ul>'; inList = false; }
+        }
+        continue;
+      }
+      if (inCode) {
+        codeBlockContent += line + '\n';
+        continue;
+      }
+
+      if (trimmed === '---' || trimmed === '___' || trimmed === '***') {
+        if (inTable) { html += '</tbody></table></div>'; inTable = false; }
+        if (inList) { html += '</ul>'; inList = false; }
+        html += '<hr class="ai-hr">';
+        continue;
+      }
+
+      if (trimmed.startsWith('#')) {
+        if (inTable) { html += '</tbody></table></div>'; inTable = false; }
+        if (inList) { html += '</ul>'; inList = false; }
+        const match = trimmed.match(/^(#{1,6})\s+(.*)$/);
+        if (match) {
+          const level = match[1].length;
+          const content = formatInline(match[2]);
+          html += `<h${level} class="ai-heading ai-h${level}">${content}</h${level}>`;
+          continue;
+        }
+      }
+
+      if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+        if (inList) { html += '</ul>'; inList = false; }
+
+        const cells = trimmed
+          .slice(1, -1)
+          .split('|')
+          .map(c => formatInline(c.trim()));
+
+        const isSeparator = cells.every(c => /^[-: ]+$/.test(c));
+
+        if (!inTable) {
+          if (!isSeparator) {
+            html += `<div class="ai-table-wrapper"><table class="ai-table"><thead><tr>${cells.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+            inTable = true;
+          }
+        } else {
+          if (!isSeparator) {
+            html += `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
+          }
+        }
+        continue;
+      } else if (inTable) {
+        html += '</tbody></table></div>';
+        inTable = false;
+      }
+
+      const listMatch = trimmed.match(/^([-*•]|\d+\.)\s+(.*)$/);
+      if (listMatch) {
+        if (!inList) {
+          html += `<ul class="ai-list">`;
+          inList = true;
+        }
+        html += `<li>${formatInline(listMatch[2])}</li>`;
+        continue;
+      } else if (inList) {
+        html += '</ul>';
+        inList = false;
+      }
+
+      if (!trimmed) {
+        html += '<div class="ai-spacing"></div>';
+        continue;
+      }
+
+      html += `<p class="ai-paragraph">${formatInline(line)}</p>`;
+    }
+
+    if (inTable) html += '</tbody></table></div>';
+    if (inList) html += '</ul>';
+    if (inCode) html += `<pre><code>${codeBlockContent.trim()}</code></pre>`;
+
+    return html;
   }
+
 
   _scrollToBottom() {
     requestAnimationFrame(() => {

@@ -26,6 +26,12 @@ export type TrackedPosition = Position & {
   tier?: AssetTierConfig['tier'];
   leverage?: number;
   liqPrice?: number;
+  /** Distance from entry to initial SL; used for R-multiple partials. */
+  initialStopDistance: number;
+  /** Array of partial targets hit/pending. */
+  partialTargets?: { r: number; pct: number; filled: boolean }[];
+  /** Price level for an early SMC structure-break exit. */
+  structureBreakPrice?: number;
 };
 
 interface OpenLegacyArgs {
@@ -179,9 +185,10 @@ export class PositionManager {
     // Force cleanup of any existing positions for the same base asset
     for (const [key, pos] of this.positions.entries()) {
       if (this.getBaseAsset(key) === base || pos.pair === args.pair) {
-        this.log.info('open_clobber_existing', { symbol: key, newSide: args.side });
+        this.log.info('open_clobber_existing', { symbol: pos.symbol, newSide: args.side });
         this.positions.delete(key);
-        this.pgWriter?.removePositionBySymbol(key).catch(() => {});
+        this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+        this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
       }
     }
 
@@ -252,10 +259,14 @@ export class PositionManager {
       notionalUsdt: sized.notionalUsdt,
       marginInr: sized.marginInr,
       orderId: result.orderId,
-      symbol: symbolKey,
+      symbol: args.symbol,
       tier: tier?.tier,
       leverage,
       liqPrice: result.positionId ? 0 : 0, // Placeholder for calculated liq if needed
+      initialStopDistance: Math.abs(result.fill.price - stopLoss),
+      partialTargets: this.cfg.DEFAULT_PARTIAL_TARGETS_JSON 
+        ? JSON.parse(this.cfg.DEFAULT_PARTIAL_TARGETS_JSON).map((t: any) => ({ ...t, filled: false }))
+        : [],
     };
     this.positions.set(symbolKey, pos);
 
@@ -326,15 +337,83 @@ export class PositionManager {
     if (pos.side === 'LONG') {
       if (price >= pos.takeProfit) return this.close(key, price, 'TP');
       if (price <= pos.stopLoss) return this.close(key, price, 'SL');
+      if (pos.structureBreakPrice && price <= pos.structureBreakPrice) {
+        return this.close(key, price, 'REVERSAL'); // Early exit on structure break
+      }
     } else {
       if (price <= pos.takeProfit) return this.close(key, price, 'TP');
       if (price >= pos.stopLoss) return this.close(key, price, 'SL');
+      if (pos.structureBreakPrice && price >= pos.structureBreakPrice) {
+        return this.close(key, price, 'REVERSAL');
+      }
+    }
+
+    // Check R-multiple partials
+    if (pos.partialTargets && pos.partialTargets.length > 0) {
+      const distance = (price - pos.entryPrice) * (pos.side === 'LONG' ? 1 : -1);
+      const currentR = distance / pos.initialStopDistance;
+
+      for (const target of pos.partialTargets) {
+        if (!target.filled && currentR >= target.r) {
+          target.filled = true;
+          this.log.info('partial_target_hit', { symbol: key, r: target.r, pct: target.pct, price });
+          void this.executePartial(key, target.pct, price);
+        }
+      }
     }
 
     if (htfTrend !== 'NONE' && htfTrend !== pos.side) {
       return this.close(key, price, 'REVERSAL');
     }
     return null;
+  }
+
+  private async executePartial(symbol: string, pct: number, price: number): Promise<void> {
+    const key = this.getBaseAsset(symbol);
+    const pos = this.positions.get(key);
+    if (!pos || pct <= 0 || pct >= 1) return;
+
+    const closeQty = pos.quantity * pct;
+    const remainingQty = pos.quantity - closeQty;
+
+    try {
+      if (this.cfg.SHADOW_MODE) {
+        this.log.info('shadow_partial_close', { symbol: key, qty: closeQty, remaining: remainingQty });
+      } else {
+        // For Binance USD-M, we just place an opposite-side MARKET order for the partial quantity
+        await this.adapter.placeOrder({
+          pair: pos.pair,
+          side: pos.side === 'LONG' ? 'SHORT' : 'LONG',
+          quantity: closeQty,
+          referencePrice: price,
+          leverage: pos.leverage ?? 5,
+          marginCurrency: this.cfg.MARGIN_CURRENCY,
+        });
+      }
+
+      // Update in-memory state
+      pos.quantity = remainingQty;
+      pos.notionalUsdt = remainingQty * pos.entryPrice;
+      
+      // Update DB
+      this.pgWriter?.upsertPosition({
+        ...pos,
+        quantity: remainingQty,
+        marginUsdt: (remainingQty * pos.entryPrice) / (pos.leverage ?? 5),
+        updatedAt: Date.now(),
+      } as any).catch(() => {});
+
+    } catch (e) {
+      this.log.warn('partial_close_failed', { err: (e as Error).message, symbol: key });
+    }
+  }
+
+  updateStructureBreakPrice(symbol: string, price: number): void {
+    const key = this.getBaseAsset(symbol);
+    const pos = this.positions.get(key);
+    if (pos) {
+      pos.structureBreakPrice = price;
+    }
   }
 
   /**
@@ -398,12 +477,13 @@ export class PositionManager {
       netUsdt: pnl.netUsdt,
       closedAt: Date.now(),
       attribution: this.attributions.get(key),
-    } as any, key).catch(() => {});
+    } as any, pos.symbol).catch(() => {});
     this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+    this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
 
     this.pgWriter?.writeOrder({
       orderId: pos.orderId,
-      symbol: key,
+      symbol: pos.symbol,
       side: pos.side === 'LONG' ? 'SHORT' : 'LONG', // Exit side
       quantity: pos.quantity,
       price: exitPrice,
@@ -457,7 +537,7 @@ export class PositionManager {
     this.closingInProgress.delete(base);
     const pnl = this.risk.netPnl(pos.entryPrice, exitPrice, pos.side, pos.quantity);
     const event: CloseEvent = { position: pos, exitPrice, reason, pnl };
-    this.appendCsv(symbol, event);
+    this.appendCsv(pos.symbol, event);
 
     this.pgWriter?.writeTrade({
       ...pos,
@@ -469,11 +549,12 @@ export class PositionManager {
       netUsdt: pnl.netUsdt,
       closedAt: Date.now(),
       attribution: this.attributions.get(symbol),
-    } as any, symbol).catch(() => {});
-    this.pgWriter?.removePositionBySymbol(symbol).catch(() => {});
+    } as any, pos.symbol).catch(() => {});
+    this.pgWriter?.removePosition(pos.orderId).catch(() => {});
+    this.pgWriter?.removePositionBySymbol(pos.symbol).catch(() => {});
     this.attributions.delete(symbol);
     this.log.info('position_closed', {
-      symbol,
+      symbol: pos.symbol,
       side: pos.side,
       entry: pos.entryPrice,
       exit: exitPrice,
@@ -533,6 +614,7 @@ export class PositionManager {
       orderId: params.orderId,
       leverage: params.leverage,
       liqPrice: params.liqPrice,
+      initialStopDistance: Math.abs(params.entryPrice - params.stopLoss),
     };
 
     this.positions.set(symbolKey, pos);

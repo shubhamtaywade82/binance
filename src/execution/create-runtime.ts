@@ -8,6 +8,8 @@ import type { ExecutionAdapter } from './types';
 import { BookTickerFeed } from './paper/book-ticker-feed';
 import { PaperExecutionAdapter } from './paper/adapter';
 import { PaperWallet } from './paper/wallet';
+import { RedisPaperStateStore } from '../persistence/redis-paper-state';
+import { getRedisClient } from '../services/redis';
 import { Ledger } from './paper/ledger';
 import { LiquidationEngine } from './paper/liquidation';
 import { FundingEngine } from './paper/funding';
@@ -27,18 +29,49 @@ export interface ExecutionRuntime {
   router?: ExecutionRouter;
   /** Present only when EXECUTION_MODE=paper. */
   paperAdapter?: PaperExecutionAdapter;
+  /** Present when EXECUTION_MODE=live and BINANCE_EXECUTION_ADAPTER=false. */
+  cdcxAdapter?: CoinDcxExecutionAdapter;
+  paperFundingEngine?: FundingEngine;
   /** Shared database writer for dashboard persistence. */
   pgWriter?: PgWriter;
+  redisState?: RedisPaperStateStore;
 }
 
-const symbolFromPair = (cfg: AppConfig, _pair: string): string => {
-  return cfg.BINANCE_SYMBOL.trim().toUpperCase();
-}
+/**
+ * Map an OrderRequest.pair → Binance USD-M symbol.
+ *  · Event-bus path passes `pair = 'ETHUSDT'` directly → upper-case + return.
+ *  · CoinDCX legacy path passes `pair = 'B-SOL_USDT'` → strip 'B-' + '_'.
+ *  · Empty / unknown → fall back to BINANCE_SYMBOL.
+ *
+ * Pre-fix this returned BINANCE_SYMBOL unconditionally, which collapsed every
+ * multi-symbol paper fill onto the SOL book ticker (everyone got SOL's price).
+ */
+const symbolFromPair = (cfg: AppConfig, pair: string): string => {
+  const raw = (pair ?? '').trim();
+  if (!raw) return cfg.BINANCE_SYMBOL.trim().toUpperCase();
+  // CoinDCX style: B-SOL_USDT → SOLUSDT
+  if (raw.includes('-') || raw.includes('_')) {
+    const stripped = raw.replace(/^B-/i, '').replace('_', '').toUpperCase();
+    return stripped || cfg.BINANCE_SYMBOL.trim().toUpperCase();
+  }
+  // Already a Binance-style symbol
+  return raw.toUpperCase();
+};
 
 export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClient): ExecutionRuntime => {
+  // Subscribe book ticker for the entire multiplex watchlist (not only
+  // BINANCE_SYMBOL) so multi-symbol paper fills get realistic bid/ask data
+  // instead of falling back to the kline close + flat slippage.
+  const bookSymbols = Array.from(
+    new Set(
+      [cfg.BINANCE_SYMBOL, ...(cfg.BINANCE_WATCHLIST ?? [])]
+        .map((s) => (s ?? '').trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
   const book = new BookTickerFeed({
     wsBase: binanceWsBase(cfg),
-    symbols: [cfg.BINANCE_SYMBOL.trim().toUpperCase()],
+    symbols: bookSymbols,
     product: cfg.BINANCE_PRODUCT,
   });
 
@@ -51,6 +84,13 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   if (cfg.EXECUTION_MODE === 'live') {
     if (cfg.READ_ONLY) {
       throw new Error('EXECUTION_MODE=live but READ_ONLY=true. Set READ_ONLY=false to enable live execution.');
+    }
+
+    let redisState: RedisPaperStateStore | undefined;
+    if (cfg.REDIS_URL) {
+      const client = getRedisClient(cfg.REDIS_URL);
+      const ns = String((cfg as any).REDIS_NAMESPACE || 'binance');
+      if (client) redisState = new RedisPaperStateStore(client, ns, 'live');
     }
 
     // ── Binance live adapter ──────────────────────────────────────────────
@@ -95,6 +135,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         binanceRestClient,
         router,
         pgWriter,
+        redisState,
         stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
       };
     }
@@ -114,7 +155,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
       adapter: cdcxRouter,
       book,
       router: cdcxRouter,
+      cdcxAdapter,
       pgWriter,
+      redisState,
       stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
     };
   }
@@ -123,6 +166,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
   const ledgerDir = cfg.PAPER_LEDGER_DIR.trim() || './paper';
   const walletPath = path.join(ledgerDir, 'wallet.json');
   const wallet = new PaperWallet(cfg.PAPER_INITIAL_BALANCE_USDT, walletPath);
+  // Survive restarts: if ./paper/wallet.json exists, resume from its balance
+  // instead of resetting to PAPER_INITIAL_BALANCE_USDT every boot.
+  wallet.loadFromDisk();
   const ledger = new Ledger(ledgerDir);
   const liquidation = new LiquidationEngine(cfg.PAPER_MAINT_MARGIN);
   const funding = new FundingEngine({
@@ -130,6 +176,14 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     pollSec: cfg.PAPER_FUNDING_POLL_SEC,
   });
   funding.start();
+
+  // Optional Redis hot cache for paper-trading runtime state.
+  let redisState: RedisPaperStateStore | undefined;
+  if ((cfg as any).PAPER_STATE_REDIS && cfg.REDIS_URL) {
+    const client = getRedisClient(cfg.REDIS_URL);
+    const ns = String((cfg as any).REDIS_NAMESPACE || 'binance');
+    if (client) redisState = new RedisPaperStateStore(client, ns, 'paper');
+  }
 
   const paperAdapter = new PaperExecutionAdapter({
     wallet,
@@ -145,6 +199,8 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     symbolFor: (pair) => symbolFromPair(cfg, pair),
     partialFills: cfg.PAPER_PARTIAL_FILLS,
     maxSlippageBps: cfg.PAPER_MAX_SLIPPAGE_BPS,
+    redisState,
+    equityJsonlEveryN: Number((cfg as any).PAPER_EQUITY_JSONL_EVERY_N ?? 12),
   });
   const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 
@@ -153,7 +209,9 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     book,
     router: paperRouter,
     paperAdapter,
+    paperFundingEngine: funding,
     pgWriter,
+    redisState,
     stopFunding: () => funding.stop(),
     stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,
   };

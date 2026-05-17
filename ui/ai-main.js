@@ -93,6 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sendBtn: document.getElementById('chat-send-btn'),
       clearBtn: document.getElementById('chat-clear-btn'),
       contextToggle: document.getElementById('chat-context-toggle'),
+      nanopineToggle: document.getElementById('chat-nanopine-toggle'),
       getSymbol: () => currentSymbol || 'UNKNOWN',
     });
   }

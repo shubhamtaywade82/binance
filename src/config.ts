@@ -461,6 +461,138 @@ export const AppConfigSchema = z.object({
   /** Max concurrent open positions across all symbols (0 = unlimited). */
   MAX_OPEN_POSITIONS: numFromString(0),
 
+  /** Max total exposure across all symbols in USDT. */
+  MAX_TOTAL_EXPOSURE_USDT: numFromString(100_000),
+
+  /** Max number of symbols with open positions. */
+  MAX_OPEN_SYMBOLS: numFromString(5),
+
+  /**
+   * Route strategy signals through the event-bus path
+   *   actor → strategy.signal → SignalToOrderBridge → RiskEngine → ExecutionBridge → adapter.
+   * Default false to avoid double-firing alongside the legacy orchestrator.
+   * Recommended for paper-trading and replay; keep false in live until cutover.
+   */
+  EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+
+  /** Min signal confidence for SignalToOrderBridge to emit an order request. */
+  MIN_SIGNAL_CONFIDENCE: numFromString(0.5),
+
+  /** Cooldown between consecutive event-bus orders per symbol (ms). */
+  EVENT_BUS_ORDER_COOLDOWN_MS: numFromString(60_000),
+
+  // ── Seykota trend-follower strategy (event-bus path) ────────────────────
+  /** Attach SeykotaTrendModule to each SymbolActor (event-bus path only). */
+  SEYKOTA_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** HTF for bias filter. */
+  SEYKOTA_HTF: z.string().default('1h'),
+  SEYKOTA_FAST_EMA: numFromString(20),
+  SEYKOTA_SLOW_EMA: numFromString(50),
+  SEYKOTA_ADX_PERIOD: numFromString(14),
+  /** Below this ADX = chop, skip entry. Typical 20–25 for crypto. */
+  SEYKOTA_ADX_THRESHOLD: numFromString(20),
+  SEYKOTA_ATR_PERIOD: numFromString(14),
+  /** Stop = entry ± atrMult × atr; trailing manager uses same multiplier. */
+  SEYKOTA_ATR_MULT: numFromString(3),
+  /** Min ATR / price ratio; below this market is too dead to trade. */
+  SEYKOTA_MIN_ATR_PCT: numFromString(0.003),
+  /** Risk per trade as fraction of equity. 0.005 = 0.5%. */
+  SEYKOTA_RISK_PCT: numFromString(0.005),
+  /** Account equity used for sizing math. Sync with PAPER_INITIAL_BALANCE_USDT. */
+  SEYKOTA_EQUITY_USDT: numFromString(10_000),
+  /** Min bars in history before strategy can fire. */
+  SEYKOTA_MIN_BARS: numFromString(80),
+  /** Close on close-of-bar breach only. Set false for intrabar wick protection. */
+  SEYKOTA_KLINE_ONLY: boolFromString(true),
+  /** R-multiple at which to book a partial profit (e.g. 1.0 = entry + 1*ATR_dist). 0 to disable. */
+  SEYKOTA_PARTIAL_TP_R: numFromString(0),
+  /** Fraction of position to close at SEYKOTA_PARTIAL_TP_R (0.5 = 50%). */
+  SEYKOTA_PARTIAL_TP_PCT: numFromString(0.5),
+  /** Enable SMC structure-break (CHoCH) exit. Requires SMC analysis. */
+  SEYKOTA_SMC_EXIT_ENABLED: boolFromString(false),
+  /** Max number of pyramiding additions to a winning trade. 0 to disable. */
+  SEYKOTA_PYRAMID_MAX_ADDS: numFromString(0),
+  /** R-multiple distance between pyramid additions (e.g. 1.0 = add every +1R). */
+  SEYKOTA_PYRAMID_R_DISTANCE: numFromString(1.0),
+
+  // ── Paper hot-state Redis cache ─────────────────────────────────────────
+  /**
+   * When true (and REDIS_URL set) the paper adapter mirrors wallet + open
+   * positions into Redis, and appends every onMark snapshot to a bounded
+   * Redis stream `paper:equity`. The dashboard + FastAPI can subscribe to
+   * `paper:updates:*` pubsub channels for push notifications without polling.
+   */
+  PAPER_STATE_REDIS: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** Redis key namespace. All keys/streams/pubsub channels prefixed `${ns}:paper:*`. */
+  REDIS_NAMESPACE: z.string().default('binance'),
+  /**
+   * Throttle for JSONL equity log writes. Default 12 = one JSONL line per
+   * 12 onMark snapshots (~60s when PAPER_EQUITY_SNAPSHOT_SEC=5). 0 disables.
+   * Redis stream remains the high-frequency record.
+   */
+  PAPER_EQUITY_JSONL_EVERY_N: numFromString(12),
+
+  // ── Signal allocator (best-of-bar) ──────────────────────────────────────
+  /**
+   * Buffer simultaneous strategy candidates per 5m close, score by ADX × ATR
+   * strength, allocate slots to top N until MAX_OPEN_SYMBOLS hit. Required
+   * for fair multi-symbol selection — without this, first-come-first-served.
+   */
+  SIGNAL_ALLOCATOR_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** ms to wait after first candidate before flushing the bucket. 1500ms covers
+   *  WS arrival jitter for klines that closed at the same wall-clock minute. */
+  SIGNAL_ALLOCATOR_FLUSH_MS: numFromString(1500),
+
+  // ── Correlation guard ───────────────────────────────────────────────────
+  /**
+   * JSON array of pairwise correlations to enforce. Same-direction opens on
+   * pairs with corr > threshold are blocked. Example value:
+   *   [{"symbolA":"BTCUSDT","symbolB":"ETHUSDT","correlation":0.85},
+   *    {"symbolA":"BTCUSDT","symbolB":"SOLUSDT","correlation":0.75}]
+   */
+  CORRELATION_PAIRS_JSON: z.string().default(''),
+  CORRELATION_THRESHOLD: numFromString(0.7),
+
+  // ── Exit managers (event-bus path) ───────────────────────────────────────
+  /** Trail reacts on every bookticker tick (not only kline.closed). Protects wicks. */
+  SEYKOTA_TRAIL_INTRABAR: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+
+  /** Partial close at +Nx initial-risk distance. PARTIAL_TP_R=1 → +1R. */
+  PARTIAL_TP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  PARTIAL_TP_R: numFromString(1),
+  /** Fraction of qty to close at the partial-TP trigger. */
+  PARTIAL_TP_FRACTION: numFromString(0.5),
+
+  /** Time stop: close if position has been open ≥ N bars AND net is negative. */
+  TIME_STOP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  TIME_STOP_BARS: numFromString(24),
+
+  /** Structure exit: close LONG if recent swing low broken (and vice versa for SHORT). */
+  STRUCTURE_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  STRUCTURE_SWING_LOOKBACK: numFromString(20),
+
+  /** Funding-aware exit: close before next funding tick when |rate|*8h > threshold bps and adverse. */
+  FUNDING_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  FUNDING_EXIT_THRESHOLD_BPS: numFromString(50),
+
+  // ── Adaptive (regime-aware) strategy ────────────────────────────────────
+  /** Replace SeykotaTrendModule with AdaptiveStrategy when true. Mutually exclusive. */
+  ADAPTIVE_STRATEGY_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /** Equity for sizing math (keep aligned with PAPER_INITIAL_BALANCE_USDT). */
+  ADAPTIVE_EQUITY_USDT: numFromString(10_000),
+  /** Cooldown between consecutive entries per symbol (ms). */
+  ADAPTIVE_COOLDOWN_MS: numFromString(5 * 60_000),
+  /** Optional JSON map to override DEFAULT_MODES (see src/strategy/trade-mode.ts). */
+  ADAPTIVE_MODE_OVERRIDES_JSON: z.string().default(''),
+
+  /**
+   * When true (default in live mode), ExecutionBridge skips synthesising
+   * execution.order.filled from the adapter's local result and lets the
+   * CoinDcxUserDataWs emit the authoritative fill from the exchange.
+   * Avoids double-counting in RiskEngine + TrailingStopManager.
+   */
+  LIVE_USE_WS_FOR_FILLS: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
+
   /**
   /**
    * Cross-symbol correlation guard (Binance USD-M live only, when `binanceRestClient` exists).
@@ -560,6 +692,10 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
       return n;
     }),
+  /** Optional JSON string for default partial profit targets: `[{"r":1, "pct":0.5}]` */
+  DEFAULT_PARTIAL_TARGETS_JSON: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Allow adding to an existing position in the same direction. */
+  ALLOW_PYRAMIDING: boolFromString(false),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

@@ -14,6 +14,7 @@ import { computeFee } from './fees';
 import { FundingEngine } from './funding';
 import { Ledger, type OpenSnapshot } from './ledger';
 import { BookTickerFeed } from './book-ticker-feed';
+import type { RedisPaperStateStore } from '../../persistence/redis-paper-state';
 
 export interface PaperAdapterOptions {
   wallet: PaperWallet;
@@ -32,6 +33,15 @@ export interface PaperAdapterOptions {
   onTradeClose?: (trade: ClosedPosition) => void;
   /** Optional FX rate provider for INR-aware equity snapshots. */
   fxRate?: { getInrPerUsdt(): number };
+  /** Optional Redis hot cache. When set, wallet + positions + equity stream are mirrored to Redis. */
+  redisState?: RedisPaperStateStore;
+  /**
+   * Throttle ratio for JSONL equity writes.
+   *   1  → every snapshot (default, legacy behaviour, equity.jsonl grows fast)
+   *   12 → every 12th snapshot (≈ 60s when equitySnapshotMs=5000)
+   *   0  → disable JSONL equity writes entirely (Redis stream becomes the source of truth)
+   */
+  equityJsonlEveryN?: number;
 }
 
 interface OpenPaperPosition {
@@ -55,22 +65,94 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   private positions = new Map<string, OpenPaperPosition>();
   private unrealizedByOrder = new Map<string, number>();
   private lastSnapshotTs = 0;
+  private snapshotCount = 0;
 
   constructor(private readonly opts: PaperAdapterOptions) {}
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
     const symbol = this.opts.symbolFor(req.pair).toUpperCase();
     
-    // One-way mode enforcement: close opposite side, or return if same side
+    // Check for existing position to allow pyramiding or reversal
     for (const [id, p] of this.positions.entries()) {
       if (p.symbol === symbol) {
-        if (p.side === req.side) return { ok: true, orderId: id, fill: { price: p.entryPrice, quantity: p.quantity, feeUsdt: 0, slippageUsdt: 0, timestamp: p.openedAt, latencyMs: 0 } };
+        if (p.side === req.side) {
+          // SAME SIDE: Pyramiding — add to existing position
+          if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
+          const fill = await this.calculateFill(req, symbol);
+          
+          const addedMargin = (fill.price * fill.quantity) / p.leverage;
+          const totalRequired = addedMargin + fill.feeUsdt;
+          
+          if (!this.opts.wallet.reserveMargin(totalRequired)) {
+            return { ok: false, orderId: id, fill, error: 'insufficient_margin' };
+          }
+          
+          const newQty = p.quantity + fill.quantity;
+          const newNotional = (p.entryPrice * p.quantity) + (fill.price * fill.quantity);
+          const newEntry = newNotional / newQty;
+          
+          p.entryPrice = newEntry;
+          p.quantity = newQty;
+          p.marginUsdt += addedMargin;
+          p.entryFeeUsdt += fill.feeUsdt;
+          
+          this.positions.set(id, p);
+          void this.opts.redisState?.upsertPosition(id, this.snapshotPosition(p));
+          void this.opts.redisState?.setWallet(this.opts.wallet.state());
+          void this.opts.redisState?.publishUpdate('position', { event: 'update', orderId: id, symbol });
+          
+          return { ok: true, orderId: id, fill };
+        }
         // Opposite side: close it first (market close)
         await this.closePosition(id, 'REVERSAL');
       }
     }
 
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
+    const fill = await this.calculateFill(req, symbol);
+    
+    const notional = fill.price * req.quantity;
+    const margin = notional / req.leverage;
+
+    if (!this.opts.wallet.reserveMargin(margin + fill.feeUsdt)) {
+      const orderId = randomUUID();
+      return { ok: false, orderId, fill, error: 'insufficient_margin' };
+    }
+
+    const orderId = randomUUID();
+    const liqPrice = this.opts.liquidation.track(orderId, req.side, fill.price, req.leverage);
+    const openedAt = Date.now();
+    const pos: OpenPaperPosition = {
+      orderId,
+      pair: req.pair,
+      symbol,
+      side: req.side,
+      entryPrice: fill.price,
+      quantity: req.quantity,
+      leverage: req.leverage,
+      marginUsdt: margin,
+      entryFeeUsdt: fill.feeUsdt,
+      takeProfit: req.takeProfit,
+      stopLoss: req.stopLoss,
+      liqPrice,
+      openedAt,
+    };
+    this.positions.set(orderId, pos);
+    void this.opts.redisState?.upsertPosition(orderId, this.snapshotPosition(pos));
+    void this.opts.redisState?.setWallet(this.opts.wallet.state());
+    void this.opts.redisState?.publishUpdate('position', { event: 'open', orderId, symbol });
+
+    this.opts.funding.trackPosition({
+      positionId: orderId,
+      symbol,
+      side: req.side,
+      notional: () => pos.entryPrice * pos.quantity,
+    });
+
+    return { ok: true, orderId, fill };
+  }
+
+  private async calculateFill(req: OrderRequest, symbol: string): Promise<Fill> {
     const tick = this.opts.book.latest(symbol);
     const lastTrade = this.opts.book.lastTrade(symbol);
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? req.referencePrice;
@@ -95,58 +177,16 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const baseBid = tick ? tick.bestBid : refMid;
     const fillPrice = req.side === 'LONG' ? baseAsk + slip : baseBid - slip;
     const notional = fillPrice * req.quantity;
-    const margin = notional / req.leverage;
     const fee = computeFee(notional, true, this.opts.takerFee, this.opts.makerFee);
 
-    if (!this.opts.wallet.reserveMargin(margin + fee)) {
-      const orderId = randomUUID();
-      const failFill: Fill = {
-        price: fillPrice,
-        quantity: req.quantity,
-        feeUsdt: 0,
-        slippageUsdt: slip * req.quantity,
-        latencyMs: this.opts.latencyMs,
-        timestamp: Date.now(),
-      };
-      return { ok: false, orderId, fill: failFill, error: 'insufficient_margin' };
-    }
-
-    const orderId = randomUUID();
-    const liqPrice = this.opts.liquidation.track(orderId, req.side, fillPrice, req.leverage);
-    const openedAt = Date.now();
-    const pos: OpenPaperPosition = {
-      orderId,
-      pair: req.pair,
-      symbol,
-      side: req.side,
-      entryPrice: fillPrice,
-      quantity: req.quantity,
-      leverage: req.leverage,
-      marginUsdt: margin,
-      entryFeeUsdt: fee,
-      takeProfit: req.takeProfit,
-      stopLoss: req.stopLoss,
-      liqPrice,
-      openedAt,
-    };
-    this.positions.set(orderId, pos);
-
-    this.opts.funding.trackPosition({
-      positionId: orderId,
-      symbol,
-      side: req.side,
-      notional: () => pos.entryPrice * pos.quantity,
-    });
-
-    const fill: Fill = {
+    return {
       price: fillPrice,
       quantity: req.quantity,
       feeUsdt: fee,
       slippageUsdt: slip * req.quantity,
       latencyMs: this.opts.latencyMs,
-      timestamp: openedAt,
+      timestamp: Date.now(),
     };
-    return { ok: true, orderId, fill };
   }
 
   /** Latest mark per symbol — used to refresh unrealized for other symbols' positions. */
@@ -177,9 +217,12 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       void this.closePosition(t.orderId, 'LIQUIDATION');
     }
 
+    void this.opts.redisState?.setMark(symU, markPrice);
+
     const now = Date.now();
     if (now - this.lastSnapshotTs >= this.opts.equitySnapshotMs) {
       this.lastSnapshotTs = now;
+      this.snapshotCount += 1;
       const open: OpenSnapshot[] = Array.from(this.positions.values()).map((p) => {
         const refMark = p.symbol === symU
           ? markPrice
@@ -192,16 +235,56 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
           unrealizedUsdt: ((refMark - p.entryPrice) * p.quantity) * (p.side === 'LONG' ? 1 : -1),
         };
       });
-      this.opts.ledger.snapshotEquity(this.opts.wallet.state(), open);
 
+      const w = this.opts.wallet.state();
+
+      // JSONL: write every Nth snapshot (1=legacy/every, 0=disable).
+      const everyN = this.opts.equityJsonlEveryN ?? 1;
+      if (everyN > 0 && this.snapshotCount % everyN === 0) {
+        this.opts.ledger.snapshotEquity(w, open);
+      }
       this.opts.wallet.flushToDisk();
+
+      // Redis hot tail: always write — bounded by MAXLEN.
+      void this.opts.redisState?.setWallet(w);
+      void this.opts.redisState?.appendEquity({
+        ts: now,
+        equityUsdt: w.equityUsdt,
+        balanceUsdt: w.balanceUsdt,
+        unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+        realizedPnlUsdt: w.realizedPnlUsdt,
+        usedMarginUsdt: w.usedMarginUsdt,
+        inrPerUsdt: this.opts.fxRate?.getInrPerUsdt(),
+      });
+      void this.opts.redisState?.publishUpdate('wallet', { equityUsdt: w.equityUsdt });
     }
   }
 
-  async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
+  private snapshotPosition(p: OpenPaperPosition): object {
+    return {
+      orderId: p.orderId,
+      pair: p.pair,
+      symbol: p.symbol,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      quantity: p.quantity,
+      leverage: p.leverage,
+      marginUsdt: p.marginUsdt,
+      liqPrice: p.liqPrice,
+      stopLoss: p.stopLoss,
+      takeProfit: p.takeProfit,
+      openedAt: p.openedAt,
+    };
+  }
+
+  async closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
     const pos = this.positions.get(orderId);
     if (!pos) throw new Error(`paper_close_unknown_order:${orderId}`);
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
+    
+    const qtyToClose = (quantity && quantity > 0 && quantity < pos.quantity) ? quantity : pos.quantity;
+    const isPartial = qtyToClose < pos.quantity;
+
     const tick = this.opts.book.latest(pos.symbol);
     const lastTrade = this.opts.book.lastTrade(pos.symbol);
     const refMid = tick ? (tick.bestAsk + tick.bestBid) / 2 : lastTrade ?? pos.entryPrice;
@@ -212,7 +295,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
     const slip = SlippageEngine.priceImpactUsdt({
       side: pos.side,
-      quantity: pos.quantity,
+      quantity: qtyToClose,
       spread,
       volatilityPct: 0,
       baseSlippageBps: this.opts.baseSlippageBps,
@@ -225,20 +308,44 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const baseBid = tick ? tick.bestBid : refMid;
     const exitPrice = pos.side === 'LONG' ? baseBid - slip : baseAsk + slip;
     const sideMul = pos.side === 'LONG' ? 1 : -1;
-    const gross = (exitPrice - pos.entryPrice) * pos.quantity * sideMul;
-    const exitNotional = exitPrice * pos.quantity;
+    const gross = (exitPrice - pos.entryPrice) * qtyToClose * sideMul;
+    const exitNotional = exitPrice * qtyToClose;
     const exitFee = computeFee(exitNotional, true, this.opts.takerFee, this.opts.makerFee);
-    const totalFees = pos.entryFeeUsdt + exitFee;
+    
+    // For partials, we only attribute a fraction of the entry fee.
+    const entryFeeAttributed = isPartial ? (pos.entryFeeUsdt * (qtyToClose / pos.quantity)) : pos.entryFeeUsdt;
+    const totalFees = entryFeeAttributed + exitFee;
+    
+    // Funding is tracked per orderId; for partials we accrue everything so far
+    // and potentially keep tracking the remainder.
     const funding = this.opts.funding.accruedFor(orderId);
     const net = gross - totalFees - funding;
 
-    this.opts.wallet.releaseMargin(pos.marginUsdt + pos.entryFeeUsdt);
+    const marginReleased = isPartial ? (pos.marginUsdt * (qtyToClose / pos.quantity)) : pos.marginUsdt;
+
+    this.opts.wallet.releaseMargin(marginReleased + entryFeeAttributed);
     this.opts.wallet.applyRealized(net);
     this.opts.wallet.setUnrealized(0);
-    this.opts.liquidation.untrack(orderId);
-    this.opts.funding.untrackPosition(orderId);
-    this.positions.delete(orderId);
-    this.unrealizedByOrder.delete(orderId);
+    
+    if (isPartial) {
+      pos.quantity -= qtyToClose;
+      pos.marginUsdt -= marginReleased;
+      pos.entryFeeUsdt -= entryFeeAttributed;
+      void this.opts.redisState?.upsertPosition(orderId, this.snapshotPosition(pos));
+    } else {
+      this.opts.liquidation.untrack(orderId);
+      this.opts.funding.untrackPosition(orderId);
+      this.positions.delete(orderId);
+      this.unrealizedByOrder.delete(orderId);
+      void this.opts.redisState?.removePosition(orderId);
+    }
+
+    void this.opts.redisState?.setWallet(this.opts.wallet.state());
+    void this.opts.redisState?.publishUpdate('position', { 
+      event: isPartial ? 'partial_close' : 'close', 
+      orderId, 
+      symbol: pos.symbol 
+    });
 
     const closed: ClosedPosition = {
       orderId,
@@ -246,7 +353,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       leverage: pos.leverage,
       entryPrice: pos.entryPrice,
       exitPrice,
-      quantity: pos.quantity,
+      quantity: qtyToClose,
       reason,
       grossUsdt: gross,
       feesUsdt: totalFees,
@@ -273,6 +380,8 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     liqPrice: number;
     openedAt: number;
     unrealizedUsdt: number;
+    stopLoss?: number;
+    takeProfit?: number;
   }> {
     return Array.from(this.positions.values()).map((p) => ({
       orderId: p.orderId,
@@ -285,6 +394,8 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       liqPrice: p.liqPrice,
       openedAt: p.openedAt,
       unrealizedUsdt: this.unrealizedByOrder.get(p.orderId) ?? 0,
+      stopLoss: p.stopLoss,
+      takeProfit: p.takeProfit,
     }));
   }
 

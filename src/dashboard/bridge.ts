@@ -63,9 +63,9 @@ export interface DashboardFeeds {
    * The UI uses `tickSize` to pick LTP decimal places per active watch symbol (tick fractional digits only).
    */
   precisionBySymbol: Map<string, InstrumentPrecision>;
-  paperWallet?: () => WalletState | null;
-  paperPositions?: () => DashboardPosition[] | null;
-  livePositions?: () => DashboardPosition[] | null;
+  paperWallet?: () => WalletState | null | Promise<WalletState | null>;
+  paperPositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
+  livePositions?: () => DashboardPosition[] | null | Promise<DashboardPosition[] | null>;
 }
 
 export interface DashboardBridge {
@@ -73,12 +73,15 @@ export interface DashboardBridge {
   listen: () => Promise<void>;
   stop: () => Promise<void>;
   broadcastPaperTrade: (trade: ClosedPosition) => void;
+  /** Generic broadcaster — used by event-bus bridges (trail.update, fills, closes). */
+  broadcast: (msg: object) => void;
 }
 
 /** Broadcast as `type: 'signals'`; also passed to AI brief builder. */
 export interface DashboardSignalsPayload {
   refPrice: number;
   refPriceTf: string;
+  smcTf?: string;
   htfBias: string;
   ltfDirection: string;
   ltfConfidence: number;
@@ -98,6 +101,7 @@ export interface DashboardSignalsPayload {
     /** Swing bar → confirmation bar at `price` (for chart BOS segment). */
     bosLine: { startIndex: number; endIndex: number; price: number } | null;
     chochLine: { startIndex: number; endIndex: number; price: number } | null;
+    idmLine: { startIndex: number; endIndex: number; price: number } | null;
     structPoints: any[];
     swings: any[];
     liquidity: LiquidityEngineResult | null;
@@ -106,6 +110,8 @@ export interface DashboardSignalsPayload {
     /** Bar index in `refPriceTf` series for the liquidity raid candle when `liquidityOrderBook` is resolved. */
     sweepCandleIndex: number | null;
     sweepCandleOpenTime: number | null;
+    signalVerdict: string;
+    signalReasons: string[];
   };
   knnArchitecture: KnnArchitectureResult | null;
   solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
@@ -151,13 +157,21 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const lastMarkBySym = new Map<string, number>();
   const lastBookBySym = new Map<string, { bid: number; ask: number }>();
 
-  let lastAiBriefAt = 0;
-  let aiBriefInflight = false;
+  /** Per-symbol tracking for AI Briefs */
+  const lastAiBriefAtBySym = new Map<string, number>();
+  const aiBriefInflightBySym = new Set<string>();
+  const latestAiBriefBySym = new Map<string, { text: string; thinking: string; ts: number; error?: string | null }>();
+
   let aiBriefWarnedNoModel = false;
   let aiBriefWarnedCloudKey = false;
   /** Throttle partial `ai_brief` WebSocket frames when streaming. */
   let lastAiBriefStreamBroadcastAt = 0;
   const AI_BRIEF_STREAM_MIN_MS = 75;
+
+  /** Event detection state for AI Brief triggers */
+  const lastSupertrendDirBySym = new Map<string, number>();
+  const lastSmcBosBySym = new Map<string, string>();
+  const lastSmcChochBySym = new Map<string, string>();
 
   const supertrendParamsBySym = new Map<string, { period: number; mult: number }>();
   const lastSupertrendTuneAtBySym = new Map<string, number>();
@@ -168,13 +182,14 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const indicatorDebounceBySym = new Map<string, ReturnType<typeof setTimeout>>();
 
   const getSym = (client: WebSocket): string => {
-        return watchSymbolByClient.get(client) ?? symbolUpper;
-      }
+    const s = watchSymbolByClient.get(client) ?? symbolUpper;
+    return s.endsWith('.P') ? s.slice(0, -2) : s;
+  };
 
-  const getOpenPositions = (): DashboardPosition[] => {
-    const paper = feeds.paperPositions?.();
-    if (Array.isArray(paper)) return paper;
-    const live = feeds.livePositions?.();
+  const getOpenPositions = async (): Promise<DashboardPosition[]> => {
+    const paper = await feeds.paperPositions?.();
+    if (Array.isArray(paper) && paper.length > 0) return paper;
+    const live = await feeds.livePositions?.();
     if (Array.isArray(live)) return live;
     return [];
   };
@@ -204,10 +219,19 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const chatOllamaHost = cfg.OLLAMA_TARGET === 'cloud' ? ollamaApiUrl('cloud') : ollamaApiUrl('local');
   const chatApiKey = (cfg.OLLAMA_API_KEY || '').trim();
 
-  const buildMarketContext = (): string => {
-    const s = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+  const buildMarketContext = async (activeSymbol: string): Promise<string> => {
+    const s = computeSignalsForSymbol(activeSymbol, defaultChartRefTf());
+    const watchlistPrices: Record<string, number> = {};
+    for (const sym of watchlistSymbols) {
+      watchlistPrices[sym] = lastMarkBySym.get(sym) ?? 0;
+    }
+
+    const micro = snapshotMicrostructure(tapeFor(activeSymbol), obFor(activeSymbol));
+    const recentTrades = tapeFor(activeSymbol).recent(10);
+    const topBook = obFor(activeSymbol).topLevels(3);
+
     const parts: string[] = [
-      `Symbol: ${symbolUpper}`,
+      `Active Symbol: ${activeSymbol}`,
       `Price: ${s.refPrice}`,
       `HTF Bias: ${s.htfBias}`,
       `LTF: direction=${s.ltfDirection}, confidence=${s.ltfConfidence}, score=${s.ltfScore}`,
@@ -223,6 +247,24 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     if (s.solMtf) {
       parts.push(`SOL MTF: pass=${s.solMtf.pass}, direction=${s.solMtf.direction}`);
     }
+
+    parts.push(`Watchlist Prices: ${JSON.stringify(watchlistPrices)}`);
+    parts.push(`Microstructure: imbalance30s=${micro.tfi30s.tfi.toFixed(3)}, vwap30s=${(micro.tfi30s.buyVol + micro.tfi30s.sellVol).toFixed(2)}, spreadBps=${micro.spreadBps?.toFixed(1) ?? 'N/A'}, weightedObi10=${micro.weightedObi10.weightedObi.toFixed(3)}`);
+    parts.push(`Order Book Top (Asks): ${topBook.asks.slice(0, 2).map(a => `${a.price}@${a.qty}`).join(', ')}`);
+    parts.push(`Order Book Top (Bids): ${topBook.bids.slice(0, 2).map(b => `${b.price}@${b.qty}`).join(', ')}`);
+    parts.push(`Recent Trades: ${recentTrades.slice(0, 5).map(t => `${t.makerSide ? 'S' : 'B'} ${t.price}@${t.qty}`).join(' | ')}`);
+
+    const openPos = await getOpenPositions();
+    const wallet = (await feeds.paperWallet?.()) || null;
+    if (openPos.length > 0) {
+      parts.push(`Open Positions: ${openPos.map(p => `${p.symbol} ${p.side} x${p.leverage} @${p.entryPrice} (pnl: ${(p.unrealizedUsdt ?? 0).toFixed(2)})`).join(', ')}`);
+    } else {
+      parts.push(`Open Positions: NONE`);
+    }
+    if (wallet) {
+      parts.push(`Wallet: balance=${wallet.balanceUsdt.toFixed(2)}, available=${wallet.availableUsdt.toFixed(2)}, used=${wallet.usedMarginUsdt.toFixed(2)}`);
+    }
+
     parts.push(`Timeframe: ${s.signalMeta?.trendSeriesTf ?? 'unknown'}, HTF: ${s.signalMeta?.htf ?? 'unknown'}`);
     return parts.join('\n');
   };
@@ -237,14 +279,14 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     let total = 0;
     for await (const chunk of req) {
       total += (chunk as Buffer).length;
-      if (total > 32 * 1024) {
+      if (total > 64 * 1024) { // Increased limit for larger context
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request too large' }));
         return;
       }
       chunks.push(chunk as Buffer);
     }
-    let body: { messages?: { role: string; content: string }[]; context?: boolean };
+    let body: { messages?: { role: string; content: string }[]; context?: boolean; symbol?: string; nanopine?: boolean };
     try {
       body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     } catch {
@@ -260,10 +302,27 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       return;
     }
 
+    const rawSymbol = (body.symbol || symbolUpper).toUpperCase();
+    const activeSymbol = rawSymbol.endsWith('.P') ? rawSymbol.slice(0, -2) : rawSymbol;
     const includeContext = body.context !== false;
-    const systemMsg = includeContext
-      ? `You are QuantumTrade AI, an expert crypto trading assistant. You have real-time market data:\n\n${buildMarketContext()}\n\nUse this data to give specific, actionable trading analysis. Be concise and precise.`
-      : 'You are QuantumTrade AI, an expert crypto trading assistant. Be concise and precise.';
+    const isNanopineMode = body.nanopine === true;
+
+    let systemMsg = `You are QuantumTrade AI, an expert crypto trading assistant.`;
+    if (includeContext) {
+      systemMsg += `\n\nYou have real-time market data for ${activeSymbol}:\n\n${await buildMarketContext(activeSymbol)}\n\n`;
+    }
+
+    if (isNanopineMode) {
+      systemMsg += `You are in NANOPINE SCRIPT MODE. Your primary goal is to help the user write, debug, and optimize NanoPine scripts for this trading bot. 
+NanoPine is a domain-specific language for strategy signals.
+Syntax examples:
+- "signal: LONG when close > ema(20)"
+- "signal: SHORT when rsi(14) > 70 and supertrend(10, 3) == -1"
+- "config: { \"riskPct\": 0.01 }"
+Be precise with syntax. Do not explain things unless asked. Focus on generating valid NanoPine code snippets.`;
+    } else {
+      systemMsg += `Give specific, actionable trading analysis based on technical indicators, SMC structure, and order book microstructure. Be concise and professional.`;
+    }
 
     const messages = [
       { role: 'system' as const, content: systemMsg },
@@ -445,7 +504,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     if (anyFixed) {
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
-        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+        client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
       log.info('candle_store_resynced', { reason: 'periodic_validation' });
     }
@@ -470,7 +529,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
         if (getSym(client) !== sym) continue;
-        client.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(client) }));
+        client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
       log.info('force_resync_complete', { symbol: sym });
     }
@@ -514,88 +573,131 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         }
       }
 
-  const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string): void => {
-        if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
-        if (!cfg.OLLAMA_MODEL.trim()) {
-          if (!aiBriefWarnedNoModel) {
-            aiBriefWarnedNoModel = true;
-            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
-          }
-          return;
-        }
-        if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
-          if (!aiBriefWarnedCloudKey) {
-            aiBriefWarnedCloudKey = true;
-            log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
-          }
-          return;
-        }
-        const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
-        const now = Date.now();
-        if (aiBriefInflight) return;
-        if (lastAiBriefAt > 0 && now - lastAiBriefAt < gapMs) return;
-
-        const snapshot: MarketSignalsSnapshot = {
-          symbol: watchSymbol,
-          refPrice: signals.refPrice,
-          refPriceTf: signals.refPriceTf,
-          htfBias: String(signals.htfBias),
-          ltfDirection: String(signals.ltfDirection),
-          ltfConfidence: signals.ltfConfidence,
-          ltfScore: signals.ltfScore,
-          ltfSignals: signals.ltfSignals,
-          smc: signals.smc,
-          knnArchitecture: signals.knnArchitecture,
-          solMtf: signals.solMtf,
-        };
-
-        aiBriefInflight = true;
-        void requestMarketBrief(
-          {
-            host: ollamaApiUrl(cfg.OLLAMA_TARGET),
-            model: cfg.OLLAMA_MODEL,
-            apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
-            timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
-            thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
-            streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
-            mcpEnabled: cfg.AI_MCP_ENABLED,
-            mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
-            mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
-            mcpLog: log,
-            onStreamChunk:
-              cfg.AI_BRIEF_STREAM_ENABLED === true
-                ? ({ content, thinking }) => {
-                    const t = Date.now();
-                    if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
-                    lastAiBriefStreamBroadcastAt = t;
-                    broadcast({
-                      type: 'ai_brief',
-                      text: content,
-                      thinking,
-                      partial: true,
-                      ts: t,
-                    });
-                  }
-                : undefined,
-          },
-          snapshot,
-        ).then((r) => {
-          aiBriefInflight = false;
-          lastAiBriefAt = Date.now();
-          const ts = Date.now();
-          if (r.error) {
-            broadcast({ type: 'ai_brief', error: r.error, partial: false, ts });
-            return;
-          }
-          broadcast({
-            type: 'ai_brief',
-            text: r.text ?? '',
-            thinking: r.thinking ?? '',
-            partial: false,
-            ts,
-          });
-        });
+  const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string, force = false): void => {
+    if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
+    if (!cfg.OLLAMA_MODEL.trim()) {
+      if (!aiBriefWarnedNoModel) {
+        aiBriefWarnedNoModel = true;
+        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_MODEL empty' });
       }
+      return;
+    }
+    if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+      if (!aiBriefWarnedCloudKey) {
+        aiBriefWarnedCloudKey = true;
+        log.warn('dashboard_ai_brief_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+      }
+      return;
+    }
+
+    const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
+    const now = Date.now();
+    const last = lastAiBriefAtBySym.get(watchSymbol) ?? 0;
+
+    if (aiBriefInflightBySym.has(watchSymbol)) return;
+    // When forced by an event (flip/SMC), we still respect a minimal cooldown to prevent loop spam,
+    // but the intention is that events trigger it immediately if the gap has passed.
+    if (!force && last > 0 && now - last < gapMs) return;
+
+    const snapshot: MarketSignalsSnapshot = {
+      symbol: watchSymbol,
+      refPrice: signals.refPrice,
+      refPriceTf: signals.refPriceTf,
+      htfBias: String(signals.htfBias),
+      ltfDirection: String(signals.ltfDirection),
+      ltfConfidence: signals.ltfConfidence,
+      ltfScore: signals.ltfScore,
+      ltfSignals: signals.ltfSignals,
+      smc: signals.smc,
+      knnArchitecture: signals.knnArchitecture,
+      solMtf: signals.solMtf,
+    };
+
+    aiBriefInflightBySym.add(watchSymbol);
+    void requestMarketBrief(
+      {
+        host: ollamaApiUrl(cfg.OLLAMA_TARGET),
+        model: cfg.OLLAMA_MODEL,
+        apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
+        timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
+        thinkEnabled: cfg.AI_BRIEF_THINK_ENABLED,
+        streamEnabled: cfg.AI_BRIEF_STREAM_ENABLED,
+        mcpEnabled: cfg.AI_MCP_ENABLED,
+        mcpUrl: cfg.AI_MCP_URL.trim() || undefined,
+        mcpMaxToolIter: cfg.AI_MCP_MAX_TOOL_ITER,
+        mcpLog: log,
+        onStreamChunk:
+          cfg.AI_BRIEF_STREAM_ENABLED === true
+            ? ({ content, thinking }) => {
+                const t = Date.now();
+                if (t - lastAiBriefStreamBroadcastAt < AI_BRIEF_STREAM_MIN_MS) return;
+                lastAiBriefStreamBroadcastAt = t;
+
+                // Only broadcast if this is still an active symbol for some client
+                let anyClientActive = false;
+                for (const client of wss.clients) {
+                  if (getSym(client) === watchSymbol) {
+                    anyClientActive = true;
+                    break;
+                  }
+                }
+                if (!anyClientActive) return;
+
+                broadcast({
+                  type: 'ai_brief',
+                  symbol: watchSymbol,
+                  text: content,
+                  thinking,
+                  partial: true,
+                  ts: t,
+                });
+              }
+            : undefined,
+      },
+      snapshot,
+    ).then((r) => {
+      aiBriefInflightBySym.delete(watchSymbol);
+      lastAiBriefAtBySym.set(watchSymbol, Date.now());
+      const ts = Date.now();
+
+      latestAiBriefBySym.set(watchSymbol, {
+        text: r.text ?? '',
+        thinking: r.thinking ?? '',
+        ts,
+        error: r.error,
+      });
+
+      if (r.error) {
+        broadcast({ type: 'ai_brief', symbol: watchSymbol, error: r.error, partial: false, ts });
+        return;
+      }
+      broadcast({
+        type: 'ai_brief',
+        symbol: watchSymbol,
+        text: r.text ?? '',
+        thinking: r.thinking ?? '',
+        partial: false,
+        ts,
+      });
+    });
+  }
+
+  const sendStoredAiBrief = (client: WebSocket, symbol: string): void => {
+    const stored = latestAiBriefBySym.get(symbol);
+    if (stored) {
+      client.send(
+        JSON.stringify({
+          type: 'ai_brief',
+          symbol,
+          text: stored.text,
+          thinking: stored.thinking,
+          error: stored.error,
+          partial: false,
+          ts: stored.ts,
+        }),
+      );
+    }
+  }
 
   const supertrendParamsForSymbol = (sym: string): { period: number; mult: number } => {
         return supertrendParamsBySym.get(sym) ?? {
@@ -806,9 +908,44 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
           sweepOrderBookMemoBySym.delete(sym);
         }
 
+        // Compute definitive SMC Execution Verdict
+        let signalVerdict: 'BUY' | 'SELL' | 'NONE' = 'NONE';
+        const signalReasons: string[] = [];
+
+        // 1. Check Bullish Confluence (BUY)
+        const isBullishBias = htfBiasRaw === 'LONG' || smc.choch === 'BULLISH';
+        const hasSellsideSweep = smc.liquiditySweep === 'SHORT' || (smc.idmLine && smc.idmLine.endIndex === refSeries.length - 1);
+        const hasBullishObMitigation = smc.orderBlocks.some(ob => ob.type === 'BULLISH' && ob.isMitigated);
+        const hasBullishFvgMitigation = smc.fvgs.some(fvg => fvg.type === 'BULLISH' && fvg.isFilled);
+
+        if (isBullishBias && (hasSellsideSweep || hasBullishObMitigation || hasBullishFvgMitigation)) {
+          signalVerdict = 'BUY';
+          if (htfBiasRaw === 'LONG') signalReasons.push('HTF Bullish Bias');
+          if (smc.choch === 'BULLISH') signalReasons.push('Bullish CHoCH');
+          if (smc.liquiditySweep === 'SHORT') signalReasons.push('Sellside Liquidity Sweep');
+          if (hasBullishObMitigation) signalReasons.push('Bullish OB Mitigation');
+          if (hasBullishFvgMitigation) signalReasons.push('Bullish FVG Mitigation');
+        }
+
+        // 2. Check Bearish Confluence (SELL)
+        const isBearishBias = htfBiasRaw === 'SHORT' || smc.choch === 'BEARISH';
+        const hasBuysideSweep = smc.liquiditySweep === 'LONG' || (smc.idmLine && smc.idmLine.endIndex === refSeries.length - 1);
+        const hasBearishObMitigation = smc.orderBlocks.some(ob => ob.type === 'BEARISH' && ob.isMitigated);
+        const hasBearishFvgMitigation = smc.fvgs.some(fvg => fvg.type === 'BEARISH' && fvg.isFilled);
+
+        if (isBearishBias && (hasBuysideSweep || hasBearishObMitigation || hasBearishFvgMitigation)) {
+          signalVerdict = 'SELL';
+          if (htfBiasRaw === 'SHORT') signalReasons.push('HTF Bearish Bias');
+          if (smc.choch === 'BEARISH') signalReasons.push('Bearish CHoCH');
+          if (smc.liquiditySweep === 'LONG') signalReasons.push('Buyside Liquidity Sweep');
+          if (hasBearishObMitigation) signalReasons.push('Bearish OB Mitigation');
+          if (hasBearishFvgMitigation) signalReasons.push('Bearish FVG Mitigation');
+        }
+
         return {
           refPrice,
           refPriceTf: effectiveTf,
+          smcTf: refSeries.length >= SMC_MIN_BARS ? effectiveTf : ltfTf,
           htfBias: String(htfBiasRaw),
           ltfDirection: ltfTrend.direction,
           ltfConfidence: +ltfTrend.confidence.toFixed(3),
@@ -826,12 +963,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             choch: smc.choch,
             bosLine: smc.bosLine,
             chochLine: smc.chochLine,
+            idmLine: smc.idmLine,
             structPoints: smc.structPoints,
             swings: smc.swings,
             liquidity: smc.liquidity,
             liquidityOrderBook,
             sweepCandleIndex,
             sweepCandleOpenTime,
+            signalVerdict,
+            signalReasons,
           },
           knnArchitecture,
           solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
@@ -884,39 +1024,40 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         return { instrumentPrecision, ltpDecimalPlaces, instrumentPrecisionBySymbol };
       }
 
-  const buildSnapshot = (forWs: WebSocket): Record<string, unknown> => {
-        const sym = getSym(forWs);
-        const rows = getCandlesByChartTf(sym);
-        const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
-        const signals = computeSignalsForClient(forWs, refTf);
-        const book = lastBookBySym.get(sym);
-        const mark = lastMarkBySym.get(sym);
-        const precPayload = buildInstrumentPrecisionPayload(sym);
-        return {
-          symbol: sym,
-          watchlist: watchlistSymbols,
-          executionSymbol: symbolUpper,
-          availableTimeframes: [...chartTfsOnStream],
-          mark: mark !== undefined ? mark : null,
-          bestBid: book?.bid ?? null,
-          bestAsk: book?.ask ?? null,
-          ...precPayload,
-          candles: {
-            '1m': rows['1m'],
-            '5m': rows['5m'],
-            '15m': rows['15m'],
-            '1h': rows['1h'],
-            '4h': rows['4h'],
-            '1d': rows['1d'],
-          },
-          depth: obFor(sym).topLevels(depthLevelsUi),
-          trades: tapeFor(sym).recent(60),
-          microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
-          indicators: computeIndicatorsFromRows(rows, sym),
-          signals,
-          positions: getOpenPositions(),
-        };
-      }
+  const buildSnapshot = async (forWs: WebSocket): Promise<Record<string, unknown>> => {
+    const sym = getSym(forWs);
+    const rows = getCandlesByChartTf(sym);
+    const refTf = refTfByClient.get(forWs) ?? defaultChartRefTf();
+    const signals = computeSignalsForClient(forWs, refTf);
+    const book = lastBookBySym.get(sym);
+    const mark = lastMarkBySym.get(sym);
+    const precPayload = buildInstrumentPrecisionPayload(sym);
+    const positions = await getOpenPositions();
+    return {
+      symbol: sym,
+      watchlist: watchlistSymbols,
+      executionSymbol: symbolUpper,
+      availableTimeframes: [...chartTfsOnStream],
+      mark: mark !== undefined ? mark : null,
+      bestBid: book?.bid ?? null,
+      bestAsk: book?.ask ?? null,
+      ...precPayload,
+      candles: {
+        '1m': rows['1m'],
+        '5m': rows['5m'],
+        '15m': rows['15m'],
+        '1h': rows['1h'],
+        '4h': rows['4h'],
+        '1d': rows['1d'],
+      },
+      depth: obFor(sym).topLevels(depthLevelsUi),
+      trades: tapeFor(sym).recent(60),
+      microstructure: snapshotMicrostructure(tapeFor(sym), obFor(sym)),
+      indicators: computeIndicatorsFromRows(rows, sym),
+      signals,
+      positions,
+    };
+  };
 
   const handleClientLoadHistory = async (ws: WebSocket, tf: string, oldestOpenTime: number): Promise<void> => {
         if (!allowedHistoryTfs.has(tf)) return;
@@ -970,14 +1111,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         }
       }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', async (ws) => {
     log.info('dashboard_client_connected', { clients: wss.clients.size });
     refTfByClient.set(ws, defaultChartRefTf());
     watchSymbolByClient.set(ws, symbolUpper);
-    const snap = buildSnapshot(ws);
+    const snap = await buildSnapshot(ws);
     ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
+    sendStoredAiBrief(ws, symbolUpper);
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let msg: { type?: string; tf?: string; oldestOpenTime?: number; symbol?: string };
       try {
         msg = JSON.parse(String(raw)) as typeof msg;
@@ -985,10 +1127,12 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         return;
       }
       if (msg.type === 'set_watch_symbol' && typeof msg.symbol === 'string') {
-        const next = msg.symbol.trim().toUpperCase();
+        const nextRaw = msg.symbol.trim().toUpperCase();
+        const next = nextRaw.endsWith('.P') ? nextRaw.slice(0, -2) : nextRaw;
         if (watchlistSet.has(next)) {
           watchSymbolByClient.set(ws, next);
-          ws.send(JSON.stringify({ type: 'snapshot', ...buildSnapshot(ws) }));
+          ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
+          sendStoredAiBrief(ws, next);
         }
         return;
       }
@@ -1099,10 +1243,44 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       if (isFinal && tf === ltfTf) {
         maybePeriodicSupertrendTune(symU);
         broadcastSignalsPerClient();
+
+        // Detect significant events for AI Brief trigger
         const lead = firstOpenWebSocket();
-        if (lead && lead.readyState === WebSocket.OPEN) {
-          const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
-          void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
+        const leadSym = lead ? getSym(lead) : symbolUpper;
+        const leadTf = lead ? (refTfByClient.get(lead) ?? defaultChartRefTf()) : defaultChartRefTf();
+        const signals = computeSignalsForSymbol(symU, leadTf);
+
+        let significantEvent = false;
+
+        // 1. SuperTrend Flip detection
+        const stDir = (signals.ltfSignals as any)?.supertrend?.dir;
+        const lastStDir = lastSupertrendDirBySym.get(symU);
+        if (stDir !== undefined && lastStDir !== undefined && stDir !== lastStDir) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_supertrend_flip', { symbol: symU, from: lastStDir, to: stDir });
+        }
+        if (stDir !== undefined) lastSupertrendDirBySym.set(symU, stDir);
+
+        // 2. SMC Structural Change detection (BOS/CHoCH)
+        const bos = signals.smc.bos;
+        const choch = signals.smc.choch;
+        const lastBos = lastSmcBosBySym.get(symU);
+        const lastChoch = lastSmcChochBySym.get(symU);
+
+        if (bos !== 'NONE' && bos !== lastBos) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_smc_bos', { symbol: symU, bos });
+        }
+        if (choch !== 'NONE' && choch !== lastChoch) {
+          significantEvent = true;
+          log.info('ai_brief_trigger_smc_choch', { symbol: symU, choch });
+        }
+        lastSmcBosBySym.set(symU, bos);
+        lastSmcChochBySym.set(symU, choch);
+
+        // Trigger AI Brief if significant event OR if this is the lead symbol (on kline close)
+        if (significantEvent || symU === leadSym) {
+          void maybeRefreshAiBrief(signals, symU, significantEvent);
         }
       }
     },
@@ -1225,11 +1403,15 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
         }, 10_000);
 
         if (feeds.paperWallet || feeds.paperPositions || feeds.livePositions) {
-          paperStateTimer = setInterval(() => {
-            const wallet = feeds.paperWallet?.();
-            if (wallet) broadcast({ type: 'paper_wallet', ...wallet });
-            const positions = getOpenPositions();
-            broadcast({ type: 'position_update', mode: feeds.paperPositions ? 'paper' : 'live', positions });
+          paperStateTimer = setInterval(async () => {
+            const wallet = await feeds.paperWallet?.();
+            const mode = feeds.paperPositions ? 'paper' : 'live';
+            if (wallet) {
+              broadcast({ type: 'paper_wallet', mode, ...wallet });
+              broadcast({ type: 'wallet', mode, ...wallet });
+            }
+            const positions = await getOpenPositions();
+            broadcast({ type: 'position_update', mode, positions });
             if (feeds.paperPositions) {
               broadcast({ type: 'paper_position_update', positions });
             }
@@ -1241,11 +1423,7 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
             maybePeriodicSupertrendTune(s);
           }
           broadcastSignalsPerClient();
-          const lead = firstOpenWebSocket();
-          if (lead && lead.readyState === WebSocket.OPEN) {
-            const leadTf = refTfByClient.get(lead) ?? defaultChartRefTf();
-            void maybeRefreshAiBrief(computeSignalsForClient(lead, leadTf), getSym(lead));
-          }
+          // Periodic AI brief trigger removed in favor of event-based + kline-based triggers
         }, 60_000);
 
         validationTimer = setInterval(() => {
@@ -1308,5 +1486,5 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
     broadcast({ type: 'paper_trade', ...trade });
   };
 
-  return { multiplexSidecar, listen, stop, broadcastPaperTrade };
+  return { multiplexSidecar, listen, stop, broadcastPaperTrade, broadcast };
 }

@@ -12,6 +12,8 @@ const PATH_INSTRUMENT = '/exchange/v1/derivatives/futures/data/instrument';
 const PATH_EXIT = '/exchange/v1/derivatives/futures/positions/exit';
 const PATH_TPSL = '/exchange/v1/derivatives/futures/positions/create_tpsl';
 const PATH_LEVERAGE = '/exchange/v1/derivatives/futures/positions/update_leverage';
+const PATH_ACCOUNT_DETAILS = '/exchange/v1/derivatives/futures/positions/cross_margin_details';
+const PATH_WALLETS = '/exchange/v1/derivatives/futures/wallets';
 
 export interface CoinDcxClientOptions {
   apiKey: string;
@@ -226,5 +228,44 @@ export class CoinDcxFuturesClient {
         return data;
       },
     );
+  }
+
+  async getFuturesAccountDetails(): Promise<any> {
+    return this.withClockSkewRetry(
+      'FuturesAccountDetails',
+      (timestamp) => ({ timestamp }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_ACCOUNT_DETAILS, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async getFuturesWallets(): Promise<any> {
+    // Though docs say GET, CoinDCX usually requires timestamp in body for private endpoints.
+    // If GET fails, we'll know, but usually POST with timestamp works for all private V1.
+    return this.withClockSkewRetry(
+      'FuturesWallets',
+      (timestamp) => ({ timestamp }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post(PATH_WALLETS, body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async getBalance(): Promise<any> {
+    return this.withClockSkewRetry(
+      'UsersBalances',
+      (timestamp) => ({ timestamp }),
+      async ({ body, headers }) => {
+        const { data } = await this.http.post('/exchange/v1/users/balances', body, { headers });
+        return data;
+      },
+    );
+  }
+
+  async getFuturesEquity(): Promise<any> {
+    return this.getFuturesAccountDetails();
   }
 }

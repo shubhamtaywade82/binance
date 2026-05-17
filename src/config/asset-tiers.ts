@@ -32,13 +32,13 @@ export interface AssetTierConfig {
 }
 
 const DEFAULT_TIERS: Record<string, AssetTierConfig> = {
-  BTCUSDT:  { symbol: 'BTCUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 5, tpPct: 0.007, slPct: 0.004, marginUsdt: 1500, minConfidence: 0.65 },
-  ETHUSDT:  { symbol: 'ETHUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 5, tpPct: 0.008, slPct: 0.005, marginUsdt: 1500, minConfidence: 0.65 },
-  SOLUSDT:  { symbol: 'SOLUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 5, tpPct: 0.010, slPct: 0.006, marginUsdt: 1200, minConfidence: 0.65 },
-  XRPUSDT:  { symbol: 'XRPUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 5, tpPct: 0.012, slPct: 0.007, marginUsdt: 1000, minConfidence: 0.65 },
-  SUIUSDT:  { symbol: 'SUIUSDT',  tier: 'swing', ltf: '15m', htf: '4h', leverage: 3, tpPct: 0.025, slPct: 0.015, marginUsdt: 800,  minConfidence: 0.70 },
-  AVAXUSDT: { symbol: 'AVAXUSDT', tier: 'swing', ltf: '15m', htf: '4h', leverage: 3, tpPct: 0.022, slPct: 0.013, marginUsdt: 800,  minConfidence: 0.70 },
-  LINKUSDT: { symbol: 'LINKUSDT', tier: 'swing', ltf: '15m', htf: '4h', leverage: 3, tpPct: 0.020, slPct: 0.012, marginUsdt: 800,  minConfidence: 0.70 },
+  BTCUSDT:  { symbol: 'BTCUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 10, tpPct: 0.007, slPct: 0.004, marginUsdt: 1500, minConfidence: 0.65 },
+  ETHUSDT:  { symbol: 'ETHUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 10, tpPct: 0.008, slPct: 0.005, marginUsdt: 1500, minConfidence: 0.65 },
+  SOLUSDT:  { symbol: 'SOLUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 10, tpPct: 0.010, slPct: 0.006, marginUsdt: 1200, minConfidence: 0.65 },
+  XRPUSDT:  { symbol: 'XRPUSDT',  tier: 'scalp', ltf: '5m',  htf: '1h', leverage: 10, tpPct: 0.012, slPct: 0.007, marginUsdt: 1000, minConfidence: 0.65 },
+  SUIUSDT:  { symbol: 'SUIUSDT',  tier: 'swing', ltf: '15m', htf: '4h', leverage: 10, tpPct: 0.025, slPct: 0.015, marginUsdt: 800,  minConfidence: 0.70 },
+  AVAXUSDT: { symbol: 'AVAXUSDT', tier: 'swing', ltf: '15m', htf: '4h', leverage: 10, tpPct: 0.022, slPct: 0.013, marginUsdt: 800,  minConfidence: 0.70 },
+  LINKUSDT: { symbol: 'LINKUSDT', tier: 'swing', ltf: '15m', htf: '4h', leverage: 10, tpPct: 0.020, slPct: 0.012, marginUsdt: 800,  minConfidence: 0.70 },
 };
 
 /** Module-level mutable registry. Mutated only via `applyTierOverrides()`. */

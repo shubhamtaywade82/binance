@@ -61,6 +61,7 @@ export class LocalOrderBook {
       return;
     }
     this.buffered.push(diff);
+    if (this.buffered.length > 200) this.buffered.shift();
   }
 
   setDesyncHandler(cb: DesyncCallback): void {
@@ -89,6 +90,7 @@ export class LocalOrderBook {
   applyDiff(diff: DepthDiff): boolean {
     if (!this.booted) {
       this.buffered.push(diff);
+      if (this.buffered.length > 200) this.buffered.shift();
       return false;
     }
     if (diff.u <= this.lastUpdateId) return false;

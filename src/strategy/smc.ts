@@ -8,6 +8,8 @@ export interface OrderBlock {
   low: number;
   high: number;
   index: number;
+  mitigatedIndex?: number;
+  invalidatedIndex?: number;
   isMitigated?: boolean;
   isInvalidated?: boolean;
   score: number;
@@ -24,6 +26,8 @@ export interface FairValueGap {
   low: number;
   high: number;
   index: number;
+  startIndex?: number;
+  endIndex?: number;
   isFilled?: boolean;
   score: number;
 }
@@ -33,6 +37,7 @@ export interface BreakerBlock {
   low: number;
   high: number;
   index: number;
+  mitigatedIndex?: number;
 }
 
 export interface SmcBlock {
@@ -70,6 +75,7 @@ export interface SmcAnalysis {
   choch: SmcDirection;
   bosLine: SmcStructureLine | null;
   chochLine: SmcStructureLine | null;
+  idmLine: SmcStructureLine | null;
   score: number;
   liquidity: LiquidityEngineResult | null;
   trend: 'bullish' | 'bearish' | 'range';
@@ -181,23 +187,27 @@ const detectOrderBlocks = (candles: Candle[]): OrderBlock[] => {
         };
         
         let mitigated = false;
+        let mitigatedIndex: number | undefined;
         let invalidated = false;
+        let invalidatedIndex: number | undefined;
         for (let k = j + 1; k < n; k++) {
           const ck = candles[k]!;
           if (ob.type === 'BULLISH') {
-            if (ck.low <= ob.high) mitigated = true;
-            if (ck.close < ob.low) { invalidated = true; break; }
+            if (ck.low <= ob.high && !mitigated) { mitigated = true; mitigatedIndex = k; }
+            if (ck.close < ob.low) { invalidated = true; invalidatedIndex = k; break; }
           } else {
-            if (ck.high >= ob.low) mitigated = true;
-            if (ck.close > ob.high) { invalidated = true; break; }
+            if (ck.high >= ob.low && !mitigated) { mitigated = true; mitigatedIndex = k; }
+            if (ck.close > ob.high) { invalidated = true; invalidatedIndex = k; break; }
           }
         }
         
         if (!invalidated) {
           ob.isMitigated = mitigated;
+          ob.mitigatedIndex = mitigatedIndex;
           obs.push(ob);
         } else {
           ob.isInvalidated = true;
+          ob.invalidatedIndex = invalidatedIndex;
           obs.push(ob);
         }
         break; 
@@ -249,7 +259,9 @@ const detectFVGs = (candles: Candle[]): FairValueGap[] => {
             type, 
             low, 
             high, 
-            index: i, 
+            index: i,
+            startIndex: i - 1,
+            endIndex: i + 1,
             score: body > avgBody * 2.5 ? 2 : 1 
           });
         }
@@ -259,13 +271,27 @@ const detectFVGs = (candles: Candle[]): FairValueGap[] => {
   return fvgs.slice(-6);
 }
 
-const detectBreakers = (_candles: Candle[], invalidatedObs: OrderBlock[]): BreakerBlock[] => {
-  return invalidatedObs.map(ob => ({
-    type: ob.type === 'BULLISH' ? 'BEARISH' : 'BULLISH',
-    low: ob.low,
-    high: ob.high,
-    index: ob.index
-  }));
+const detectBreakers = (candles: Candle[], invalidatedObs: OrderBlock[]): BreakerBlock[] => {
+  const n = candles.length;
+  const breakers: BreakerBlock[] = [];
+  for (const ob of invalidatedObs) {
+    const startIdx = ob.invalidatedIndex ?? ob.index;
+    const breakerType = ob.type === 'BULLISH' ? 'BEARISH' : 'BULLISH';
+    let mitigatedIdx: number | undefined;
+    for (let k = startIdx + 1; k < n; k++) {
+      const ck = candles[k]!;
+      if (breakerType === 'BULLISH' && ck.low <= ob.high) { mitigatedIdx = k; break; }
+      if (breakerType === 'BEARISH' && ck.high >= ob.low) { mitigatedIdx = k; break; }
+    }
+    breakers.push({
+      type: breakerType,
+      low: ob.low,
+      high: ob.high,
+      index: startIdx,
+      mitigatedIndex: mitigatedIdx
+    });
+  }
+  return breakers;
 }
 
 const detectLiquidityZones = (candles: Candle[]): SmcBlock[] => {
@@ -310,7 +336,7 @@ const detectLiquidityZones = (candles: Candle[]): SmcBlock[] => {
           low: isHigh ? avgPrice - (avgPrice * 0.0001) : Math.min(...prices) - (avgPrice * 0.0003),
           high: isHigh ? Math.max(...prices) + (avgPrice * 0.0003) : avgPrice + (avgPrice * 0.0001),
           startIndex: Math.min(...indices),
-          endIndex: n - 1,
+          endIndex: Math.max(...indices),
           isMitigated: false,
           isInvalidated: false
         });
@@ -328,32 +354,66 @@ const detectSessionRanges = (candles: Candle[]): SmcBlock[] => {
   const n = candles.length;
   const zones: SmcBlock[] = [];
   let currentAsia: { start: number; high: number; low: number } | null = null;
+  let currentLondon: { start: number; high: number; low: number } | null = null;
+  let currentNY: { start: number; high: number; low: number } | null = null;
   
   for (let i = Math.max(0, n - 300); i < n; i++) {
     const c = candles[i]!;
     const date = new Date(c.openTime);
     const hour = date.getUTCHours();
     
-    const isAsia = hour >= 0 && hour < 8;
+    // 1. ASIA (00:00 - 06:00 UTC)
+    const isAsia = hour >= 0 && hour < 6;
     if (isAsia) {
-      if (!currentAsia) {
-        currentAsia = { start: i, high: c.high, low: c.low };
-      } else {
+      if (!currentAsia) currentAsia = { start: i, high: c.high, low: c.low };
+      else {
         currentAsia.high = Math.max(currentAsia.high, c.high);
         currentAsia.low = Math.min(currentAsia.low, c.low);
       }
     } else if (currentAsia) {
       zones.push({
-        type: 'SESSION',
-        subType: 'ASIA',
-        low: currentAsia.low,
-        high: currentAsia.high,
-        startIndex: currentAsia.start,
-        endIndex: i - 1,
-        isMitigated: false,
-        isInvalidated: false
+        type: 'SESSION', subType: 'ASIA',
+        low: currentAsia.low, high: currentAsia.high,
+        startIndex: currentAsia.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
       });
       currentAsia = null;
+    }
+
+    // 2. LONDON (07:00 - 11:00 UTC)
+    const isLondon = hour >= 7 && hour < 11;
+    if (isLondon) {
+      if (!currentLondon) currentLondon = { start: i, high: c.high, low: c.low };
+      else {
+        currentLondon.high = Math.max(currentLondon.high, c.high);
+        currentLondon.low = Math.min(currentLondon.low, c.low);
+      }
+    } else if (currentLondon) {
+      zones.push({
+        type: 'SESSION', subType: 'LONDON',
+        low: currentLondon.low, high: currentLondon.high,
+        startIndex: currentLondon.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
+      });
+      currentLondon = null;
+    }
+
+    // 3. NEW YORK (12:00 - 16:00 UTC)
+    const isNY = hour >= 12 && hour < 16;
+    if (isNY) {
+      if (!currentNY) currentNY = { start: i, high: c.high, low: c.low };
+      else {
+        currentNY.high = Math.max(currentNY.high, c.high);
+        currentNY.low = Math.min(currentNY.low, c.low);
+      }
+    } else if (currentNY) {
+      zones.push({
+        type: 'SESSION', subType: 'NY',
+        low: currentNY.low, high: currentNY.high,
+        startIndex: currentNY.start, endIndex: i - 1,
+        isMitigated: false, isInvalidated: false
+      });
+      currentNY = null;
     }
   }
   return zones;
@@ -493,14 +553,15 @@ class BosChochDetector {
     private trend: 'bullish' | 'bearish' | 'range'
   ) {}
 
-  detect(): { bos: SmcDirection; choch: SmcDirection; bosLine: SmcStructureLine | null; chochLine: SmcStructureLine | null } {
+  detect(): { bos: SmcDirection; choch: SmcDirection; bosLine: SmcStructureLine | null; chochLine: SmcStructureLine | null; idmLine: SmcStructureLine | null } {
     let bos: SmcDirection = 'NONE';
     let choch: SmcDirection = 'NONE';
     let bosLine: SmcStructureLine | null = null;
     let chochLine: SmcStructureLine | null = null;
+    let idmLine: SmcStructureLine | null = null;
 
     if (this.cleanSwings.length < 2) {
-      return { bos, choch, bosLine, chochLine };
+      return { bos, choch, bosLine, chochLine, idmLine };
     }
 
     const lastHighs = this.cleanSwings.filter(s => s.kind === 'high');
@@ -509,7 +570,7 @@ class BosChochDetector {
     const lastHigh = lastHighs.length > 0 ? lastHighs[lastHighs.length - 1] : null;
     const lastLow = lastLows.length > 0 ? lastLows[lastLows.length - 1] : null;
 
-    if (!lastHigh || !lastLow) return { bos, choch, bosLine, chochLine };
+    if (!lastHigh || !lastLow) return { bos, choch, bosLine, chochLine, idmLine };
 
     const findBreakout = (startIdx: number, price: number, isBullish: boolean): number | null => {
       for (let i = startIdx + 1; i < this.candles.length; i++) {
@@ -525,11 +586,31 @@ class BosChochDetector {
         bos = 'BULLISH';
         bosLine = { startIndex: lastHigh.index, endIndex: breakIdx, price: lastHigh.price };
       }
+      // IDM: Bullish Inducement is the recent internal swing low before lastHigh
+      const idmSwing = lastLows.filter(s => s.index < lastHigh.index).pop();
+      if (idmSwing) {
+        const sweepIdx = findBreakout(lastHigh.index, idmSwing.price, false);
+        if (sweepIdx !== null) {
+          idmLine = { startIndex: idmSwing.index, endIndex: sweepIdx, price: idmSwing.price };
+        } else {
+          idmLine = { startIndex: idmSwing.index, endIndex: this.candles.length - 1, price: idmSwing.price };
+        }
+      }
     } else if (this.trend === 'bearish') {
       const breakIdx = findBreakout(lastLow.index, lastLow.price, false);
       if (breakIdx !== null) {
         bos = 'BEARISH';
         bosLine = { startIndex: lastLow.index, endIndex: breakIdx, price: lastLow.price };
+      }
+      // IDM: Bearish Inducement is the recent internal swing high before lastLow
+      const idmSwing = lastHighs.filter(s => s.index < lastLow.index).pop();
+      if (idmSwing) {
+        const sweepIdx = findBreakout(lastLow.index, idmSwing.price, true);
+        if (sweepIdx !== null) {
+          idmLine = { startIndex: idmSwing.index, endIndex: sweepIdx, price: idmSwing.price };
+        } else {
+          idmLine = { startIndex: idmSwing.index, endIndex: this.candles.length - 1, price: idmSwing.price };
+        }
       }
     }
 
@@ -549,7 +630,7 @@ class BosChochDetector {
       }
     }
 
-    return { bos, choch, bosLine, chochLine };
+    return { bos, choch, bosLine, chochLine, idmLine };
   }
 }
 
@@ -560,11 +641,12 @@ const detectBosChoch = (
   choch: SmcDirection;
   bosLine: SmcStructureLine | null;
   chochLine: SmcStructureLine | null;
+  idmLine: SmcStructureLine | null;
   trend: 'bullish' | 'bearish' | 'range';
   structPoints: StructurePoint[];
   swings: SwingPoint[];
 } => {
-  const detector = new SwingDetector(candles, 3, 3);
+  const detector = new SwingDetector(candles, 10, 10);
   const rawSwings = detector.detect();
   
   const cleaner = new SwingSequenceCleaner(rawSwings);
@@ -600,7 +682,7 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
     ...detectSessionRanges(candles)
   ];
   
-  const { bos, choch, bosLine, chochLine, trend, structPoints, swings } = detectBosChoch(candles);
+  const { bos, choch, bosLine, chochLine, idmLine, trend, structPoints, swings } = detectBosChoch(candles);
   const dealingRange = calculateDealingRange(swings);
 
   let score = 0;
@@ -632,6 +714,7 @@ export const analyzeSmc = (candles: Candle[], _currentPrice: number, htfTrend: T
     choch,
     bosLine,
     chochLine,
+    idmLine,
     trend,
     structPoints,
     swings,

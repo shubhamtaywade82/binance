@@ -350,9 +350,15 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
   // ─── Bot-initiated close (REVERSAL / MANUAL / SL via onMark) ─────────────
 
-  async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
+  async closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
     const trade = this.trades.get(orderId);
     if (!trade) throw new Error(`binance_close_unknown:${orderId}`);
+
+    if (quantity && quantity < trade.remainingQty) {
+      // Partial close for live is complex (needs cancelling/resubmitting bracket).
+      // For now we don't implement partials on live adapter via this method.
+      this.log('binance_partial_close_unsupported', { orderId, quantity });
+    }
 
     // Guard: if already being closed, don't send duplicate orders.
     if (this.closingIds.has(orderId)) {

@@ -32,10 +32,32 @@ interface OpenLiveOrder {
 export class CoinDcxExecutionAdapter implements ExecutionAdapter {
   readonly name = 'live' as const;
   private orders = new Map<string, OpenLiveOrder>();
+  private lastMarkBySymbol = new Map<string, number>();
 
   constructor(private readonly opts: CoinDcxAdapterOptions) {}
 
+  /** Live mark price hook — called by MarkPriceBridge for every market.mark event. */
+  onMark(symbol: string, markPrice: number): void {
+    if (!Number.isFinite(markPrice) || markPrice <= 0) return;
+    this.lastMarkBySymbol.set(symbol.toUpperCase(), markPrice);
+  }
+
+  /** Quote mid for a symbol — fallback when REST snapshot lacks a mark price. */
+  public latestMark(symbol: string): number | undefined {
+    return this.lastMarkBySymbol.get(symbol.toUpperCase());
+  }
+
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
+    // REVERSAL: if we already have an opposite-side position on this pair,
+    // close it first via /futures/positions/exit so the new entry doesn't
+    // pile onto a wrong-side book. Parity with PaperExecutionAdapter.
+    for (const [id, p] of this.orders.entries()) {
+      if (p.pair === req.pair && p.side !== req.side) {
+        try { await this.closePosition(id, 'REVERSAL'); } catch { /* best-effort */ }
+        break;
+      }
+    }
+
     if (!this.opts.skipLeverageUpdate) {
       try {
         await this.opts.client.updatePositionLeverage({ pair: req.pair, leverage: req.leverage });
@@ -110,12 +132,16 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     return { ok: true, orderId, fill };
   }
 
-  async closePosition(orderId: string, reason: CloseReason): Promise<ClosedPosition> {
+  private onTradeCloseCb?: (trade: ClosedPosition) => void;
+
+  async closePosition(orderId: string, reason: CloseReason, quantity?: number): Promise<ClosedPosition> {
     const open = this.orders.get(orderId);
     if (!open) throw new Error(`live_close_unknown_order:${orderId}`);
+    const isPartial = quantity !== undefined && quantity < open.quantity;
+    const qtyToClose = isPartial ? quantity : open.quantity;
     let exitPrice = open.entryPrice;
     try {
-      await this.opts.client.exitFuturesPosition({ pair: open.pair, quantity: open.quantity });
+      await this.opts.client.exitFuturesPosition({ pair: open.pair, quantity: qtyToClose });
     } catch {
       // best-effort
     }
@@ -139,13 +165,19 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     } catch {
       // keep entry price as fallback
     }
+    if (exitPrice === open.entryPrice) {
+      // REST didn't give us a fresh price — fall back to last live mark.
+      const mark = this.latestMark(open.pair) ?? this.latestMark(open.pair.replace(/^B-/, '').replace('_', ''));
+      if (mark && mark > 0) exitPrice = mark;
+    }
 
     const sideMul = open.side === 'LONG' ? 1 : -1;
-    const gross = (exitPrice - open.entryPrice) * open.quantity * sideMul;
-    const exitNotional = exitPrice * open.quantity;
+    const gross = (exitPrice - open.entryPrice) * qtyToClose * sideMul;
+    const exitNotional = exitPrice * qtyToClose;
     const exitFee = exitNotional * this.opts.takerFee;
-    const fees = open.entryFeeUsdt + exitFee;
-    const funding = open.entryPrice * open.quantity * this.opts.fundingFeeEst;
+    const entryFeeAttributed = open.entryFeeUsdt * (qtyToClose / open.quantity);
+    const fees = entryFeeAttributed + exitFee;
+    const funding = open.entryPrice * qtyToClose * this.opts.fundingFeeEst;
     const net = gross - fees - funding;
     const closed: ClosedPosition = {
       orderId,
@@ -153,7 +185,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       leverage: open.leverage,
       entryPrice: open.entryPrice,
       exitPrice,
-      quantity: open.quantity,
+      quantity: qtyToClose,
       reason,
       grossUsdt: gross,
       feesUsdt: fees,
@@ -162,11 +194,104 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       openedAt: open.openedAt,
       closedAt: Date.now(),
     };
-    this.orders.delete(orderId);
+
+    if (isPartial) {
+      open.quantity -= qtyToClose;
+      open.entryFeeUsdt -= entryFeeAttributed;
+    } else {
+      this.orders.delete(orderId);
+    }
+
+    this.onTradeCloseCb?.(closed);
     return closed;
   }
 
   async setLeverage(pair: string, lev: number): Promise<void> {
     await this.opts.client.updatePositionLeverage({ pair, leverage: lev });
   }
+
+  async getWalletState(): Promise<any> {
+    try {
+      const [accountDetails, wallets] = await Promise.allSettled([
+        this.opts.client.getFuturesAccountDetails(),
+        this.opts.client.getFuturesWallets(),
+      ]);
+
+      const account = accountDetails.status === 'fulfilled' ? (accountDetails.value as Record<string, any>) : {};
+      const walletsArr = wallets.status === 'fulfilled' ? (wallets.value as any[]) : [];
+      const usdtWallet = (walletsArr || []).find((w: any) => w.currency_short_name === 'USDT') || {};
+      const inrWallet = (walletsArr || []).find((w: any) => w.currency_short_name === 'INR') || {};
+
+      const balanceUsdt = Number(usdtWallet.balance) || Number(account.total_wallet_balance) || (Number(account.total_account_equity) - Number(account.pnl)) || 0;
+      const availableUsdt = Number(account.available_balance_cross) || Number(usdtWallet.balance) || 0;
+      const usedMarginUsdt = Number(usdtWallet.locked_balance) || (balanceUsdt - availableUsdt) || 0;
+      const unrealizedPnlUsdt = Number(account.pnl) || 0;
+      const equityUsdt = Number(account.total_account_equity) || (balanceUsdt + unrealizedPnlUsdt) || 0;
+
+      const balanceInr = Number(inrWallet.balance) || 0;
+      const availableInr = Number(inrWallet.balance) - Number(inrWallet.locked_balance ?? 0) || balanceInr;
+      const usedMarginInr = Number(inrWallet.locked_balance) || 0;
+
+      // Aggregate all currency wallets so the UI can show all balances.
+      const allBalances = (walletsArr || []).map((w: any) => ({
+        currency: w.currency_short_name,
+        balance: Number(w.balance) || 0,
+        locked: Number(w.locked_balance) || 0,
+      }));
+
+      return {
+        balanceUsdt,
+        availableUsdt,
+        usedMarginUsdt,
+        unrealizedPnlUsdt,
+        realizedPnlUsdt: 0,
+        equityUsdt,
+        balanceInr,
+        availableInr,
+        usedMarginInr,
+        allBalances,
+        updatedAt: Date.now(),
+      };
+    } catch {
+      return {
+        balanceUsdt: 0,
+        availableUsdt: 0,
+        usedMarginUsdt: 0,
+        unrealizedPnlUsdt: 0,
+        realizedPnlUsdt: 0,
+        equityUsdt: 0,
+        balanceInr: 0,
+        availableInr: 0,
+        usedMarginInr: 0,
+        allBalances: [] as Array<{ currency: string; balance: number; locked: number }>,
+        updatedAt: Date.now(),
+      };
+    }
+  }
+
+  async getOpenPositions(): Promise<any[]> {
+    try {
+      const data = (await this.opts.client.getFuturesPositions()) as any[];
+      return (data || []).map((p) => ({
+        orderId: p.position_id,
+        symbol: p.pair,
+        side: p.side === 'buy' ? 'LONG' : 'SHORT',
+        entryPrice: p.avg_price,
+        quantity: p.active_pos,
+        leverage: p.leverage,
+        marginUsdt: p.user_margin,
+        liqPrice: p.liquidation_price,
+        openedAt: p.created_at || Date.now(),
+        unrealizedUsdt: p.pnl,
+        mode: 'live',
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  setOnTradeClose(cb: (trade: ClosedPosition) => void): void {
+    this.onTradeCloseCb = cb;
+  }
 }
+

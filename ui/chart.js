@@ -16,6 +16,7 @@ import {
   storeCandleThemeId,
 } from './candle-themes.js';
 import {
+  fmtLtpDisplay,
   getMinTickDecimalPlaces,
   ltpPriceFromTicks,
   ltpTicksFromPrice,
@@ -58,7 +59,7 @@ const COLORS = {
   ema9: '#ffd740',
   ema21: '#00b0ff',
   ema50: '#ff9100',
-  bg: '#080b14',
+  bg: '#000000',
   grid: 'rgba(255,255,255,0.04)',
   text: '#8892a4',
   crosshair: 'rgba(255,255,255,0.15)',
@@ -240,6 +241,7 @@ export class ChartManager {
     this._candleThemeDocCloseUnsub = null;
     /** Horizontal SMC / ref levels (not the LTP line). */
     this._smcSignalPriceLines = [];
+    this._smcPartialLineIds = [];
     /** SMC markers (separate from liquidation markers, merged via _paintAllMarkers). */
     this._lastSmcMarkers = [];
     /** Open-position markers and entry lines. */
@@ -334,6 +336,12 @@ export class ChartManager {
       }
     }
     this._smcSignalPriceLines = [];
+    if (this._partialLinesPrimitive && this._smcPartialLineIds?.length) {
+      for (const id of this._smcPartialLineIds) {
+        this._partialLinesPrimitive.removeLine(id);
+      }
+    }
+    this._smcPartialLineIds = [];
     this._lastSmcMarkers = [];
     this._paintAllMarkers();
     this._smcZonePrimitive?.setZones([]);
@@ -371,6 +379,7 @@ export class ChartManager {
       axisLabelVisible: showAxis,
       title: showAxis ? title : '',
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
     });
     this._smcSignalPriceLines.push(line);
   }
@@ -380,7 +389,7 @@ export class ChartManager {
     if ((!this._smcSignalsOverlayEnabled && !this._knnArchitectureEnabled) || !this._lastSignalsForChart || !this.candleSeries) return;
     
     const s = this._lastSignalsForChart;
-    const refTf = s.refPriceTf || this.currentTf;
+    const refTf = s.smcTf || s.refPriceTf || this.currentTf;
 
     const smc = this._smcSignalsOverlayEnabled ? s.smc : null;
     const knn = (this._knnArchitectureEnabled && s.knnArchitecture) ? s.knnArchitecture : null;
@@ -409,11 +418,12 @@ export class ChartManager {
             });
 
             if (lastT != null) {
+              const tObEnd = ob.mitigatedIndex != null ? this._signalBarTimeSec(refTf, ob.mitigatedIndex) : null;
               const isInst = ob.score >= 6;
               const alpha = ob.isMitigated ? 0.08 : (isInst ? 0.45 : 0.30);
               const strokeAlpha = ob.isMitigated ? 0.2 : 0.7;
               smcZones.push({
-                t1: tOb, t2: lastT, top: ob.high, bottom: ob.low,
+                t1: tOb, t2: tObEnd ?? lastT, top: ob.high, bottom: ob.low,
                 fill: bull ? `rgba(38,166,154,${alpha})` : `rgba(239,83,80,${alpha})`,
                 stroke: bull ? `rgba(38,166,154,${strokeAlpha})` : `rgba(239,83,80,${strokeAlpha})`,
                 text: (isInst ? 'Inst. ' : '') + (bull ? 'Demand' : 'Supply') + (ob.isMitigated ? ' (Mit)' : ''),
@@ -427,12 +437,13 @@ export class ChartManager {
       // 2. Fair Value Gaps
       if (Array.isArray(smc.fvgs)) {
         for (const fvg of smc.fvgs) {
-          const tFvg = this._signalBarTimeSec(refTf, fvg.index);
-          if (tFvg != null && lastT != null) {
+          const tFvgStart = fvg.startIndex != null ? this._signalBarTimeSec(refTf, fvg.startIndex) : this._signalBarTimeSec(refTf, fvg.index);
+          const tFvgEnd = fvg.endIndex != null ? this._signalBarTimeSec(refTf, fvg.endIndex) : null;
+          if (tFvgStart != null && lastT != null) {
             const isHighValue = fvg.score >= 2;
             const alpha = isHighValue ? 0.35 : 0.20;
             smcZones.push({
-              t1: tFvg, t2: lastT, top: fvg.high, bottom: fvg.low,
+              t1: tFvgStart, t2: tFvgEnd ?? lastT, top: fvg.high, bottom: fvg.low,
               fill: `rgba(255,193,7,${alpha})`, 
               stroke: `rgba(255,193,7,${isHighValue ? 0.6 : 0.4})`,
               text: isHighValue ? 'Propulsion FVG' : 'FVG',
@@ -455,12 +466,13 @@ export class ChartManager {
       if (Array.isArray(smc.breakers)) {
         for (const bb of smc.breakers) {
           const tBb = this._signalBarTimeSec(refTf, bb.index);
+          const tBbEnd = bb.mitigatedIndex != null ? this._signalBarTimeSec(refTf, bb.mitigatedIndex) : null;
           if (tBb != null && lastT != null) {
             const bull = bb.type === 'BULLISH';
             smcZones.push({
-              t1: tBb, t2: lastT, top: bb.high, bottom: bb.low,
+              t1: tBb, t2: tBbEnd ?? lastT, top: bb.high, bottom: bb.low,
               fill: 'rgba(126,87,194,0.25)', stroke: 'rgba(126,87,194,0.5)',
-              text: bull ? 'Bull Breaker' : 'Bear Breaker', textColor: 'rgba(209,196,233,0.9)',
+              text: (bull ? 'Bull Breaker' : 'Bear Breaker') + (bb.mitigatedIndex != null ? ' (Mit)' : ''), textColor: 'rgba(209,196,233,0.9)',
             });
           }
         }
@@ -478,9 +490,19 @@ export class ChartManager {
               stroke = 'rgba(0,188,212,0.6)'; 
               textColor = 'rgba(178,235,242,0.95)'; 
             } else if (blk.type === 'SESSION') { 
-              fill = 'rgba(100,181,246,0.15)'; 
-              stroke = 'rgba(100,181,246,0.4)'; 
-              textColor = 'rgba(187,222,251,0.95)'; 
+              if (blk.subType === 'LONDON') {
+                fill = 'rgba(149,117,205,0.15)'; 
+                stroke = 'rgba(149,117,205,0.4)'; 
+                textColor = 'rgba(209,196,233,0.95)';
+              } else if (blk.subType === 'NY') {
+                fill = 'rgba(255,183,77,0.15)'; 
+                stroke = 'rgba(255,183,77,0.4)'; 
+                textColor = 'rgba(255,224,130,0.95)';
+              } else {
+                fill = 'rgba(100,181,246,0.15)'; 
+                stroke = 'rgba(100,181,246,0.4)'; 
+                textColor = 'rgba(187,222,251,0.95)'; 
+              }
             }
             smcZones.push({ t1, t2, top: blk.high, bottom: blk.low, fill, stroke, text: blk.subType, textColor });
           }
@@ -498,12 +520,6 @@ export class ChartManager {
           const bull = smc.choch === 'BULLISH';
           const tChoch = smc.chochLine && Number.isFinite(smc.chochLine.endIndex) ? this._signalBarTimeSec(refTf, smc.chochLine.endIndex) : null;
           markers.push({ time: tChoch ?? lastT, position: 'belowBar', shape: bull ? 'arrowUp' : 'arrowDown', color: '#80cbc4', text: 'CHoCH', id: 'smc-choch' });
-        }
-        if (Array.isArray(smc.swings)) {
-          for (const sw of smc.swings) {
-            const tSw = this._signalBarTimeSec(refTf, sw.index);
-            if (tSw) markers.push({ time: tSw, position: sw.kind === 'high' ? 'aboveBar' : 'belowBar', shape: 'circle', color: sw.kind === 'high' ? 'rgba(255,82,82,0.3)' : 'rgba(0,230,118,0.3)', size: 0.2 });
-          }
         }
       }
 
@@ -523,7 +539,20 @@ export class ChartManager {
         for (const p of pools) {
           if (Number.isFinite(p.price)) {
             const bullPool = p.kind === 'buyside' || p.kind === 'BUYSIDE';
-            this._addSmcPriceLine(p.price, bullPool ? 'rgba(255,128,171,0.5)' : 'rgba(128,203,255,0.5)', bullPool ? 'LQ↑' : 'LQ↓', LineStyle.Dotted);
+            const t1 = p.startIndex != null ? this._signalBarTimeSec(refTf, p.startIndex) : null;
+            const t2 = p.createdBarIndex != null ? this._signalBarTimeSec(refTf, p.createdBarIndex) : null;
+            if (t1 != null && t2 != null) {
+              smcStructLines.push({
+                t1,
+                t2,
+                price: p.price,
+                color: bullPool ? 'rgba(255,128,171,0.8)' : 'rgba(128,203,255,0.8)',
+                label: bullPool ? 'EQH' : 'EQL',
+                position: bullPool ? 'top' : 'bottom',
+                lineWidth: 2,
+                lineStyle: 1
+              });
+            }
           }
         }
         const pr = liq.primaryRejection;
@@ -538,6 +567,11 @@ export class ChartManager {
       }
       if (smc.liquiditySweep && smc.liquiditySweep !== 'NONE' && !hasLiqSweepMarker) {
         markers.push({ time: lastT, position: 'inBar', shape: 'circle', color: '#ff80ab', text: 'LS' });
+      }
+      if (smc.signalVerdict === 'BUY') {
+        markers.push({ time: lastT, position: 'belowBar', shape: 'arrowUp', color: '#00e676', text: 'BUY (SMC)' });
+      } else if (smc.signalVerdict === 'SELL') {
+        markers.push({ time: lastT, position: 'aboveBar', shape: 'arrowDown', color: '#ff5252', text: 'SELL (SMC)' });
       }
 
       // 9. Structure Segments
@@ -555,6 +589,7 @@ export class ChartManager {
       } else {
         if (smc.bos && smc.bos !== 'NONE') pushSmcStructureSegment(smc.bosLine, '#b388ff', 'BOS', smc.bos === 'BULLISH' ? 'top' : 'bottom');
         if (smc.choch && smc.choch !== 'NONE') pushSmcStructureSegment(smc.chochLine, '#80cbc4', 'CHoCH', smc.choch === 'BULLISH' ? 'top' : 'bottom');
+        if (smc.idmLine) pushSmcStructureSegment(smc.idmLine, '#ffb74d', 'IDM', smc.trend === 'bullish' ? 'bottom' : 'top');
       }
     }
 
@@ -632,7 +667,7 @@ export class ChartManager {
       }
     }
 
-    if (Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
+    if (this._signalHudEnabled && Number.isFinite(s.refPrice)) this._addSmcPriceLine(s.refPrice, 'rgba(184,134,255,0.9)', 'REF', LineStyle.Dotted);
     this._smcZonePrimitive?.setZones(smcZones);
     this._smcZonePrimitive?.setLines(smcStructLines);
     this._lastSmcMarkers = markers;
@@ -966,11 +1001,13 @@ export class ChartManager {
     const startTime = this._latestCandleTimeSec() ?? Math.floor(Date.now() / 1000);
     this._partialLinesPrimitive.setLine('bid', {
       startTimeSec: startTime, price: bid, color: 'rgba(0,200,220,0.82)',
-      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#e0f7fa',
+      title: 'BID', axisLabelColor: 'rgba(0,200,220,0.95)', axisLabelTextColor: '#000000',
+      extendLeft: true,
     });
     this._partialLinesPrimitive.setLine('ask', {
       startTimeSec: startTime, price: ask, color: 'rgba(255,160,0,0.82)',
-      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#fff3e0',
+      title: 'ASK', axisLabelColor: 'rgba(255,160,0,0.95)', axisLabelTextColor: '#000000',
+      extendLeft: true,
     });
   }
 
@@ -1142,10 +1179,67 @@ export class ChartManager {
         startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
         price: entryPrice,
         color: sideColor,
-        lineWidth: 1,
+        lineWidth: 2,
         title: `${side} ENTRY ${fmtLtpDisplay(entryPrice)} | ${pnlInfo.text}`,
         axisLabelColor: sideColor,
       });
+
+      // Stop loss
+      const sl = Number(pos.stopLoss);
+      if (Number.isFinite(sl) && sl > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-sl`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: sl,
+          color: '#ef5350',
+          lineWidth: 1,
+          dash: [4, 3],
+          title: `SL ${fmtLtpDisplay(sl)}`,
+          axisLabelColor: '#ef5350',
+        });
+        nextIds.add(`${orderId}-sl`);
+      }
+      // Take profit
+      const tp = Number(pos.takeProfit);
+      if (Number.isFinite(tp) && tp > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-tp`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: tp,
+          color: '#26a69a',
+          lineWidth: 1,
+          dash: [4, 3],
+          title: `TP ${fmtLtpDisplay(tp)}`,
+          axisLabelColor: '#26a69a',
+        });
+        nextIds.add(`${orderId}-tp`);
+      }
+      // Liquidation
+      const liq = Number(pos.liqPrice);
+      if (Number.isFinite(liq) && liq > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-liq`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: liq,
+          color: '#ff9800',
+          lineWidth: 1,
+          dash: [1, 4],
+          title: `LIQ ${fmtLtpDisplay(liq)}`,
+          axisLabelColor: '#ff9800',
+        });
+        nextIds.add(`${orderId}-liq`);
+      }
+      // Trail (set by trail_update events on the chart, keyed pos-<id>-trail)
+      const trail = Number(pos.currentTrail);
+      if (Number.isFinite(trail) && trail > 0) {
+        this._partialLinesPrimitive.setLine(`pos-${orderId}-trail`, {
+          startTimeSec: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
+          price: trail,
+          color: '#ab47bc',
+          lineWidth: 1,
+          dash: [2, 2],
+          title: `TRAIL ${fmtLtpDisplay(trail)}`,
+          axisLabelColor: '#ab47bc',
+        });
+        nextIds.add(`${orderId}-trail`);
+      }
       nextMarkers.push({
         time: Number.isFinite(startTimeSec) ? startTimeSec : Math.floor(Date.now() / 1000),
         position: side === 'LONG' ? 'belowBar' : 'aboveBar',
@@ -1160,6 +1254,10 @@ export class ChartManager {
     for (const [orderId] of this._openPositionLines) {
       if (nextIds.has(orderId)) continue;
       this._partialLinesPrimitive.removeLine(`pos-${orderId}`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-sl`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-tp`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-liq`);
+      this._partialLinesPrimitive.removeLine(`pos-${orderId}-trail`);
       this._openPositionLines.delete(orderId);
     }
 
@@ -1239,6 +1337,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
       title: label,
     });
   }
@@ -1278,6 +1377,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
       title: label,
     });
   }
@@ -1341,6 +1441,7 @@ export class ChartManager {
       dash: [1, 4],
       title: label,
       axisLabelColor: color,
+      axisLabelTextColor: '#000000',
     });
   }
 
@@ -1516,6 +1617,7 @@ export class ChartManager {
       lineVisible: false,
       axisLabelVisible: true,
       axisLabelColor: COLORS.bear,
+      axisLabelTextColor: '#000000',
     });
   }
 
@@ -1535,7 +1637,7 @@ export class ChartManager {
     this._partialLinesPrimitive.setLine('ltp', {
       startTimeSec: startTime, price, color,
     });
-    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color });
+    this._ltpPriceLine?.applyOptions({ color, axisLabelColor: color, axisLabelTextColor: '#000000' });
   }
 
   _ltpAnimStep() {
@@ -1629,13 +1731,20 @@ export class ChartManager {
 
   _syncPriceLocalization() {
     if (!this.chart) return;
+    const dp = getMinTickDecimalPlaces();
+    const minMove = 1 / (10 ** dp);
     this.chart.applyOptions({
       localization: {
         locale: typeof navigator !== 'undefined' ? navigator.language : 'en-US',
-        // Price scale axis always uses min-tick precision (exchange tick size dp, no display offset).
-        priceFormatter: (priceValue) => Number(priceValue).toFixed(getMinTickDecimalPlaces()),
       },
     });
+    const pf = { type: 'price', precision: dp, minMove };
+    if (this.candleSeries) this.candleSeries.applyOptions({ priceFormat: pf });
+    if (this.ema9Series) this.ema9Series.applyOptions({ priceFormat: pf });
+    if (this.ema21Series) this.ema21Series.applyOptions({ priceFormat: pf });
+    if (this.ema50Series) this.ema50Series.applyOptions({ priceFormat: pf });
+    if (this.stSeries) this.stSeries.applyOptions({ priceFormat: pf });
+    if (this._vwapSeries) this._vwapSeries.applyOptions({ priceFormat: pf });
   }
 
   _smoothLtpTo(price) {
@@ -1692,7 +1801,7 @@ export class ChartManager {
     this.volumeSeries = this.chart.addHistogramSeries({
       color: initialTheme.volumeUp,
       base: 0,
-      priceFormat: { type: 'volume' },
+      priceFormat: { type: 'custom', formatter: (val) => Math.round(val).toString() },
       priceScaleId: 'vol',
       scaleMargins: { top: 0.75, bottom: 0 },
     });
@@ -1756,8 +1865,44 @@ export class ChartManager {
     this._partialLinesPrimitive = new PartialPriceLinesPrimitive();
     this.candleSeries.attachPrimitive(this._partialLinesPrimitive);
 
+    const scrollLiveBtn = document.getElementById('btn-chart-scroll-live');
+    const scrollRealtimeBtn = document.getElementById('btn-scroll-realtime');
+    
+    const scrollToLive = () => {
+      if (this.chart) {
+        this.chart.timeScale().scrollToRealTime();
+      }
+    };
+
+    if (scrollLiveBtn) scrollLiveBtn.addEventListener('click', scrollToLive);
+    if (scrollRealtimeBtn) scrollRealtimeBtn.addEventListener('click', scrollToLive);
+
+    const scrollStartBtn = document.getElementById('btn-scroll-start');
+    if (scrollStartBtn) {
+      scrollStartBtn.addEventListener('click', () => {
+        if (this.chart) {
+          const raw = this.candleMap[this.currentTf] || [];
+          if (raw.length > 0) {
+            this.chart.timeScale().setVisibleLogicalRange({
+              from: 0,
+              to: DEFAULT_VISIBLE_BARS[this.currentTf] ?? 120,
+            });
+          }
+        }
+      });
+    }
+
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((lr) => {
       this._maybeRequestHistory(lr);
+      if (scrollLiveBtn && lr && lr.to != null) {
+        const raw = this.candleMap[this.currentTf] || [];
+        const totalBars = raw.length;
+        if (totalBars > 0 && lr.to < totalBars - 3) {
+          scrollLiveBtn.hidden = false;
+        } else {
+          scrollLiveBtn.hidden = true;
+        }
+      }
     });
 
     this._resizeObs = new ResizeObserver(() => this._handleResize());
@@ -1829,6 +1974,7 @@ export class ChartManager {
         this._signalHudEnabled = hudToggle.checked;
         storeSignalHudEnabled(this._signalHudEnabled);
         this.updateStrategyHud(this._lastSignalsForChart);
+        this._paintSmcFromStoredSignals();
       });
     }
 
@@ -1978,6 +2124,106 @@ export class ChartManager {
         this._loadTf(this.currentTf, { alignToVisibleTimeRange });
         this._onTfChange?.(this.currentTf);
       });
+    });
+
+    this._initCandleTooltip(container);
+  }
+
+  _initCandleTooltip(container) {
+    const tooltip = document.createElement('div');
+    tooltip.className = 'chart-candle-tooltip';
+    tooltip.hidden = true;
+    tooltip.innerHTML = `
+      <div class="chart-candle-tooltip-head" id="candle-tt-time"></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">O</span><span class="chart-candle-tooltip-val" id="candle-tt-o"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">H</span><span class="chart-candle-tooltip-val" id="candle-tt-h"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">L</span><span class="chart-candle-tooltip-val" id="candle-tt-l"></span></div>
+      <div class="chart-candle-tooltip-row"><span class="chart-candle-tooltip-lbl">C</span><span class="chart-candle-tooltip-val" id="candle-tt-c"></span></div>
+      <div class="chart-candle-tooltip-row" id="candle-tt-vol-row"><span class="chart-candle-tooltip-lbl">Vol</span><span class="chart-candle-tooltip-val" id="candle-tt-vol"></span></div>
+    `;
+    container.appendChild(tooltip);
+
+    const timeEl = tooltip.querySelector('#candle-tt-time');
+    const oEl = tooltip.querySelector('#candle-tt-o');
+    const hEl = tooltip.querySelector('#candle-tt-h');
+    const lEl = tooltip.querySelector('#candle-tt-l');
+    const cEl = tooltip.querySelector('#candle-tt-c');
+    const volRow = tooltip.querySelector('#candle-tt-vol-row');
+    const volEl = tooltip.querySelector('#candle-tt-vol');
+
+    this.chart.subscribeCrosshairMove((param) => {
+      if (!param.time || param.point.x < 0 || param.point.y < 0 || !param.seriesData) {
+        tooltip.hidden = true;
+        return;
+      }
+      const candleData = param.seriesData.get(this.candleSeries);
+      if (!candleData || candleData.open == null) {
+        tooltip.hidden = true;
+        return;
+      }
+
+      tooltip.hidden = false;
+
+      let timeStr = String(param.time);
+      if (typeof param.time === 'number') {
+        const d = new Date(param.time * 1000);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const min = String(d.getMinutes()).padStart(2, '0');
+        timeStr = `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+      } else if (param.time.year != null) {
+        timeStr = `${param.time.year}-${String(param.time.month).padStart(2, '0')}-${String(param.time.day).padStart(2, '0')}`;
+      }
+
+      timeEl.textContent = timeStr;
+
+      const fmt = (val) => {
+        if (val == null) return '';
+        if (this._lastPrecision != null) {
+          return val.toFixed(this._lastPrecision);
+        }
+        return String(val);
+      };
+
+      const o = candleData.open;
+      const h = candleData.high;
+      const l = candleData.low;
+      const c = candleData.close;
+
+      oEl.textContent = fmt(o);
+      hEl.textContent = fmt(h);
+      lEl.textContent = fmt(l);
+      cEl.textContent = fmt(c);
+
+      cEl.className = 'chart-candle-tooltip-val ' + (c >= o ? 'bull' : 'bear');
+
+      const volData = this.volumeSeries ? param.seriesData.get(this.volumeSeries) : null;
+      if (volData != null && volData.value != null) {
+        volRow.style.display = 'flex';
+        volEl.textContent = volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : volData.value >= 1000 ? (volData.value / 1000).toFixed(2) + 'K' : String(Math.round(volData.value));
+      } else {
+        volRow.style.display = 'none';
+      }
+
+      const containerWidth = container.clientWidth;
+      const tooltipWidth = tooltip.offsetWidth || 130;
+      const tooltipHeight = tooltip.offsetHeight || 120;
+
+      let left;
+      if (param.point.x > containerWidth / 2) {
+        left = param.point.x - tooltipWidth - 20;
+      } else {
+        left = param.point.x + 20;
+      }
+
+      let top = param.point.y - tooltipHeight / 2;
+      if (top < 10) top = 10;
+      if (top + tooltipHeight > container.clientHeight - 30) top = container.clientHeight - tooltipHeight - 30;
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
     });
   }
 

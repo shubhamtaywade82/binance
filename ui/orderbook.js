@@ -138,6 +138,17 @@ export class OrderBookManager {
     this._syncMarkDom();
   }
 
+  resetForSymbol(minTick) {
+    if (minTick != null && Number.isFinite(minTick) && minTick > 0) {
+      this.tick = minTick;
+      this._precisionBound = false;
+      this._ensurePrecisionOptions();
+      this._syncPrecisionLabel();
+      this._setOptionSelection();
+      this._render();
+    }
+  }
+
   update({ bids, asks }) {
     this.bids = bids ?? [];
     this.asks = asks ?? [];
@@ -174,7 +185,7 @@ export class OrderBookManager {
       const hasCurrent = choices.some((c) => Math.abs(c.tick - this.tick) < 1e-12);
       if (!hasCurrent) {
         const nearest = choices.reduce((best, c) =>
-          Math.abs(c.tick - 0.01) < Math.abs(best.tick - 0.01) ? c : best,
+          Math.abs(c.tick - this.tick) < Math.abs(best.tick - this.tick) ? c : best,
         choices[0]);
         this.tick = nearest.tick;
       }

@@ -110,4 +110,9 @@ export class FundingEngine {
   setRateForSymbol(symbol: string, rate: number, nextTime: number): void {
     this.rateBySymbol.set(symbol.toUpperCase(), { rate, nextTime });
   }
+
+  /** Public read-only access for the FundingExitManager. */
+  getRate(symbol: string): { rate: number; nextTime: number } | undefined {
+    return this.rateBySymbol.get(symbol.toUpperCase());
+  }
 }

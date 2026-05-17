@@ -50,6 +50,7 @@ import { analyzeTrend } from './strategy/trend';
 import { analyzeSmc } from './strategy/smc';
 import { evaluateSmcConfluence } from './strategy/smc-confluence';
 import { evaluateSolMtfStrategy, SOL_MTF_TIMEFRAMES } from './strategy/sol-mtf-strategy';
+import { swingHighsLows } from './strategy/indicators';
 import { evaluateSwingSignal } from './strategy/swing-strategy';
 import { applyTierOverrides, tierFor, type AssetTierConfig } from './config/asset-tiers';
 import { RiskManager } from './strategy/risk';
@@ -60,7 +61,7 @@ import {
   type PositionRiskLike,
 } from './strategy/correlation-guard';
 import { BinanceLiveExecutionAdapter } from './execution/binance-adapter';
-import type { Candle, Side, TrendBias, DashboardPosition } from './types';
+import type { Candle, Side, TrendBias, DashboardPosition, CloseReason } from './types';
 import { createExecutionRuntime, type ExecutionRuntime } from './execution/create-runtime';
 import type { TradeAttribution } from './execution/types';
 import type { BookTickerFeed } from './execution/paper/book-ticker-feed';
@@ -231,6 +232,9 @@ export class HybridOrchestrator {
   private mlVolatilitySizedQty: number | null = null;
   /** Set by runMlGate when extended model output is available. */
   private mlHoldTimeMs: number | null = null;
+
+  /** Throttled DB updates for position PnL (prevents excessive Postgres writes). */
+  private readonly lastDbUpdateBySymbol = new Map<string, number>();
 
   constructor(
     private readonly cfg: AppConfig,
@@ -417,6 +421,7 @@ export class HybridOrchestrator {
     this.scheduleRestMarkPoll();
     this.mlRecorder?.start();
     this.scheduleHeartbeat();
+    this.scheduleLiveWalletPoller();
     this.log.info('orchestrator_started', {
       tradingAsset: this.cfg.TRADING_ASSET,
       binance: this.pairs.binanceSymbol,
@@ -441,6 +446,7 @@ export class HybridOrchestrator {
 
   stop(): void {
     this.clearHeartbeat();
+    this.clearLiveWalletPoller();
     this.fxRate.stop();
     this.clearRestMarkPoll();
     this.clearLtpWatchdog();
@@ -515,6 +521,23 @@ export class HybridOrchestrator {
       }
     }
     if (!accepted || !isFinal) return;
+
+    // --- Structure Break Logic (SMC) ---
+    if (tf === this.ltfTf || (tierFor(symU) && tf === tierFor(symU)?.ltf)) {
+      const pos = this.positionManager.getPosition(symU);
+      if (pos) {
+        const series = this.store.getSeries(symU, tf);
+        const swings = swingHighsLows(series, 5);
+        if (pos.side === 'LONG' && swings.lows.length > 0) {
+          const lastLow = swings.lows[swings.lows.length - 1].price;
+          this.positionManager.updateStructureBreakPrice(symU, lastLow);
+        } else if (pos.side === 'SHORT' && swings.highs.length > 0) {
+          const lastHigh = swings.highs[swings.highs.length - 1].price;
+          this.positionManager.updateStructureBreakPrice(symU, lastHigh);
+        }
+      }
+    }
+
     if (isPrimary && tf === this.ltfTf) void this.evaluate(candle);
     if (this.cfg.ENABLE_MULTI_ASSET) {
       const tier = tierFor(symU);
@@ -642,6 +665,62 @@ export class HybridOrchestrator {
     }
   }
 
+  private liveWalletTimer: ReturnType<typeof setInterval> | null = null;
+
+  private scheduleLiveWalletPoller(): void {
+    if (this.cfg.EXECUTION_MODE !== 'live') return;
+    const sec = this.cfg.PAPER_EQUITY_SNAPSHOT_SEC || 5;
+    this.liveWalletTimer = setInterval(() => {
+      void this.pollLiveWallet();
+    }, sec * 1000);
+  }
+
+  private clearLiveWalletPoller(): void {
+    if (this.liveWalletTimer) {
+      clearInterval(this.liveWalletTimer);
+      this.liveWalletTimer = null;
+    }
+  }
+
+  private async pollLiveWallet(): Promise<void> {
+    if (!this.execution.adapter.getWalletState) return;
+    try {
+      const w = await this.execution.adapter.getWalletState();
+      if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+      this.currentDrawdownPct = this.sessionPeakEquity > 0
+        ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+        : 0;
+
+      const openPositions = this.positionManager.getOpenPositionCount();
+
+      if (this.execution.pgWriter?.isConnected) {
+        void this.execution.pgWriter.writeEquitySnapshot(
+          w,
+          this.currentDrawdownPct,
+          openPositions,
+          this.fxRate.getInrPerUsdt(),
+        );
+      }
+
+      if (this.execution.redisState) {
+        const now = Date.now();
+        void this.execution.redisState.setWallet(w);
+        void this.execution.redisState.appendEquity({
+          ts: now,
+          equityUsdt: w.equityUsdt,
+          balanceUsdt: w.balanceUsdt,
+          unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+          realizedPnlUsdt: w.realizedPnlUsdt,
+          usedMarginUsdt: w.usedMarginUsdt,
+          inrPerUsdt: this.fxRate.getInrPerUsdt(),
+        });
+        void this.execution.redisState.publishUpdate('wallet', { equityUsdt: w.equityUsdt });
+      }
+    } catch (e) {
+      this.log.warn('live_wallet_poll_failed', { err: (e as Error).message });
+    }
+  }
+
   private logHeartbeat(): void {
     const htfBias = this.reversalTrendBias();
     const ltfBias = biasFromCandles(this.c15);
@@ -677,34 +756,63 @@ export class HybridOrchestrator {
     }
   }
 
-  private emitPaperStatusLine(): void {
-    if (this.cfg.EXECUTION_MODE !== 'paper') return;
-    const paper = this.execution.paperAdapter;
-    if (!paper) return;
-    const w = paper.getWalletState();
-    if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
-    this.currentDrawdownPct = this.sessionPeakEquity > 0
-      ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
-      : 0;
-    const openPositions = this.positionManager.getOpenPositionCount();
-    const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
-    const line = formatStatusLine({
-      equityUsdt: w.equityUsdt,
-      balanceUsdt: w.balanceUsdt,
-      unrealizedPnlUsdt: w.unrealizedPnlUsdt,
-      realizedPnlUsdt: w.realizedPnlUsdt,
-      drawdownPct: this.currentDrawdownPct,
-      inrPerUsdt: this.fxRate.getInrPerUsdt(),
-      openPositions,
-      positionPnls,
-    });
-    console.log(line);
+  private async emitPaperStatusLine(): Promise<void> {
+    const adapter = this.execution.paperAdapter || this.execution.cdcxAdapter || this.execution.adapter;
+    if (!adapter || !adapter.getWalletState) return;
+
+    try {
+      const w = await adapter.getWalletState();
+      if (w.equityUsdt > this.sessionPeakEquity) this.sessionPeakEquity = w.equityUsdt;
+      this.currentDrawdownPct = this.sessionPeakEquity > 0
+        ? ((w.equityUsdt - this.sessionPeakEquity) / this.sessionPeakEquity) * 100
+        : 0;
+      const openPositions = this.positionManager.getOpenPositionCount();
+      const positionPnls = openPositions > 0 ? this.computePerSymbolPnls() : undefined;
+      const line = formatStatusLine({
+        equityUsdt: w.equityUsdt,
+        balanceUsdt: w.balanceUsdt,
+        unrealizedPnlUsdt: w.unrealizedPnlUsdt,
+        realizedPnlUsdt: w.realizedPnlUsdt,
+        drawdownPct: this.currentDrawdownPct,
+        inrPerUsdt: this.fxRate.getInrPerUsdt(),
+        openPositions,
+        positionPnls,
+      });
+      console.log(line);
+
+      // Persist equity snapshot to Postgres
+      if (this.execution.pgWriter?.isConnected) {
+        void this.execution.pgWriter.writeEquitySnapshot(
+          w,
+          this.currentDrawdownPct,
+          openPositions,
+          this.fxRate.getInrPerUsdt(),
+        );
+
+        // Refresh positions.unrealized_pnl per heartbeat
+        const writer = this.execution.pgWriter;
+        const positions = adapter.getOpenPositions ? await adapter.getOpenPositions() : [];
+        for (const p of positions) {
+          void writer.upsertPosition({
+            orderId: p.orderId,
+            symbol: p.symbol,
+            side: p.side,
+            quantity: p.quantity,
+            entryPrice: p.entryPrice,
+            leverage: p.leverage,
+            marginUsdt: p.marginUsdt,
+            liqPrice: p.liqPrice,
+            openedAt: p.openedAt,
+            unrealizedPnl: p.unrealizedUsdt ?? 0,
+            mode: this.cfg.EXECUTION_MODE,
+          });
+        }
+      }
+    } catch (e) {
+      this.log.warn('status_line_failed', { err: (e as Error).message });
+    }
   }
 
-  /**
-   * For each open position, compute unrealized PnL pct relative to entry, using
-   * the latest mark from the per-symbol book/tape (or entry price as a fallback).
-   */
   private computePerSymbolPnls(): Array<{ symbol: string; unrealizedPct: number }> {
     const out: Array<{ symbol: string; unrealizedPct: number }> = [];
     for (const pos of this.positionManager.getOpenPositions()) {
@@ -761,9 +869,6 @@ export class HybridOrchestrator {
 
     const lastTrade = this.book.lastTrade(symbol);
     if (Number.isFinite(lastTrade)) return lastTrade as number;
-
-    const tapeLast = this.tradeTape.lastPrice();
-    if (Number.isFinite(tapeLast)) return tapeLast;
 
     return null;
   }
@@ -1014,22 +1119,22 @@ export class HybridOrchestrator {
     const symU = u.symbol.toUpperCase();
     if (symU === this.pairs.binanceSymbol.toUpperCase()) {
       this.applyMarkReference(u.markPrice, u.eventTime, 'mark');
-      return;
     }
     if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
       this.applyMarkForSymbol(symU, u.markPrice);
     }
+    this.syncPositionPnLToDb(symU, u.markPrice);
   }
 
   private onTickerLtp(u: TickerLtpUpdate): void {
     const symU = u.symbol.toUpperCase();
     if (symU === this.pairs.binanceSymbol.toUpperCase()) {
       this.applyMarkReference(u.lastPrice, u.eventTime, 'ticker');
-      return;
     }
     if (this.cfg.ENABLE_MULTI_ASSET && this.multiplexSymbolList.includes(symU)) {
       this.applyMarkForSymbol(symU, u.lastPrice);
     }
+    this.syncPositionPnLToDb(symU, u.lastPrice);
   }
 
   /**
@@ -1188,7 +1293,7 @@ export class HybridOrchestrator {
             source: 'exchange_algo',
             ts: Date.now(),
           });
-          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason);
+          void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason as CloseReason);
         }
       }
     }
@@ -1367,7 +1472,16 @@ export class HybridOrchestrator {
 
   private async evaluate(ltfBar: Candle): Promise<void> {
     const primary = this.pairs.binanceSymbol.toUpperCase();
-    if (this.positionManager.hasOpenPosition(primary)) return;
+    const existing = this.positionManager.getPosition(primary);
+    
+    // Pyramiding check (placeholder for logic: only add if current position is in profit)
+    const isPyramid = !!existing;
+    if (isPyramid) {
+       // Only pyramid if not already maxed out or if specific conditions met
+       // For now, we still return if position exists unless we explicitly allow it.
+       if (!this.cfg.ALLOW_PYRAMIDING) return;
+    }
+
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
 
     if (!isWithinTradingHours(this.cfg.TRADING_HOURS_UTC)) return;
@@ -1781,5 +1895,33 @@ export class HybridOrchestrator {
     } catch (e) {
       this.log.warn('drawdown_cancel_failed', { err: (e as Error).message });
     }
+  }
+
+  private syncPositionPnLToDb(symbol: string, currentMark: number): void {
+    if (!this.execution.pgWriter) return;
+    const pos = this.positionManager.getPosition(symbol);
+    if (!pos) return;
+
+    const now = Date.now();
+    const lastUpdate = this.lastDbUpdateBySymbol.get(symbol) ?? 0;
+    if (now - lastUpdate < 5000) return; // Throttled to 5s
+
+    this.lastDbUpdateBySymbol.set(symbol, now);
+    const unrealizedPnl = (currentMark - pos.entryPrice) * pos.quantity * (pos.side === 'LONG' ? 1 : -1);
+
+    void this.execution.pgWriter.upsertPosition({
+      orderId: pos.orderId,
+      symbol: pos.symbol,
+      side: pos.side,
+      quantity: pos.quantity,
+      entryPrice: pos.entryPrice,
+      leverage: pos.leverage ?? 5,
+      marginUsdt: (pos.quantity * pos.entryPrice) / (pos.leverage ?? 5),
+      liqPrice: pos.liqPrice ?? 0,
+      openedAt: pos.openedAt,
+      unrealizedPnl,
+      markPrice: currentMark,
+      tier: pos.tier,
+    });
   }
 }

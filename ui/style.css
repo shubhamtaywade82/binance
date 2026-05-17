@@ -6,16 +6,16 @@
 /* ── Tokens ──────────────────────────────────────────────────────────────── */
 :root {
   /* Backgrounds */
-  --bg-base:         #080b14;
-  --bg-panel:        rgba(13, 17, 30, 0.82);
-  --bg-panel-hover:  rgba(16, 22, 40, 0.9);
-  --bg-header:       rgba(8, 11, 20, 0.96);
-  --bg-row-hover:    rgba(255, 255, 255, 0.04);
+  --bg-base:         #06070a;
+  --bg-panel:        rgba(13, 17, 25, 0.75);
+  --bg-panel-hover:  rgba(18, 24, 36, 0.85);
+  --bg-header:       rgba(6, 8, 13, 0.85);
+  --bg-row-hover:    rgba(255, 255, 255, 0.05);
   --bg-input:        rgba(255, 255, 255, 0.06);
 
   /* Border */
-  --border:          rgba(255, 255, 255, 0.07);
-  --border-accent:   rgba(124, 77, 255, 0.35);
+  --border:          rgba(255, 255, 255, 0.08);
+  --border-accent:   rgba(124, 77, 255, 0.45);
 
   /* Text */
   --text-primary:    #e8eaf0;
@@ -550,11 +550,102 @@ body::before {
   display: flex;
   flex-direction: column;
 }
+
+.chart-nav-group {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  padding: 2px;
+  gap: 1px;
+}
+
+.tf-btn-nav {
+  min-width: 54px !important;
+  font-size: 9px !important;
+  height: 20px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-dim) !important;
+}
+
+.tf-btn-nav:hover {
+  color: var(--text-primary) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.chart-scroll-live-btn {
+  position: absolute;
+  bottom: 20px;
+  right: 80px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(124, 77, 255, 0.5);
+  color: var(--accent);
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.9;
+}
+.chart-scroll-live-btn:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  opacity: 1;
+}
+.chart-scroll-live-btn[hidden] {
+  display: none !important;
+}
 #chart-container {
   flex: 1;
   min-height: 0;
   position: relative;
   padding: 0;
+}
+
+/* ── Chart Scroll to Live Button ───────────────────────────────────────── */
+.chart-scroll-live-btn {
+  position: absolute;
+  bottom: 24px;
+  right: 70px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: rgba(8, 11, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.chart-scroll-live-btn:hover {
+  background: rgba(18, 24, 38, 0.95);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 194, 255, 0.2);
+}
+.chart-scroll-live-btn:active {
+  transform: translateY(0);
+}
+.chart-scroll-live-btn[hidden] {
+  display: none !important;
 }
 
 .chart-signal-hud {
@@ -1703,7 +1794,13 @@ body::before {
   grid-template-columns: 1fr 1fr;
   gap: 8px 12px;
   align-content: start;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+.ms-body::-webkit-scrollbar { width: 5px; }
+.ms-body::-webkit-scrollbar-track { background: transparent; }
+.ms-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
 
 .ms-row {
   display: flex;
@@ -1837,3 +1934,54 @@ body::before {
 .ms-rv-val { font-size: 11px; font-weight: 600; color: var(--text-primary); }
 
 .ms-stat-val { font-size: 11px; font-weight: 600; }
+
+/* ── Candle Hover Tooltip Panel ──────────────────────────────────────────── */
+.chart-candle-tooltip {
+  position: absolute;
+  z-index: 50;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 20, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 130px;
+  transition: opacity 0.15s ease;
+}
+.chart-candle-tooltip[hidden] {
+  display: none !important;
+}
+.chart-candle-tooltip-head {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+}
+.chart-candle-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.chart-candle-tooltip-lbl {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.chart-candle-tooltip-val {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.chart-candle-tooltip-val.bull { color: var(--bull); }
+.chart-candle-tooltip-val.bear { color: var(--bear); }

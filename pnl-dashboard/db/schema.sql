@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 CREATE TABLE IF NOT EXISTS positions (
-    order_id        TEXT PRIMARY KEY,
-    symbol          TEXT NOT NULL,
+    symbol          TEXT PRIMARY KEY,
+    order_id        TEXT NOT NULL,
     side            TEXT NOT NULL,
     qty             DOUBLE PRECISION NOT NULL,
     entry_price     DOUBLE PRECISION NOT NULL,
@@ -82,3 +82,16 @@ CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_snapshots (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_timestamp ON orders (timestamp_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders (order_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions (timestamp_ms DESC);
+
+-- Append-only event store (event-sourced trading core)
+CREATE TABLE IF NOT EXISTS events (
+    id      TEXT PRIMARY KEY,
+    type    TEXT NOT NULL,
+    ts      BIGINT NOT NULL,
+    source  TEXT NOT NULL,
+    symbol  TEXT,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
+CREATE INDEX IF NOT EXISTS idx_events_symbol ON events(symbol);
