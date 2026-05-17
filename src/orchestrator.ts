@@ -1183,6 +1183,15 @@ export class HybridOrchestrator {
     const sym = this.pairs.binanceSymbol.toUpperCase();
     this.execution.adapter.onMark?.(sym, price);
     publish(this.redis, CHANNELS.TICKS, { symbol: sym, price, ts: Date.now() });
+
+    // ─── CONFLICT GUARD ──────────────────────────────────────────────────────
+    // If the new EventBus core is active, we SILENCE the legacy PositionManager
+    // automatic reversals. This stops the legacy engine from closing trades
+    // that the new AdaptiveStrategy wants to keep open.
+    if (Boolean((this.cfg as any).EVENT_BUS_EXECUTION_ENABLED)) {
+      return; 
+    }
+
     this.positionManager.onMark(sym, price, this.reversalTrendBias()).then((closeEvent) => {
       if (!closeEvent) return;
       clearPosition(this.redis, sym);

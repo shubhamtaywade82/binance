@@ -38,6 +38,9 @@ export interface RegimeSignal {
  * every kline.closed and feed into AdaptiveStrategy.
  */
 export class RegimeDetector {
+  private lastRegime: Regime = 'CHOP';
+  private lastDirection: 'LONG' | 'SHORT' | 'FLAT' = 'FLAT';
+
   constructor(private readonly opts: {
     adxTrend: number;          // ADX above → trend regime candidate (default 25)
     adxRange: number;          // ADX below → range candidate (default 18)
@@ -49,13 +52,45 @@ export class RegimeDetector {
     rsiOverbought: number;     // default 70
     rsiOversold: number;       // default 30
     volSurgeZ: number;         // default 1.5
+    hysteresis: number;        // buffer for regime/signal flips (default 0.1)
   } = {
     adxTrend: 25, adxRange: 18, minBars: 60,
     bbStdMultiplier: 2, bbPeriod: 20, rocPeriod: 14,
     donchianPeriod: 20, rsiOverbought: 70, rsiOversold: 30, volSurgeZ: 1.5,
+    hysteresis: 0.15,
   }) {}
 
   classify(candles: Candle[]): RegimeSignal {
+    // ... (rest of data collection stays same)
+    
+    // We'll wrap the core logic and then apply hysteresis on top.
+    const raw = this.classifyRaw(candles);
+    
+    // If the new signal is the same as the last, just return it.
+    if (raw.regime === this.lastRegime && raw.direction === this.lastDirection) {
+      return raw;
+    }
+
+    // Only allow a flip if the new signal's confidence is significantly high
+    // or if the last signal has truly decayed.
+    const flipThreshold = 0.35 + (this.opts.hysteresis || 0);
+    if (raw.confidence < flipThreshold && this.lastRegime !== 'CHOP') {
+        // Sticky logic: keep last regime if the new one isn't "convincing" enough to flip.
+        // This stops jumping back and forth on a single RSI tick.
+        return { 
+            ...raw, 
+            regime: this.lastRegime, 
+            direction: this.lastDirection,
+            confidence: Math.max(0.1, raw.confidence) 
+        };
+    }
+
+    this.lastRegime = raw.regime;
+    this.lastDirection = raw.direction;
+    return raw;
+  }
+
+  private classifyRaw(candles: Candle[]): RegimeSignal {
     const flat: RegimeSignal = {
       regime: 'CHOP',
       direction: 'FLAT',

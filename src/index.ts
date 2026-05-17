@@ -178,6 +178,10 @@ const main = async (): Promise<void> => {
           pgWriter: execution.pgWriter,
           redisState: (execution as any).redisState,
           fxRate: staticFx,
+          // Require 3 consecutive empty polls (~15s at 5s cadence) before
+          // declaring a position closed via REST. WS user-data fires the
+          // authoritative close instantly.
+          missConfirms: 3,
         });
         poller.start();
         lifecycle.register('live_account_poller', () => poller.stop(), { timeoutMs: 1000 });
@@ -347,7 +351,39 @@ const main = async (): Promise<void> => {
 
     const activeAdapter = execution.paperAdapter || execution.cdcxAdapter || execution.adapter;
     if (activeAdapter.setOnTradeClose) {
-      activeAdapter.setOnTradeClose((trade) => dashboardBridge!.broadcastPaperTrade(trade));
+      activeAdapter.setOnTradeClose((trade) => {
+        // Mirror to dashboard UI (paper trade list).
+        dashboardBridge!.broadcastPaperTrade(trade);
+        // CRITICAL: emit event-bus close so RiskEngine, TpLadderManager,
+        // TrailingStopManager, strategy in-position flags release.
+        // Without this, adapter-internal REVERSAL / LIQUIDATION silently
+        // closes positions and downstream state goes stale → strategy
+        // keeps emitting same-symbol orders → adapter records REVERSAL on
+        // next flip → death spiral.
+        defaultEventBus.publish({
+          id: `adapter-close-${trade.orderId}-${trade.closedAt}`,
+          type: 'execution.position.closed',
+          ts: trade.closedAt,
+          source: `execution:${activeAdapter.name}:adapter-internal`,
+          symbol: (trade as any).symbol ?? (trade as any).pair,
+          payload: {
+            orderId: trade.orderId,
+            symbol: (trade as any).symbol ?? (trade as any).pair,
+            side: trade.side,
+            entryPrice: trade.entryPrice,
+            exitPrice: trade.exitPrice,
+            quantity: trade.quantity,
+            reason: trade.reason,
+            netUsdt: trade.netUsdt,
+            grossUsdt: trade.grossUsdt,
+            feesUsdt: trade.feesUsdt,
+            fundingUsdt: trade.fundingUsdt,
+            openedAt: trade.openedAt,
+            closedAt: trade.closedAt,
+            leverage: trade.leverage,
+          },
+        });
+      });
     }
 
     orch = new HybridOrchestrator(cfg, log, {

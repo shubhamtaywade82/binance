@@ -349,6 +349,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
     const closed: ClosedPosition = {
       orderId,
+      symbol: pos.symbol,
       side: pos.side,
       leverage: pos.leverage,
       entryPrice: pos.entryPrice,

@@ -29,6 +29,7 @@ interface FxProvider { getInrPerUsdt(): number }
 export class LiveAccountPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private prevPositionIds = new Set<string>();
+  private missCount = new Map<string, number>();
   private seq = 0;
 
   constructor(
@@ -39,6 +40,8 @@ export class LiveAccountPoller {
       pgWriter?: PgWriter;
       redisState?: RedisPaperStateStore;
       fxRate?: FxProvider;
+      /** Consecutive empty polls required before declaring a position closed. */
+      missConfirms: number;
     },
   ) {}
 
@@ -119,8 +122,24 @@ export class LiveAccountPoller {
       }
       void this.opts.redisState?.upsertPosition(oid, p);
     }
+    // Debounce close detection: only declare a position closed after MISS_CONFIRMS
+    // consecutive empty polls. CoinDCX REST occasionally returns an empty array
+    // for ~1-2s between fills — without debounce the synthetic close trips
+    // strategy.inPosition=false and lets the next bar fire an opposite-side
+    // order before the position truly closed → REVERSAL trade.
     for (const oid of this.prevPositionIds) {
-      if (currentIds.has(oid)) continue;
+      if (currentIds.has(oid)) {
+        this.missCount.delete(oid);
+        continue;
+      }
+      const misses = (this.missCount.get(oid) ?? 0) + 1;
+      this.missCount.set(oid, misses);
+      if (misses < this.opts.missConfirms) {
+        currentIds.add(oid); // keep tracking — likely a transient empty response
+        continue;
+      }
+      // Confirmed close
+      this.missCount.delete(oid);
       this.eventBus.publish({
         id: `live-pos-close-${oid}-${now}`,
         type: 'execution.position.closed',

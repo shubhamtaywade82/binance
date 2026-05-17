@@ -439,6 +439,13 @@ export const AppConfigSchema = z.object({
    */
   TELEGRAM_BOT_TOKEN: z.preprocess(emptyToUndefined, z.string().optional()),
   TELEGRAM_CHAT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Comma-separated: critical,trade,signal,trail,wallet,ai,system (default critical+trade+signal+ai+system). */
+  TELEGRAM_ALERT_LEVELS: z.string().default(''),
+  TELEGRAM_RATE_PER_MIN: numFromString(20),
+  TELEGRAM_TRAIL_THROTTLE_SEC: numFromString(300),
+  TELEGRAM_WALLET_DELTA_PCT: numFromString(0.02),
+  TELEGRAM_WALLET_INTERVAL_MIN: numFromString(30),
+  TELEGRAM_DIGEST_INTERVAL_MIN: numFromString(360),
 
   /**
    * Binance `POST /fapi/v1/countdownCancelAll` period (ms). Each tick renews the timer.

@@ -54,6 +54,8 @@ export interface TradeAttribution {
 
 export interface ClosedPosition {
   orderId: string;
+  /** Underlying symbol (e.g. SOLUSDT) — required by event-bus listeners. */
+  symbol?: string;
   side: 'LONG' | 'SHORT';
   /** Cross margin / isolated leverage at entry (1 = spot-style). */
   leverage: number;

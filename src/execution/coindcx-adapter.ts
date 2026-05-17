@@ -181,6 +181,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     const net = gross - fees - funding;
     const closed: ClosedPosition = {
       orderId,
+      symbol: open.pair,
       side: open.side,
       leverage: open.leverage,
       entryPrice: open.entryPrice,
