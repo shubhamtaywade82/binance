@@ -50,6 +50,10 @@ export class ExecutionBridge {
       takeProfit: p.takeProfit,
       stopLoss: p.stopLoss,
       reason: (p as any).reason,
+      // Idempotency: bus event id is unique per validated order request. Adapters
+      // dedupe duplicate submissions (e.g. retries triggered by transient errors)
+      // by this key and derive the exchange-side client_order_id from it.
+      idempotencyKey: p.correlationId ?? event.id,
     };
 
     this.seq += 1;

@@ -13,6 +13,14 @@ export interface OrderRequest {
   tier?: string;
   /** Optional reason for entry (e.g. 'ENTRY', 'PYRAMID'). */
   reason?: string;
+  /**
+   * Caller-supplied idempotency key (e.g. event-bus correlation id). When set,
+   * adapters MUST use it to dedupe duplicate submissions and to derive the
+   * exchange-side `client_order_id`. Two `placeOrder` calls with the same key
+   * within the adapter's idempotency window return the cached result instead
+   * of placing a second exchange order.
+   */
+  idempotencyKey?: string;
 }
 
 export interface Fill {
