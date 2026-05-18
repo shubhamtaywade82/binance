@@ -39,11 +39,13 @@ import { FillMetadataStore } from './core/execution/fill-metadata-store';
 import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
+import { SelfLearningRuntime } from './self-learning/runtime';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
 let dashboardBridge: DashboardBridge | null = null;
 let controlServer: ControlHttpServer | null = null;
+let selfLearning: SelfLearningRuntime | null = null;
 
 const main = async (): Promise<void> => {
   const cfg = loadConfig();
@@ -143,6 +145,17 @@ const main = async (): Promise<void> => {
 
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
+
+  selfLearning = new SelfLearningRuntime({
+    enabled: cfg.SELF_LEARNING_ENABLED,
+    paperOnly: cfg.SELF_LEARNING_PAPER_ONLY,
+    executionMode: cfg.EXECUTION_MODE,
+    intervalMs: cfg.SELF_LEARNING_INTERVAL_MS,
+    ollamaUrl: cfg.SELF_LEARNING_OLLAMA_URL,
+    ollamaModel: cfg.SELF_LEARNING_OLLAMA_MODEL,
+  }, defaultEventBus, getRedisClient(cfg.REDIS_URL), log);
+  await selfLearning.start();
+  lifecycle.register('self_learning', () => selfLearning?.stop(), { timeoutMs: 500 });
 
   const telegram = new TelegramNotifier(cfg, defaultEventBus, log);
   telegram.start();
