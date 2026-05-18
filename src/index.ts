@@ -34,6 +34,7 @@ import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import { reconcilePositionsAtStartup } from './core/execution/reconciliation';
+import { FreshnessWatchdog } from './core/execution/freshness-watchdog';
 import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
@@ -191,6 +192,16 @@ const main = async (): Promise<void> => {
           flushMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
         });
       }
+      // C-7: stale-feed risk-off. Watchdog publishes system.stale / .fresh
+      // per symbol; RiskEngine subscribes and rejects orders for stale feeds.
+      const freshnessWatchdog = new FreshnessWatchdog(defaultEventBus, {
+        staleAfterMs: Number((cfg as any).STALE_FEED_THRESHOLD_MS) || 30_000,
+        checkIntervalMs: Number((cfg as any).STALE_FEED_CHECK_INTERVAL_MS) || 5_000,
+        log,
+      });
+      freshnessWatchdog.start();
+      lifecycle.register('freshness_watchdog', () => freshnessWatchdog.stop(), { timeoutMs: 500 });
+
       new ExecutionBridge(cfg, defaultEventBus, adapter);
       new PositionCloseBridge(defaultEventBus, adapter);
       if (execution.pgWriter) {

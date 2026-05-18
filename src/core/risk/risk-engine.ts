@@ -32,6 +32,8 @@ export class RiskEngine {
   private positions = new Map<string, PositionExposure>();
   private seq = 0;
   private readonly correlationGuard?: CorrelationGuard;
+  /** Symbols flagged stale by the FreshnessWatchdog. Orders for these are rejected. */
+  private readonly staleSymbols = new Set<string>();
 
   constructor(
     private readonly cfg: AppConfig,
@@ -44,6 +46,11 @@ export class RiskEngine {
       });
     }
     this.subscribe();
+  }
+
+  /** Test/inspection helper. */
+  public isStale(symbol: string): boolean {
+    return this.staleSymbols.has(symbol);
   }
 
   private parseCorrelationPairs(raw: unknown): CorrelationPair[] {
@@ -91,6 +98,18 @@ export class RiskEngine {
     this.eventBus.subscribe<OrderRequestedPayload>(channel, (e) => this.validate(e));
     this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => this.onFilled(e.payload));
     this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => this.onClosed(e.payload));
+    // C-7: stale-feed risk-off. FreshnessWatchdog publishes system.stale when
+    // no market data has arrived for a symbol within the staleness threshold,
+    // and system.fresh when data flow recovers. Orders for stale symbols are
+    // rejected — entering on cached prices is a fast path to liquidation.
+    this.eventBus.subscribe('system.stale', (e: DomainEvent<any>) => {
+      const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
+      if (sym) this.staleSymbols.add(sym);
+    });
+    this.eventBus.subscribe('system.fresh', (e: DomainEvent<any>) => {
+      const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
+      if (sym) this.staleSymbols.delete(sym);
+    });
   }
 
   private validate(event: DomainEvent<OrderRequestedPayload>): void {
@@ -98,6 +117,13 @@ export class RiskEngine {
     const { symbol, quantity } = payload;
     const price = payload.price ?? 0;
     const orderNotional = quantity * price;
+
+    // C-7: refuse to fire orders on a stale feed. The strategy may still be
+    // emitting signals from cached candles but the exchange price has moved.
+    if (this.staleSymbols.has(symbol)) {
+      this.reject(payload, 'STALE_FEED');
+      return;
+    }
 
     const maxTotal = Number((this.cfg as any).MAX_TOTAL_EXPOSURE_USDT) || Infinity;
     const maxSymbols = Number((this.cfg as any).MAX_OPEN_SYMBOLS) || Infinity;

@@ -512,6 +512,20 @@ export const AppConfigSchema = z.object({
    */
   EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
 
+  /**
+   * C-7: stale-feed risk-off thresholds. The FreshnessWatchdog publishes
+   * `system.stale` for a symbol when none of its market data sources
+   * (kline/bookticker/mark) has reported within this many ms, and
+   * `system.fresh` as soon as any source recovers. RiskEngine subscribes
+   * and rejects `execution.order.requested` for stale symbols with reason
+   * `STALE_FEED`. Default 30s — long enough to ride out a single missed
+   * kline on a fast TF, short enough to catch real feed loss before a
+   * signal fires on cached candles.
+   */
+  STALE_FEED_THRESHOLD_MS: numFromString(30_000),
+  /** How often the watchdog scans the lastSeen map. Default 5s. */
+  STALE_FEED_CHECK_INTERVAL_MS: numFromString(5_000),
+
   /** Min signal confidence for SignalToOrderBridge to emit an order request. */
   MIN_SIGNAL_CONFIDENCE: numFromString(0.5),
 

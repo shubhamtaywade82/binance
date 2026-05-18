@@ -640,10 +640,19 @@ export class BinanceMultiplexWs {
 
   private scheduleRotate(conn: RouteConnection): void {
     this.clearRotateTimer(conn);
+    // C-7: jitter the 23h reconnect window by ±15% so two routes (and
+    // independent bot instances) never close their sockets at the same
+    // wall-clock minute. Without jitter, a fleet of bots reconnecting in
+    // lockstep at 23:00 UTC produces a self-inflicted DoS against
+    // fstream — Binance rate-limits the burst and the bots stay blind
+    // for tens of seconds.
+    const jitterPct = 0.15;
+    const jitter = (Math.random() * 2 - 1) * jitterPct * this.reconnectAfterMs;
+    const delayMs = Math.max(60_000, Math.floor(this.reconnectAfterMs + jitter));
     conn.rotateTimer = setTimeout(() => {
       conn.rotateTimer = null;
       this.forceReconnect(conn, 'rotate_24h');
-    }, this.reconnectAfterMs);
+    }, delayMs);
     if (typeof conn.rotateTimer.unref === 'function') conn.rotateTimer.unref();
   }
 
