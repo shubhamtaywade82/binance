@@ -47,6 +47,17 @@ export interface MarketSignalsSnapshot {
     mid: number;
     spreadBps: number;
   };
+  /** SMC dealing range — key range for RR calculation, entry zone, and target alignment. */
+  dealingRange?: { high: number; low: number; equilibrium: number } | null;
+  /** Point of Control (highest-volume price node) from the volume profile. */
+  poc?: number | null;
+  /** Key structural levels from kNN lines analysis (short-term and long-term swing extremes). */
+  keyLevels?: {
+    stHigh?: number | null;
+    stLow?: number | null;
+    ltHigh?: number | null;
+    ltLow?: number | null;
+  } | null;
 }
 
 export interface MarketBriefConfig {
@@ -102,41 +113,77 @@ export interface MarketBriefResult {
 
 const FACTUAL_RULES = `
 STRICT FACTUAL RULES (anti-hallucination):
-- Only reference data that appears in the user JSON payload. Never name indicators (e.g. EMA, MACD, RSI, Supertrend, Bollinger, volume cues) unless that indicator's key is literally present in the payload.
-- Never invent prices, levels, percentages, or candle patterns.
-- If a payload field is missing, null, "NONE", or empty, write the word "unknown" instead of guessing.
-- If you need a fact not in the payload, call the available MCP tools (Binance / CoinDCX market data, klines, depth, ticker). Do not fabricate the answer.
-- Quote exact numeric values from the payload or tool result; do not round dramatically or paraphrase numbers.`;
+- Only reference price levels, indicators, or structural data present in the user JSON payload, or values mathematically derived from payload fields (e.g. SL = orderBlock.low − 0.5×atr14).
+- Never invent prices, levels, percentages, or candle patterns that are absent from the payload.
+- If a payload field is missing, null, "NONE", or empty, write "unknown" instead of guessing.
+- If you need a live fact not in the payload, call the available MCP tools (Binance / CoinDCX market data). Do not fabricate the answer.
+- Derived SL/TP values must be calculable from payload fields: orderBlock levels, dealingRange bounds, sweepLow/High, atr14, poc, knn keyLevels, or dealing range measured move.
+- Quote exact numeric values from the payload; show ATR-math for derived levels (e.g. "83.44 − 0.5×0.62 = 83.13").`;
 
-const SYSTEM_PROMPT_THINKING_ALLOWED = `You are a concise market-structure analyst assistant.
-You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack, and optional concrete indicator values).
+const EXECUTION_PLANNER_BODY = `
+Your task: output ONE actionable trade decision — not a narrative, not a summary.
+
+VERDICT — choose exactly one and embed it in the ## heading:
+NO TRADE | WATCH | SETUP VALID — WAIT FOR ENTRY | SETUP VALID — ENTER NOW | SETUP VALID — SCALE IN | SETUP VALID — MANAGE / TRAIL | SETUP VALID — EXIT / REDUCE
+
+HARD RULES (never break):
+1. No actionable verdict without a valid structural entry zone (OB, sweep low/high, CHoCH level, or breakout retest level).
+2. Price between 40–60% of dealing range with RR < 2:1 → NO TRADE.
+3. Spread > 15 bps, or HTF/LTF conflict without a confirming sweep rejection / CHoCH / reclaim → WATCH or NO TRADE.
+4. Every VALID verdict must state: entry zone, SL, TP1/TP2/TP3, trail rule, invalidation rule.
+5. SL = beyond sweep low/OB low/CHoCH origin + 0.5×ATR. Never inside noise.
+6. TP levels = dealing range extremes, prior swing highs/lows, POC extension, or measured move (range height projected from breakout).
+7. Prefer entries after: sweep rejection, CHoCH/BOS confirmation, OB retest, breakout retest.
+8. Reject: mid-range entries, late-extension entries, counter-HTF without clear confirmation.
+9. Setup valid but price has not reached the entry zone yet → WAIT FOR ENTRY, not ENTER NOW.
+10. Score 80–100: all conditions ideal (HTF+LTF aligned, confirmed trigger, tight spread, OB/sweep entry, RR ≥ 3:1). 60–79: minor conflict. Below 60: WATCH or NO TRADE.
+
+OUTPUT FORMAT (strict GitHub-flavored Markdown, no HTML tags):
+
+## \`SYMBOL\` — VERDICT
+
+**Bias:** LONG/SHORT/NEUTRAL  **Score:** X/100  **Confidence:** 0.XX  **Risk Grade:** A/B/C/D
+
+### Entry Plan
+- **Type:** [pullback to OB / sweep rejection / CHoCH retest / breakout retest]
+- **Zone:** [low – high]
+- **Trigger:** [exact condition to act]
+- **Confirmation:** [required confirmation signal]
+
+### Risk Plan
+- **Stop Loss:** [price]
+- **Invalidation:** [rule that cancels the setup]
+
+### Target Plan
+- **TP1:** [price] · [scale %]
+- **TP2:** [price] · [scale %]
+- **TP3:** [price] · [scale %]
+- **Trail:** [trailing rule after TP1]
+
+### Execution
+- **Spread:** tight/wide/N/A  **Liquidity:** ok/thin/N/A
+- **Action:** [one decisive sentence — enter now / wait for X / skip because Y]
+
+### Reasoning
+- [bullet 1]
+- [bullet 2]
+- [bullet 3]
+
+For NO TRADE or WATCH: omit Entry/Risk/Target/Execution sections. Output only the header + Reasoning (3 bullets max stating the exact reason).`;
+
+const SYSTEM_PROMPT_THINKING_ALLOWED = `You are a senior crypto futures execution planner for an automated trading system.
+You receive JSON with live market data: symbol, refPrice, HTF bias, LTF direction/confidence, SMC structure (BOS/CHoCH/order blocks/FVG/liquidity sweep/dealing range), kNN key levels, POC, ATR, spread, and indicators.
 ${FACTUAL_RULES}
 
-If the host exposes a reasoning channel, use it for scratch work only. The **assistant message body** must be GitHub-flavored Markdown for the trader (no HTML tags):
-- Start with a ## heading (e.g. "## Brief" or "## Snapshot").
-- Use short paragraphs and/or bullet lists with "- ".
-- Bold key labels inline, e.g. **Context:**, **Alignment:**, **Conflict:**, **Execution:**.
-- Mention directions like SHORT/LONG in **bold** when they matter.
-- Use \`TICKER\` backticks for the symbol when you reference it.
-- Do not give buy/sell instructions or price targets.
-- End with a separate line: *Not financial advice.*
-Keep total under 140 words.`;
+If the host exposes a reasoning channel, use it for scratch work only — compute SL/TP math, assess RR, and pick the verdict there. The assistant message body must be the execution plan only in GitHub-flavored Markdown (no HTML).
+${EXECUTION_PLANNER_BODY}`;
 
-const SYSTEM_PROMPT_NO_EXTENDED_THINK = `You are a concise market-structure analyst assistant.
-You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack, and optional concrete indicator values).
+const SYSTEM_PROMPT_NO_EXTENDED_THINK = `You are a senior crypto futures execution planner for an automated trading system.
+You receive JSON with live market data: symbol, refPrice, HTF bias, LTF direction/confidence, SMC structure (BOS/CHoCH/order blocks/FVG/liquidity sweep/dealing range), kNN key levels, POC, ATR, spread, and indicators.
 ${FACTUAL_RULES}
 
-Output only the brief below — no separate chain-of-thought, analysis steps, or hidden reasoning blocks.
-
-Respond in GitHub-flavored Markdown only (no HTML tags):
-- Start with a ## heading (e.g. "## Brief" or "## Snapshot").
-- Use short paragraphs and/or bullet lists with "- ".
-- Bold key labels inline, e.g. **Context:**, **Alignment:**, **Conflict:**, **Execution:**.
-- Mention directions like SHORT/LONG in **bold** when they matter.
-- Use \`TICKER\` backticks for the symbol when you reference it.
-- Do not give buy/sell instructions or price targets.
-- End with a separate line: *Not financial advice.*
-Keep total under 140 words.`;
+Output only the execution plan — no chain-of-thought, no analysis prose, no reasoning blocks.
+${EXECUTION_PLANNER_BODY}`;
 
 const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
   return JSON.stringify({
@@ -153,6 +200,9 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     solMtf: snapshot.solMtf,
     indicators: snapshot.indicators,
     microstructure: snapshot.microstructure,
+    dealingRange: snapshot.dealingRange ?? null,
+    poc: snapshot.poc ?? null,
+    keyLevels: snapshot.keyLevels ?? null,
   });
 };
 
@@ -171,8 +221,8 @@ const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
 
 const MAX_THINKING_FALLBACK_CHARS = 12_000;
 
-/** Enough headroom for brief markdown after optional reasoning tokens. */
-const BRIEF_NUM_PREDICT = 1024;
+/** Token budget for the structured execution plan output. */
+const BRIEF_NUM_PREDICT = 1400;
 
 const sliceThinking = (raw: string): string => {
   const t = raw.trim();
