@@ -20,8 +20,9 @@ OUTPUT RULES (strict):
 
 GRAMMAR
 - One header per script: \`indicator("Name")\` OR \`indicator("Name", overlay=false)\` OR \`strategy("Name", initial_capital=10000)\`.
-- Input declarations: \`name = input.int(default, title="...")\` (also \`input.float\` \`input.bool\` \`input.string\` \`input.source\`).
+- Input declarations: \`name = input.int(default, title="...")\` (also \`input.float\` \`input.bool\` \`input.string\` \`input.source\` \`input.color\`).
 - Assignments: \`name = expression\`.
+- Simple function declaration: \`func name(arg1, arg2) = expression\` (single-expression body).
 - Expression statements: \`plot(...)\`, \`plotshape(...)\`, \`hline(...)\`, \`bgcolor(...)\`, \`alert(...)\`, \`entry(...)\`, \`exit(...)\`.
 - Series indexing: \`name[k]\` returns the value k bars ago. 0 is the current bar.
 - Ternary: \`cond ? a : b\`.
@@ -34,6 +35,11 @@ TA FUNCTIONS
 - Moving averages: \`ema(src, len)\` \`sma(src, len)\` \`wma(src, len)\` \`vwma(src, len)\`.
 - Oscillators: \`rsi(src, len)\` \`atr(len)\`.
 - Statistics: \`stdev(src, len)\` \`sum(src, len)\`.
+- Momentum: \`mom(src, len)\` \`roc(src, len)\`.
+- Bollinger helpers: \`bbmiddle(src, len)\` \`bbupper(src, len, mult)\` \`bblower(src, len, mult)\`.
+- MACD helper: \`macd(src, fast, slow, signal, part)\` where \`part\` is "macd" | "signal" | "hist" (optional, default "macd").
+- Containers: \`array_new()\` \`array_push(arr, v)\` \`array_get(arr, idx)\` \`array_set(arr, idx, v)\` \`array_size(arr)\`.
+- Maps: \`map_new()\` \`map_set(mapv, key, v)\` \`map_get(mapv, key, fallback?)\` \`map_has(mapv, key)\` \`map_size(mapv)\`.
 - Window extremes: \`highest(src, len)\` \`lowest(src, len)\`.
 - Crosses: \`crossover(a, b)\` \`crossunder(a, b)\`.
 - Trends: \`rising(src, len)\` \`falling(src, len)\` \`change(src)\`.
@@ -45,7 +51,10 @@ OUTPUT FUNCTIONS
 - \`plotshape(cond, location="belowbar"|"abovebar", color="...", shape="triangleup"|"triangledown"|"circle"|"square"|"cross", title="...")\`
 - \`hline(price, color="...", title="...")\`
 - \`bgcolor(color, opacity=0.2)\` — pass \`na\` as color to skip a bar.
+- \`label(cond, text, location="abovebar"|"belowbar", color="#...", textcolor="#...")\` for chart annotations.
+- \`line(cond, price, color="#...", title="...")\` for horizontal level overlays.
 - \`alert(cond, "message text")\` — fires when cond is truthy.
+- \`color(r,g,b,a?)\` returns rgb/rgba color text.
 
 STRATEGY-ONLY
 - \`entry(cond, "long"|"short", qty=1)\`

@@ -19,6 +19,7 @@ import {
   WmaState,
   VwmaState,
   TrendState,
+  MacdState,
 } from './ta-core.js';
 
 const MAX_LEN = DEFAULT_SERIES_CAPACITY;
@@ -29,6 +30,13 @@ interface SecurityCallState {
   tf: string;
   srcName: string;
   series: Series;
+}
+
+class NanoArray {
+  readonly items: unknown[] = [];
+}
+class NanoMap {
+  readonly items = new Map<string, unknown>();
 }
 
 function kwargsToMap(kwargs: KwArg[], evaluator: (e: Expr) => unknown): Record<string, unknown> {
@@ -68,6 +76,11 @@ function asSeries(v: unknown, name: string): Series {
   return v;
 }
 
+function asNumberOrSeriesNow(v: unknown, name: string): number {
+  if (v instanceof Series) return v.get(0);
+  return asNumber(v, name);
+}
+
 function asBool(v: unknown): boolean {
   if (v === true) return true;
   if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
@@ -76,6 +89,20 @@ function asBool(v: unknown): boolean {
     return Number.isFinite(x) && x !== 0;
   }
   return Boolean(v);
+}
+function asArray(v: unknown, name: string): NanoArray {
+  if (!(v instanceof NanoArray)) throw new RuntimeError(`Argument '${name}' must be an array`);
+  return v;
+}
+function asMap(v: unknown, name: string): NanoMap {
+  if (!(v instanceof NanoMap)) throw new RuntimeError(`Argument '${name}' must be a map`);
+  return v;
+}
+
+function toColor(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? `#${Math.trunc(v).toString(16)}` : null;
+  return null;
 }
 
 function getCallState<T extends object>(ctx: ExecutionContext, node: object, factory: () => T): T {
@@ -292,6 +319,152 @@ export const BUILTINS: Record<string, BuiltinHandler> = {
     return Math.min(asNumber(args[0], 'a'), asNumber(args[1], 'b'));
   },
 
+  color(_ctx, _node, args) {
+    const r = Math.max(0, Math.min(255, Math.round(asNumber(args[0], 'r'))));
+    const g = Math.max(0, Math.min(255, Math.round(asNumber(args[1], 'g'))));
+    const b = Math.max(0, Math.min(255, Math.round(asNumber(args[2], 'b'))));
+    const aRaw = args.length >= 4 ? asNumber(args[3], 'a') : 1;
+    const a = Math.max(0, Math.min(1, aRaw));
+    if (a >= 0.999) return `rgb(${r},${g},${b})`;
+    return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+  },
+  array_new() {
+    return new NanoArray();
+  },
+  array_push(_ctx, _node, args) {
+    const arr = asArray(args[0], 'arr');
+    arr.items.push(args[1]);
+    return arr.items.length;
+  },
+  array_get(_ctx, _node, args) {
+    const arr = asArray(args[0], 'arr');
+    const idx = asInt(args[1], 'idx');
+    if (idx < 0 || idx >= arr.items.length) return NaN;
+    return arr.items[idx];
+  },
+  array_set(_ctx, _node, args) {
+    const arr = asArray(args[0], 'arr');
+    const idx = asInt(args[1], 'idx');
+    if (idx < 0) throw new RuntimeError(`array_set(): idx must be >= 0 (got ${idx})`);
+    arr.items[idx] = args[2];
+    return args[2];
+  },
+  array_size(_ctx, _node, args) {
+    return asArray(args[0], 'arr').items.length;
+  },
+  map_new() {
+    return new NanoMap();
+  },
+  map_set(_ctx, _node, args) {
+    const m = asMap(args[0], 'map');
+    const k = String(args[1]);
+    m.items.set(k, args[2]);
+    return true;
+  },
+  map_get(_ctx, _node, args) {
+    const m = asMap(args[0], 'map');
+    const k = String(args[1]);
+    if (!m.items.has(k)) return args.length >= 3 ? args[2] : NaN;
+    return m.items.get(k);
+  },
+  map_has(_ctx, _node, args) {
+    const m = asMap(args[0], 'map');
+    return m.items.has(String(args[1]));
+  },
+  map_size(_ctx, _node, args) {
+    return asMap(args[0], 'map').items.size;
+  },
+
+  mom(_ctx, _node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    return src.get(0) - src.get(len);
+  },
+
+  roc(_ctx, _node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const prev = src.get(len);
+    if (!Number.isFinite(prev) || prev === 0) return NaN;
+    return ((src.get(0) - prev) / prev) * 100;
+  },
+
+  bbmiddle(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const state = getCallState(ctx, node, () => ({
+      sma: new SmaState(len),
+      stdev: new StdevState(len),
+      period: len,
+    }));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `bbmiddle(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    state.stdev.update(src.get(0));
+    return state.sma.update(src.get(0));
+  },
+
+  bbupper(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const mult = asNumber(args[2], 'mult');
+    const state = getCallState(ctx, node, () => ({
+      sma: new SmaState(len),
+      stdev: new StdevState(len),
+      period: len,
+    }));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `bbupper(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    const basis = state.sma.update(src.get(0));
+    const dev = state.stdev.update(src.get(0));
+    return Number.isFinite(basis) && Number.isFinite(dev) ? basis + mult * dev : NaN;
+  },
+
+  bblower(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const len = asPeriod(args[1], 'len');
+    const mult = asNumber(args[2], 'mult');
+    const state = getCallState(ctx, node, () => ({
+      sma: new SmaState(len),
+      stdev: new StdevState(len),
+      period: len,
+    }));
+    if (state.period !== len) {
+      throw new ValidationError(
+        `bblower(): 'len' must be constant per call site (was ${state.period}, got ${len})`,
+      );
+    }
+    const basis = state.sma.update(src.get(0));
+    const dev = state.stdev.update(src.get(0));
+    return Number.isFinite(basis) && Number.isFinite(dev) ? basis - mult * dev : NaN;
+  },
+
+  macd(ctx, node, args) {
+    const src = asSeries(args[0], 'src');
+    const fast = asPeriod(args[1], 'fast');
+    const slow = asPeriod(args[2], 'slow');
+    const signal = asPeriod(args[3], 'signal');
+    const part = String(args[4] ?? 'macd').toLowerCase();
+    if (part !== 'macd' && part !== 'signal' && part !== 'hist') {
+      throw new RuntimeError(`macd(): part must be "macd", "signal", or "hist" (got ${part})`);
+    }
+    const state = getCallState(ctx, node, () => new MacdState(fast, slow, signal));
+    if (state.fast !== fast || state.slow !== slow || state.signal !== signal) {
+      throw new ValidationError(
+        `macd(): periods must be constant per call site (was ${state.fast}/${state.slow}/${state.signal}, got ${fast}/${slow}/${signal})`,
+      );
+    }
+    const out = state.update(src.get(0));
+    if (part === 'signal') return out.signal;
+    if (part === 'hist') return out.hist;
+    return out.macd;
+  },
+
   plot(ctx, node, args, kwargs, evaluator) {
     if (args.length < 1) {
       throw new RuntimeError('plot() requires at least one argument');
@@ -430,6 +603,31 @@ export const BUILTINS: Record<string, BuiltinHandler> = {
     const optsFromKw = kwargsToMap(kwargs, evaluator);
     ctx.emitBgColor(node, color, { opacity, ...optsFromKw });
     return color;
+  },
+
+  label(ctx, node, args, kwargs, evaluator) {
+    if (args.length < 1) throw new RuntimeError('label(cond, ...) requires condition');
+    const cond = asBool(args[0]);
+    if (!cond) return false;
+    const optsFromKw = kwargsToMap(kwargs, evaluator);
+    const text = typeof args[1] === 'string' ? args[1] : String(optsFromKw.text ?? '');
+    const location = typeof args[2] === 'string' ? args[2] : String(optsFromKw.location ?? 'abovebar');
+    const color = toColor(args[3] ?? optsFromKw.color) ?? '#42a5f5';
+    const textcolor = toColor(args[4] ?? optsFromKw.textcolor) ?? '#ffffff';
+    ctx.emitShape(node, true, { ...optsFromKw, title: text || optsFromKw.title, location, color, textcolor, shape: 'label' });
+    return true;
+  },
+
+  line(ctx, node, args, kwargs, evaluator) {
+    if (args.length < 2) throw new RuntimeError('line(cond, price, ...) requires condition and price');
+    const cond = asBool(args[0]);
+    if (!cond) return false;
+    const price = asNumberOrSeriesNow(args[1], 'price');
+    const optsFromKw = kwargsToMap(kwargs, evaluator);
+    const color = toColor(args[2] ?? optsFromKw.color);
+    const title = typeof args[3] === 'string' ? args[3] : optsFromKw.title;
+    ctx.emitHLine(node, price, { ...optsFromKw, ...(color ? { color } : {}), ...(title ? { title } : {}) });
+    return true;
   },
 };
 

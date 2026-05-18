@@ -13,6 +13,7 @@ import { LexError } from './errors.js';
 const KEYWORDS = new Set([
   'indicator',
   'strategy',
+  'func',
   'input',
   'true',
   'false',

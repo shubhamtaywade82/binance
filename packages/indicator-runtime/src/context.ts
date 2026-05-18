@@ -191,6 +191,7 @@ export interface ExecutionContext {
   fullHistoryBudgetMs: number;
   builtins: Record<BuiltinSeriesKey, Series>;
   userSeries: Map<string, Series>;
+  userValues: Map<string, unknown>;
   inputs: Map<string, unknown>;
   callState: WeakMap<object, unknown>;
   nodeBudgetRemaining: number;
@@ -274,6 +275,7 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
     builtins,
 
     userSeries: new Map(),
+    userValues: new Map(),
     inputs: new Map(),
     callState: new WeakMap(),
     nodeBudgetRemaining: 0,
@@ -315,12 +317,20 @@ export function createContext(opts: CreateContextOptions = {}): ExecutionContext
 
     resolve(name: string) {
       if (name in this.builtins) return this.builtins[name as BuiltinSeriesKey];
+      if (this.userValues.has(name)) return this.userValues.get(name);
       if (this.userSeries.has(name)) return this.userSeries.get(name);
       if (this.inputs.has(name)) return this.inputs.get(name);
       return undefined;
     },
 
     assign(name: string, value: unknown) {
+      const isNumericLike =
+        typeof value === 'number' || value === true || value === false || value instanceof Series;
+      if (!isNumericLike) {
+        this.userValues.set(name, value);
+        return this.userSeries.get(name) ?? new Series(this.capacity);
+      }
+      this.userValues.delete(name);
       let s = this.userSeries.get(name);
       if (!s) {
         s = new Series(this.capacity);
