@@ -7,6 +7,15 @@ export interface Candle {
   close: number;
   volume: number;
   closeTime?: number;
+  /**
+   * C-10: sealed-bar invariant. `true` when the bar is final (Binance kline
+   * `x === true` or historical REST result). Once sealed, MultiTimeframeStore
+   * refuses to overwrite the bar with a later non-final update, and
+   * lookback-sensitive indicators (e.g. SMC FVG fill detection) only operate
+   * on sealed neighbours so the live tip can't poison a backward-looking
+   * computation. Unset / false on still-forming live bars.
+   */
+  sealed?: boolean;
 }
 
 export type TrendBias = 'LONG' | 'SHORT' | 'NONE';

@@ -38,17 +38,24 @@ export class MultiTimeframeStore {
     this.cap(arr);
   }
 
-  applyKline(symbol: string, tf: string, candle: Candle, _isFinal: boolean): boolean {
+  applyKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): boolean {
     const arr = this.bucket(symbol, tf);
     if (this.checkAnomaly(symbol, tf, candle, arr)) return false;
-    this.insertCandle(arr, candle);
+    // C-10: tag the bar with its seal state before insert so downstream
+    // indicators / replay logic can distinguish closed bars from the live tip.
+    const stamped: Candle = candle.sealed === undefined
+      ? { ...candle, sealed: isFinal }
+      : candle;
+    this.insertCandle(arr, stamped);
     return true;
   }
 
   /** Apply candle unconditionally (skip anomaly check). Used after REST confirms bar is valid. */
   forceApplyKline(symbol: string, tf: string, candle: Candle): void {
     const arr = this.bucket(symbol, tf);
-    this.insertCandle(arr, candle);
+    // REST historical bars are always closed.
+    const stamped: Candle = candle.sealed === undefined ? { ...candle, sealed: true } : candle;
+    this.insertCandle(arr, stamped);
   }
 
   private insertCandle(arr: Candle[], candle: Candle): void {
@@ -58,6 +65,10 @@ export class MultiTimeframeStore {
     }
     const last = arr[arr.length - 1];
     if (candle.openTime === last.openTime) {
+      // C-10: never let a non-final update overwrite a sealed bar. A late
+      // network re-broadcast of an x=false kline AFTER the x=true close
+      // arrived would otherwise rewrite history (the repaint bug).
+      if (last.sealed && !candle.sealed) return;
       arr[arr.length - 1] = candle;
       return;
     }
@@ -67,8 +78,12 @@ export class MultiTimeframeStore {
       return;
     }
     const idx = arr.findIndex((c) => c.openTime === candle.openTime);
-    if (idx >= 0) arr[idx] = candle;
-    else {
+    if (idx >= 0) {
+      // Same sealed-bar protection for out-of-order historical inserts.
+      const existing = arr[idx];
+      if (existing.sealed && !candle.sealed) return;
+      arr[idx] = candle;
+    } else {
       arr.push(candle);
       arr.sort((a, b) => a.openTime - b.openTime);
       this.cap(arr);

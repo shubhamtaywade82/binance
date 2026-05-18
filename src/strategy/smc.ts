@@ -160,10 +160,21 @@ const detectOrderBlocks = (candles: Candle[]): OrderBlock[] => {
         }
 
         let hasFvg = false;
-        if (isBullishImpulse) {
-          if (i + 1 < n && candles[i - 1]!.high < candles[i + 1]!.low) hasFvg = true;
-        } else {
-          if (i + 1 < n && candles[i - 1]!.low > candles[i + 1]!.high) hasFvg = true;
+        // C-10: lookahead-safe FVG check. The classic three-bar FVG pattern
+        // reads candles[i - 1] and candles[i + 1]. During live streaming
+        // candles[i + 1] can be the still-forming live tip; using it would
+        // make the FVG decision repaint every time the in-progress bar's
+        // high/low changes. Require both neighbours to be sealed before
+        // believing the gap is real. Sealed status is set by
+        // MultiTimeframeStore.applyKline from the kline `x` flag.
+        const prevSealed = candles[i - 1]?.sealed !== false;
+        const nextSealed = i + 1 < n && candles[i + 1]?.sealed !== false;
+        if (prevSealed && nextSealed) {
+          if (isBullishImpulse) {
+            if (i + 1 < n && candles[i - 1]!.high < candles[i + 1]!.low) hasFvg = true;
+          } else {
+            if (i + 1 < n && candles[i - 1]!.low > candles[i + 1]!.high) hasFvg = true;
+          }
         }
 
         let score = 0;
