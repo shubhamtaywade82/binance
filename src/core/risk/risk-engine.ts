@@ -34,6 +34,16 @@ export class RiskEngine {
   private readonly correlationGuard?: CorrelationGuard;
   /** Symbols flagged stale by the FreshnessWatchdog. Orders for these are rejected. */
   private readonly staleSymbols = new Set<string>();
+  /**
+   * H-2 / H-3: track fills already processed (by orderId) so duplicate
+   * `execution.order.filled` events (e.g. from CoinDCX user-data WS firing on
+   * every mark-move position update) don't double-count notional.
+   */
+  private readonly processedFillIds = new Set<string>();
+  private static readonly REDUCE_REASONS = new Set([
+    'PARTIAL_TP', 'TP', 'TP1', 'TP2', 'SL', 'TRAIL', 'SMC_EXIT', 'TIME_STOP',
+    'FUNDING_KICK', 'LIQUIDATION', 'MANUAL', 'REVERSAL', 'EXCHANGE_CLOSE',
+  ]);
 
   constructor(
     private readonly cfg: AppConfig,
@@ -134,7 +144,15 @@ export class RiskEngine {
       this.reject(payload, 'INVALID_NOTIONAL');
       return;
     }
-    if (orderNotional > maxPerOrder) {
+    // H-7: notional cap must apply to the TOTAL position notional (existing +
+    // incoming) for a pyramiding add, not just the incremental order. Without
+    // this, a series of incremental same-side orders each below the cap can
+    // stack into a position multiple times the cap.
+    const existingForSymbol = this.positions.get(symbol);
+    const projectedPositionNotional = existingForSymbol && existingForSymbol.side === payload.side
+      ? existingForSymbol.notional + orderNotional
+      : orderNotional;
+    if (projectedPositionNotional > maxPerOrder) {
       this.reject(payload, 'MAX_PER_ORDER_NOTIONAL_EXCEEDED');
       return;
     }
@@ -195,13 +213,38 @@ export class RiskEngine {
     // primed by `seedPositions` from the reconciliation pass earlier in boot;
     // accumulating notional again here would double-count exposure.
     if (payload?.reason === 'STARTUP_REARM') return;
+
+    // H-3: idempotent on orderId. CoinDcxUserDataWs fires position_update
+    // events on mark moves AND on partial closes, all carrying the same
+    // position_id — accumulating each as a fresh fill triples the in-memory
+    // notional within the first minute of any open position.
+    const orderId = String(payload.orderId ?? '');
+    if (orderId && this.processedFillIds.has(orderId)) return;
+    if (orderId) this.processedFillIds.add(orderId);
+
     const qty = Number(payload.quantity) || 0;
     const price = Number(payload.price) || 0;
     if (qty <= 0 || price <= 0) return;
     const side: 'LONG' | 'SHORT' = payload.side === 'SHORT' ? 'SHORT' : 'LONG';
     const notional = qty * price;
+
+    // H-2: reduce-only / close-side fills must not accumulate notional. They
+    // are emitted by exit managers (PARTIAL_TP via TpLadderManager, TRAIL via
+    // TrailingStopManager, etc.) and represent position-reducing trades, not
+    // new openings. The matching `execution.position.closed` event drives
+    // exposure cleanup in onClosed().
+    const reason = String(payload?.reason ?? '');
+    const isReduceOnly = Boolean(payload?.reduceOnly) ||
+      RiskEngine.REDUCE_REASONS.has(reason);
+    if (isReduceOnly) return;
+
     const prev = this.positions.get(symbol);
     if (prev) {
+      // H-2: never aggregate an opposite-side fill onto an existing position.
+      // RiskEngine.validate rejects with OPPOSITE_SIDE_OPEN_POSITION upstream,
+      // but if the fill somehow reaches us anyway (state desync), treat it
+      // defensively as a noop rather than silently averaging two sides.
+      if (prev.side !== side) return;
       const newQty = prev.quantity + qty;
       const newNotional = prev.notional + notional;
       this.totalNotional += notional;
@@ -224,6 +267,11 @@ export class RiskEngine {
     if (!prev) return;
     this.totalNotional = Math.max(0, this.totalNotional - prev.notional);
     this.positions.delete(symbol);
+    // H-3: free the processed-fill id so a subsequent open of the same symbol
+    // (different orderId) records correctly. The set is bounded by the number
+    // of concurrently open positions plus their close events.
+    const orderId = String(payload.orderId ?? '');
+    if (orderId) this.processedFillIds.delete(orderId);
   }
 
   private reject(payload: OrderRequestedPayload, reason: string): void {

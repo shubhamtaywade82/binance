@@ -109,4 +109,29 @@ describe('CoinDcxUserDataWs canonicalises symbols at the bus boundary (C-6)', ()
 
     expect(seen).toHaveLength(0);
   });
+
+  it('H-3: subsequent position_updates with non-increasing active_pos do NOT republish fills', () => {
+    const bus = new EventBus();
+    const ws = makeWs(bus);
+    const seen: any[] = [];
+    bus.subscribe('execution.order.filled', (e) => seen.push(e));
+
+    // First update: 0 → 1 (open). Should publish.
+    (ws as any).onPosition({ pair: 'B-SOL_USDT', side: 'buy', position_id: 'pos-1', active_pos: 1, avg_price: 100 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].payload.quantity).toBe(1);
+
+    // Mark-move update: active_pos still 1, different avg_price. Must NOT publish.
+    (ws as any).onPosition({ pair: 'B-SOL_USDT', side: 'buy', position_id: 'pos-1', active_pos: 1, avg_price: 102 });
+    expect(seen).toHaveLength(1);
+
+    // Pyramid add: active_pos 1 → 2. Must publish delta of 1.
+    (ws as any).onPosition({ pair: 'B-SOL_USDT', side: 'buy', position_id: 'pos-1', active_pos: 2, avg_price: 101 });
+    expect(seen).toHaveLength(2);
+    expect(seen[1].payload.quantity).toBe(1); // delta, not absolute
+
+    // Partial close: active_pos 2 → 1.5. Must NOT publish a fill.
+    (ws as any).onPosition({ pair: 'B-SOL_USDT', side: 'buy', position_id: 'pos-1', active_pos: 1.5, avg_price: 101 });
+    expect(seen).toHaveLength(2);
+  });
 });

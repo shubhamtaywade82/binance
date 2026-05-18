@@ -41,6 +41,14 @@ export class CoinDcxUserDataWs {
   private socket: ReturnType<typeof io> | null = null;
   private seq = 0;
   private stopped = false;
+  /**
+   * H-3: dedupe / track active position quantity per orderId so we only
+   * publish `execution.order.filled` when the position *increases* (open or
+   * pyramid add). Subsequent position_update events from mark-price moves or
+   * partial closes carry the same orderId and would otherwise be aggregated
+   * by RiskEngine as fresh fills.
+   */
+  private readonly lastActiveByOrder = new Map<string, number>();
 
   constructor(private readonly opts: CoinDcxUserDataWsOptions) {}
 
@@ -124,25 +132,42 @@ export class CoinDcxUserDataWs {
     const active = Number(data?.active_pos ?? data?.quantity ?? 0);
 
     if (active > 0) {
-      this.opts.eventBus.publish({
-        id: `coindcx-pos-${orderId}-${ts}-${++this.seq}`,
-        type: 'execution.order.filled',
-        ts,
-        source: 'coindcx-userdata-ws',
-        symbol,
-        payload: {
-          orderId,
+      // H-3: only publish a fill when the active quantity INCREASED vs the
+      // last seen value for this orderId. CoinDCX sends position_update on
+      // every mark-price tick + on partial closes; without this guard each
+      // tick re-runs RiskEngine.onFilled and balloons in-memory notional.
+      const lastActive = this.lastActiveByOrder.get(orderId) ?? 0;
+      if (active > lastActive) {
+        const delta = active - lastActive;
+        this.lastActiveByOrder.set(orderId, active);
+        this.opts.eventBus.publish({
+          id: `coindcx-pos-${orderId}-${ts}-${++this.seq}`,
+          type: 'execution.order.filled',
+          ts,
+          source: 'coindcx-userdata-ws',
           symbol,
-          side,
-          quantity: active,
-          price: Number(data?.avg_price ?? data?.entry_price ?? 0),
-          leverage: Number(data?.leverage ?? 0),
-          marginUsdt: Number(data?.user_margin ?? 0),
-          liqPrice: Number(data?.liquidation_price ?? 0),
-          openedAt: Number(data?.created_at ?? ts),
-        },
-      });
+          payload: {
+            orderId,
+            symbol,
+            side,
+            // Publish the delta when this is a pyramid add; on first open
+            // (lastActive=0) delta equals the full active size.
+            quantity: delta,
+            price: Number(data?.avg_price ?? data?.entry_price ?? 0),
+            leverage: Number(data?.leverage ?? 0),
+            marginUsdt: Number(data?.user_margin ?? 0),
+            liqPrice: Number(data?.liquidation_price ?? 0),
+            openedAt: Number(data?.created_at ?? ts),
+          },
+        });
+      } else {
+        // Position update with no qty increase = mark move or partial close.
+        // Update the watermark in case it decreased (partial close) so a
+        // subsequent re-add publishes correctly.
+        this.lastActiveByOrder.set(orderId, active);
+      }
     } else {
+      this.lastActiveByOrder.delete(orderId);
       this.opts.eventBus.publish({
         id: `coindcx-pos-close-${orderId}-${ts}-${++this.seq}`,
         type: 'execution.position.closed',

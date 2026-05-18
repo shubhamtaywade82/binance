@@ -236,10 +236,12 @@ const main = async (): Promise<void> => {
           pgWriter: execution.pgWriter,
           redisState: (execution as any).redisState,
           fxRate: staticFx,
-          // Require 3 consecutive empty polls (~15s at 5s cadence) before
-          // declaring a position closed via REST. WS user-data fires the
-          // authoritative close instantly.
-          missConfirms: 3,
+          // H-5: drop missConfirms from 3 to 1 — when the user-data WS is
+          // up it is the authoritative source for closes. The poller now
+          // only runs while WS is disconnected (see onConnectionChange);
+          // a single empty poll while disconnected is enough to publish a
+          // close. Previous 3×5s = up to 15s of stale exposure window.
+          missConfirms: 1,
         });
         poller.start();
         lifecycle.register('live_account_poller', () => poller.stop(), { timeoutMs: 1000 });
