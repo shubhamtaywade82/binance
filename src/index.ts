@@ -188,6 +188,34 @@ const main = async (): Promise<void> => {
     actorSystem.spawnSymbolActor(sym);
   }
 
+  // Seed each actor's MultiTimeframeStore from REST so strategies that need
+  // minBars (e.g. AdaptiveStrategy minBars=80 on 5m = 6h40m) can fire on the
+  // first live kline close after restart, not after waiting hours of bars.
+  try {
+    const { fetchBinanceKlines } = await import('./binance/rest-klines');
+    const seedTimeframes = cfg.BINANCE_TIMEFRAMES ?? ['5m', '15m', '1h'];
+    const seedLimit = cfg.BINANCE_HISTORY_BARS ?? 500;
+    let seededCount = 0;
+    await Promise.all(
+      allSymbols.flatMap((sym) =>
+        seedTimeframes.map(async (tf) => {
+          try {
+            const bars = await fetchBinanceKlines(cfg, { symbol: sym, interval: tf, limit: seedLimit });
+            if (bars.length > 0) {
+              actorSystem!.getActor(sym)?.seed(tf, bars);
+              seededCount += 1;
+            }
+          } catch (e) {
+            log.warn('actor_seed_failed', { symbol: sym, tf, err: (e as Error).message });
+          }
+        }),
+      ),
+    );
+    log.info('actor_stores_seeded', { symbols: allSymbols.length, timeframes: seedTimeframes, ok: seededCount });
+  } catch (e) {
+    log.warn('actor_stores_seed_skipped', { err: (e as Error).message });
+  }
+
   // Mandatory startup reconciliation — MUST run before any strategy / bridge
   // wiring or the first kline close could place an order against unknown
   // exchange exposure. On `EXECUTION_MODE=live` a transport failure THROWS:
