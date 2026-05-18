@@ -50,7 +50,9 @@ export type CloseReason =
   | 'TRAIL'
   | 'SMC_EXIT'
   | 'TIME_STOP'
-  | 'FUNDING_KICK';
+  | 'FUNDING_KICK'
+  | 'WATERMARK_EXIT'
+  | 'SIGNAL_REVERSAL';
 
 export interface TradeAttribution {
   entrySignal?: string;

@@ -617,10 +617,22 @@ export const AppConfigSchema = z.object({
   /** Time stop: close if position has been open ≥ N bars AND net is negative. */
   TIME_STOP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
   TIME_STOP_BARS: numFromString(24),
+  /** Percentage of initial stop-loss distance required to trigger time stop (0.5 = 50%). */
+  TIME_STOP_THRESHOLD_PCT: numFromString(0.5),
+
+  /** Signal reversal exit: close if strategy emits a confident opposite-side signal. */
+  SIGNAL_REVERSAL_EXIT_ENABLED: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
+
+  /** High-watermark exit: activate after favorable move of this % of entry price (0.005 = 0.5%). 0 = disabled. */
+  WATERMARK_ACTIVATION_PCT: numFromString(0.005),
+  /** Drop from peak PnL to trigger watermark exit (0.4 = 40% retrace from peak profit). */
+  DROP_FROM_PEAK_PCT: numFromString(0.4),
 
   /** Structure exit: close LONG if recent swing low broken (and vice versa for SHORT). */
   STRUCTURE_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
   STRUCTURE_SWING_LOOKBACK: numFromString(20),
+  /** Gate structure exit on signal confirmation — skip if latest signal still agrees with position. */
+  STRUCTURE_EXIT_CHECK_SIGNALS: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
 
   /** Funding-aware exit: close before next funding tick when |rate|*8h > threshold bps and adverse. */
   FUNDING_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),

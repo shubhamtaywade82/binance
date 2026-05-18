@@ -25,6 +25,7 @@ import { ExecutionBridge } from './core/execution/execution-bridge';
 import { TrailingStopManager } from './core/execution/trailing-stop-manager';
 import { StructureExitManager } from './core/execution/structure-exit-manager';
 import { TimeStopManager } from './core/execution/time-stop-manager';
+import { SignalReversalExitManager } from './core/execution/signal-reversal-exit-manager';
 import { FundingExitManager } from './core/execution/funding-exit-manager';
 import { TpLadderManager } from './core/execution/tp-ladder-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
@@ -321,17 +322,26 @@ const main = async (): Promise<void> => {
           partialTpR: (cfg as any).PARTIAL_TP_ENABLED ? Number((cfg as any).PARTIAL_TP_R) : 0,
           partialTpPct: Number((cfg as any).PARTIAL_TP_FRACTION) || 0.5,
           smcExitEnabled: false, // handled by StructureExitManager below
+          watermarkActivationPct: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
+          dropFromPeakPct: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
         });
 
         if ((cfg as any).STRUCTURE_EXIT_ENABLED) {
           new StructureExitManager(defaultEventBus, {
             swingLookback: Number((cfg as any).STRUCTURE_SWING_LOOKBACK) || 5,
             bufferBars: Math.max(60, Number((cfg as any).STRUCTURE_SWING_LOOKBACK) * 12),
+            checkSignals: (cfg as any).STRUCTURE_EXIT_CHECK_SIGNALS ?? true,
           });
         }
         if ((cfg as any).TIME_STOP_ENABLED) {
           new TimeStopManager(defaultEventBus, {
             barsThreshold: Number((cfg as any).TIME_STOP_BARS) || 24,
+            thresholdPct: Number((cfg as any).TIME_STOP_THRESHOLD_PCT) || 0.5,
+          });
+        }
+        if ((cfg as any).SIGNAL_REVERSAL_EXIT_ENABLED) {
+          new SignalReversalExitManager(defaultEventBus, {
+            minConfidence: Number((cfg as any).MIN_SIGNAL_CONFIDENCE) || 0.5,
           });
         }
         if ((cfg as any).FUNDING_EXIT_ENABLED) {
@@ -366,8 +376,13 @@ const main = async (): Promise<void> => {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
           intrabarTrail: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR),
           structureExit: Boolean((cfg as any).STRUCTURE_EXIT_ENABLED),
+          structureCheckSignals: (cfg as any).STRUCTURE_EXIT_CHECK_SIGNALS ?? true,
           timeStop: Boolean((cfg as any).TIME_STOP_ENABLED),
+          timeStopThreshold: Number((cfg as any).TIME_STOP_THRESHOLD_PCT) || 0.5,
+          reversalExit: Boolean((cfg as any).SIGNAL_REVERSAL_EXIT_ENABLED),
           fundingExit: Boolean((cfg as any).FUNDING_EXIT_ENABLED),
+          watermarkActivation: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
+          dropFromPeak: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
         });
       }
 

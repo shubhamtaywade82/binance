@@ -43,6 +43,7 @@ export class RiskEngine {
   private static readonly REDUCE_REASONS = new Set([
     'PARTIAL_TP', 'TP', 'TP1', 'TP2', 'SL', 'TRAIL', 'SMC_EXIT', 'TIME_STOP',
     'FUNDING_KICK', 'LIQUIDATION', 'MANUAL', 'REVERSAL', 'EXCHANGE_CLOSE',
+    'WATERMARK_EXIT', 'SIGNAL_REVERSAL',
   ]);
 
   constructor(
