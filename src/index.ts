@@ -242,11 +242,14 @@ const main = async (): Promise<void> => {
         lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
       }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
       if ((cfg as any).SIGNAL_ALLOCATOR_ENABLED) {
+        const allocMode = ((cfg as any).SIGNAL_ALLOCATOR_MODE as 'score' | 'fcfs') ?? 'score';
         new SignalAllocator(cfg, defaultEventBus, actorSystem.getRiskEngine(), {
           flushDelayMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
+          mode: allocMode,
         });
         log.info('signal_allocator_wired', {
-          flushMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
+          mode: allocMode,
+          flushMs: allocMode === 'score' ? (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS : null,
         });
       }
       // C-7: stale-feed risk-off. Watchdog publishes system.stale / .fresh

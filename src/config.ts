@@ -590,8 +590,17 @@ export const AppConfigSchema = z.object({
    * for fair multi-symbol selection — without this, first-come-first-served.
    */
   SIGNAL_ALLOCATOR_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  /**
+   * Allocation policy:
+   *   `score` (default) — buffer SIGNAL_ALLOCATOR_FLUSH_MS, pick top N by ADX×ATR strength.
+   *   `fcfs`            — first signal to arrive claims the slot. No buffering window.
+   *                       Carryover queue (FIFO) drains when a position closes.
+   * FCFS = tighter latency, no cross-symbol fairness ranking.
+   */
+  SIGNAL_ALLOCATOR_MODE: z.preprocess((v) => v === undefined ? 'score' : String(v).toLowerCase(), z.enum(['score', 'fcfs'])),
   /** ms to wait after first candidate before flushing the bucket. 1500ms covers
-   *  WS arrival jitter for klines that closed at the same wall-clock minute. */
+   *  WS arrival jitter for klines that closed at the same wall-clock minute.
+   *  Ignored when SIGNAL_ALLOCATOR_MODE=fcfs. */
   SIGNAL_ALLOCATOR_FLUSH_MS: numFromString(1500),
 
   // ── Correlation guard ───────────────────────────────────────────────────

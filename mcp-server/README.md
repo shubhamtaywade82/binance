@@ -62,6 +62,15 @@ Or edit `~/.claude/mcp.json`:
 }
 ```
 
+---
+
+## Optimizing for Agentic Use
+
+To make your LLM fast and efficient with these tools, we recommend using the standardized [SYSTEM_PROMPT.md](./SYSTEM_PROMPT.md). It provides the model with:
+- **Tool Hierarchy**: Encourages the use of high-level synthesis tools over granular ones.
+- **Workflow Steps**: Defines a clear 3-phase analysis path (Sentiment -> Technicals -> Synthesis).
+- **Symbol Handling**: Instructs the model on how to handle futures suffixes like `.P`.
+
 `LOG_LEVEL=DEBUG` is honored.
 
 ---

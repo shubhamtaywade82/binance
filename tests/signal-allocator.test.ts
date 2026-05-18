@@ -74,6 +74,52 @@ describe('SignalAllocator', () => {
     expect(accepted).toHaveLength(2); // RiskEngine accepted both top picks
   });
 
+  it('FCFS mode: arrival order claims slots, no score sort', () => {
+    const c = cfg({ MAX_OPEN_SYMBOLS: 2, SIGNAL_ALLOCATOR_MODE: 'fcfs' });
+    const risk = new RiskEngine(c, bus);
+    new SignalAllocator(c, bus, risk, { flushDelayMs: 100, carryoverCapacity: 0, mode: 'fcfs' });
+
+    // Lowest-score symbol arrives first → wins the slot in FCFS.
+    bus.publish(mkRequest('XRPUSDT', 22, 0.004, 1000)); // weakest
+    bus.publish(mkRequest('ETHUSDT', 28, 0.006, 1000));
+    bus.publish(mkRequest('BTCUSDT', 35, 0.010, 1000)); // strongest, last
+
+    const allocated = captured.filter((e) => e.type === 'execution.order.requested.allocated');
+    expect(allocated).toHaveLength(2);
+    expect(allocated.map((e) => e.payload.symbol)).toEqual(['XRPUSDT', 'ETHUSDT']);
+
+    const rejected = captured.filter((e) => e.type === 'execution.order.rejected' && e.source === 'signal-allocator');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].payload.requested.symbol).toBe('BTCUSDT');
+    expect((rejected[0].payload as any).reason).toBe('CARRYOVER_FULL');
+  });
+
+  it('FCFS mode: carryover drains FIFO on position close', () => {
+    const c = cfg({ MAX_OPEN_SYMBOLS: 1, SIGNAL_ALLOCATOR_MODE: 'fcfs' });
+    const risk = new RiskEngine(c, bus);
+    new SignalAllocator(c, bus, risk, { flushDelayMs: 100, carryoverCapacity: 5, carryoverMaxAgeMs: Number.MAX_SAFE_INTEGER, mode: 'fcfs' });
+
+    bus.publish(mkRequest('BTCUSDT', 30, 0.01, 1000));
+    bus.publish(mkRequest('ETHUSDT', 30, 0.01, 1000)); // queued
+    bus.publish(mkRequest('XRPUSDT', 30, 0.01, 1000)); // queued
+
+    // Fill BTC so it occupies the only slot
+    bus.publish({
+      id: 'fill-btc', type: 'execution.order.filled', ts: 2, source: 'x', symbol: 'BTCUSDT',
+      payload: { symbol: 'BTCUSDT', side: 'LONG', quantity: 1, price: 100, orderId: 'o-btc' },
+    });
+
+    // Close BTC → ETH (FIFO head) should be forwarded next.
+    bus.publish({
+      id: 'close-btc', type: 'execution.position.closed', ts: 3, source: 'x', symbol: 'BTCUSDT',
+      payload: { symbol: 'BTCUSDT', quantity: 1, orderId: 'o-btc' },
+    });
+
+    const allocated = captured.filter((e) => e.type === 'execution.order.requested.allocated');
+    const syms = allocated.map((e) => e.payload.symbol);
+    expect(syms).toEqual(['BTCUSDT', 'ETHUSDT']);
+  });
+
   it('passes through unscored signals immediately', () => {
     const c = cfg();
     const risk = new RiskEngine(c, bus);

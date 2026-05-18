@@ -35,6 +35,8 @@ interface BufferedCandidate {
  * raw `execution.order.requested` and have the RiskEngine subscribe to
  * `execution.order.requested.allocated`. The allocator is opt-in via cfg.
  */
+export type AllocatorMode = 'score' | 'fcfs';
+
 export class SignalAllocator {
   private buckets = new Map<number, BufferedCandidate[]>();
   private flushTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -42,12 +44,14 @@ export class SignalAllocator {
   private readonly adxThreshold: number;
   private readonly minAtrPct: number;
   private seq = 0;
+  private readonly mode: AllocatorMode;
   /**
    * M-18: runners-up from the previous bar(s) that could not fit in the
-   * MAX_OPEN_SYMBOLS budget. Re-evaluated at the start of the next flush:
-   * if a slot opened up (another position closed), the highest-score
-   * carryover takes it. Bounded by `carryoverCapacity` so a chronically
-   * over-firing strategy doesn't grow this queue unboundedly.
+   * MAX_OPEN_SYMBOLS budget. Re-evaluated at the start of the next flush
+   * (score mode) or on every position close (FCFS mode): if a slot opened
+   * up, the head of the queue takes it. Bounded by `carryoverCapacity`
+   * so a chronically over-firing strategy doesn't grow this queue
+   * unboundedly. FCFS preserves arrival order; score replays by score.
    */
   private carryover: BufferedCandidate[] = [];
   private readonly carryoverCapacity: number;
@@ -57,20 +61,51 @@ export class SignalAllocator {
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
     private readonly riskEngine: RiskEngine,
-    opts: { flushDelayMs?: number; carryoverCapacity?: number; carryoverMaxAgeMs?: number } = {},
+    opts: { flushDelayMs?: number; carryoverCapacity?: number; carryoverMaxAgeMs?: number; mode?: AllocatorMode } = {},
   ) {
     this.flushDelayMs = opts.flushDelayMs ?? 1500;
     this.adxThreshold = Number((cfg as any).SEYKOTA_ADX_THRESHOLD) || 20;
     this.minAtrPct = Number((cfg as any).SEYKOTA_MIN_ATR_PCT) || 0.003;
     this.carryoverCapacity = Math.max(0, opts.carryoverCapacity ?? 20);
     this.carryoverMaxAgeMs = Math.max(0, opts.carryoverMaxAgeMs ?? 60_000); // 1 bar's worth
+    this.mode = opts.mode ?? ((cfg as any).SIGNAL_ALLOCATOR_MODE as AllocatorMode) ?? 'score';
     this.subscribe();
   }
 
+  /**
+   * FCFS reservation: a symbol forwarded but not yet visible in RiskEngine
+   * exposure (RiskEngine only updates positions on fills). Without this
+   * counter, multiple simultaneously-arriving signals all see exposure=0
+   * and over-allocate past MAX_OPEN_SYMBOLS.
+   */
+  private pendingSymbols = new Set<string>();
+
   private subscribe(): void {
     this.eventBus.subscribe<OrderRequestedPayload>('execution.order.requested', (e) => {
-      this.bufferCandidate(e);
+      if (this.mode === 'fcfs') this.handleFcfs(e);
+      else this.bufferCandidate(e);
     });
+    if (this.mode === 'fcfs') {
+      this.eventBus.subscribe('execution.order.rejected', (e: DomainEvent<any>) => {
+        const sym = (e.symbol ?? e.payload?.symbol ?? e.payload?.requested?.symbol) as string | undefined;
+        if (sym) this.pendingSymbols.delete(sym);
+        this.drainCarryoverFcfs();
+      });
+      this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => {
+        const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
+        if (sym) this.pendingSymbols.delete(sym);
+        this.drainCarryoverFcfs();
+      });
+    }
+  }
+
+  private effectiveOpenSymbols(): number {
+    const exposure = this.riskEngine.getExposure();
+    let n = exposure.symbols;
+    for (const s of this.pendingSymbols) {
+      if (!exposure.positions.has(s)) n += 1;
+    }
+    return n;
   }
 
   /** M-18: observability — current carryover depth (runners-up awaiting a slot). */
@@ -92,6 +127,51 @@ export class SignalAllocator {
     if (!this.flushTimers.has(closeTime)) {
       const timer = setTimeout(() => this.flushBucket(closeTime), this.flushDelayMs);
       this.flushTimers.set(closeTime, timer);
+    }
+  }
+
+  /**
+   * FCFS: no window, no sort. First signal per symbol claims a free slot.
+   * Adds to existing symbol pyramid immediately. Otherwise queues FIFO
+   * (bounded) until a position closes.
+   */
+  private handleFcfs(event: DomainEvent<OrderRequestedPayload>): void {
+    const sym = event.payload.symbol;
+    const exposure = this.riskEngine.getExposure();
+    const already = exposure.positions.has(sym) || this.pendingSymbols.has(sym);
+    const maxSymbols = Number((this.cfg as any).MAX_OPEN_SYMBOLS) || Infinity;
+    const slotsLeft = Math.max(0, maxSymbols - this.effectiveOpenSymbols());
+    if (already || slotsLeft > 0) {
+      if (!already) this.pendingSymbols.add(sym);
+      this.forward(event, event.payload.score ? this.computeScore(event.payload) : undefined);
+      return;
+    }
+    if (this.carryover.length < this.carryoverCapacity) {
+      this.carryover.push({ event, score: 0 });
+    } else {
+      this.reject(event, 0, 'CARRYOVER_FULL');
+    }
+  }
+
+  private drainCarryoverFcfs(): void {
+    if (this.carryover.length === 0) return;
+    const now = marketClock.now();
+    this.carryover = this.carryover.filter((c) => now - c.event.ts <= this.carryoverMaxAgeMs);
+    while (this.carryover.length > 0) {
+      const head = this.carryover[0];
+      const sym = head.event.payload.symbol;
+      const exposure = this.riskEngine.getExposure();
+      const already = exposure.positions.has(sym) || this.pendingSymbols.has(sym);
+      const maxSymbols = Number((this.cfg as any).MAX_OPEN_SYMBOLS) || Infinity;
+      const slotsLeft = Math.max(0, maxSymbols - this.effectiveOpenSymbols());
+      if (already || slotsLeft > 0) {
+        this.carryover.shift();
+        if (!already) this.pendingSymbols.add(sym);
+        this.forward(head.event, head.event.payload.score ? this.computeScore(head.event.payload) : undefined);
+        if (already) continue;
+        break;
+      }
+      break;
     }
   }
 
@@ -156,7 +236,7 @@ export class SignalAllocator {
     });
   }
 
-  private reject(event: DomainEvent<OrderRequestedPayload>, score: number): void {
+  private reject(event: DomainEvent<OrderRequestedPayload>, score: number, reason: string = 'WORSE_THAN_TOP_CANDIDATES'): void {
     this.seq += 1;
     this.eventBus.publish({
       id: `alloc-rej-${event.id}-${this.seq}`,
@@ -165,7 +245,7 @@ export class SignalAllocator {
       source: 'signal-allocator',
       symbol: event.payload.symbol,
       payload: {
-        reason: 'WORSE_THAN_TOP_CANDIDATES',
+        reason,
         requested: event.payload,
         score,
       },
