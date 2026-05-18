@@ -24,6 +24,7 @@ export interface SupertrendTuneSnapshot {
 }
 
 export interface OllamaSupertrendTuneConfig {
+  provider: 'ollama' | 'openai';
   host: string;
   model: string;
   timeoutMs: number;
@@ -145,36 +146,68 @@ export const parseSupertrendTuneResponse = (raw: string): { atrPeriod: number; m
 export const requestSupertrendTune = async (cfg: OllamaSupertrendTuneConfig, snapshot: SupertrendTuneSnapshot): Promise<{ params: { atrPeriod: number; multiplier: number } | null; error: string | null }> => {
   const model = cfg.model.trim();
   if (!model) {
-    return { params: null, error: 'missing_ollama_model' };
+    return { params: null, error: 'missing_model' };
   }
 
-  const host = cfg.host.trim() || 'http://127.0.0.1:11434';
   const key = cfg.apiKey?.trim();
-  const headers: Record<string, string> | undefined =
-    key && key.length > 0 ? { Authorization: `Bearer ${key}` } : undefined;
+  const headers: Record<string, string> = {};
+  if (key && key.length > 0) {
+    headers['Authorization'] = `Bearer ${key}`;
+  }
 
-  const ollama = new Ollama({
-    host,
-    headers,
-    fetch: createTimeoutFetch(cfg.timeoutMs),
-  });
+  const timeoutFetch = createTimeoutFetch(cfg.timeoutMs);
 
   try {
-    const response = await ollama.chat({
-      model,
-      stream: false,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: JSON.stringify(snapshot) },
-      ],
-      options: {
-        temperature: 0.15,
-        num_ctx: cfg.contextSize,
-        num_predict: 160,
-      },
-    });
+    let text = '';
+    
+    if (cfg.provider === 'openai') {
+      const host = cfg.host.trim() || 'http://127.0.0.1:8080/v1';
+      const url = `${host.replace(/\/+$/, '')}/chat/completions`;
+      headers['Content-Type'] = 'application/json';
+      
+      const resp = await timeoutFetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: JSON.stringify(snapshot) },
+          ],
+          temperature: 0.15,
+          max_tokens: 160,
+          stream: false
+        })
+      });
+      
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      const json = await resp.json() as any;
+      text = json.choices?.[0]?.message?.content?.trim() ?? '';
+    } else {
+      const host = cfg.host.trim() || 'http://127.0.0.1:11434';
+      const ollama = new Ollama({
+        host,
+        headers,
+        fetch: timeoutFetch,
+      });
 
-    const text = response.message?.content?.trim() ?? '';
+      const response = await ollama.chat({
+        model,
+        stream: false,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: JSON.stringify(snapshot) },
+        ],
+        options: {
+          temperature: 0.15,
+          num_ctx: cfg.contextSize,
+          num_predict: 160,
+        },
+      });
+
+      text = response.message?.content?.trim() ?? '';
+    }
+
     if (!text) {
       return { params: null, error: 'empty_completion' };
     }

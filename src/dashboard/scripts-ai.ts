@@ -98,7 +98,7 @@ export function createScriptsAi(opts: ScriptsAiOptions): ScriptsAiApi {
       ? ollamaApiUrl('cloud')
       : ollamaApiUrl('local');
   const apiKey = (cfg.OLLAMA_API_KEY || '').trim();
-  const enabled = model.length > 0;
+  const enabled = cfg.AI_PROVIDER === 'openai' ? (cfg.AI_OPENAI_MODEL || '').trim().length > 0 : model.length > 0;
 
   const sendJson = (
     res: http.ServerResponse,
@@ -152,31 +152,64 @@ export function createScriptsAi(opts: ScriptsAiOptions): ScriptsAiApi {
           sendJson(res, 400, { error: 'Missing "prompt" string in body' });
           return true;
         }
-        const headers: Record<string, string> | undefined =
-          apiKey.length > 0 ? { Authorization: `Bearer ${apiKey}` } : undefined;
-        res.setTimeout(0);
-        const ollama = new Ollama({ host, headers });
-        const response = await ollama.chat({
-          model,
-          stream: false,
-          think: false,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: `Write a NanoPine script that does the following:\n\n${prompt}`,
+        let content = '';
+        if (cfg.AI_PROVIDER === 'openai') {
+          const openAiHost = (cfg.AI_OPENAI_URL || 'http://127.0.0.1:8080/v1').trim().replace(/\/+$/, '');
+          const url = `${openAiHost}/chat/completions`;
+          const openAiModel = cfg.AI_OPENAI_MODEL || 'local-model';
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          
+          const t = AbortSignal.timeout(cfg.AI_REQUEST_TIMEOUT_MS);
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              model: openAiModel,
+              messages: [
+                { role: 'system', content: SYSTEM_PROMPT },
+                {
+                  role: 'user',
+                  content: `Write a NanoPine script that does the following:\n\n${prompt}`,
+                },
+              ],
+              temperature: 0.2,
+              max_tokens: 1024,
+              stream: false,
+            }),
+            signal: t
+          });
+          
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const json = await resp.json() as any;
+          content = json.choices?.[0]?.message?.content?.trim() ?? '';
+        } else {
+          const headers: Record<string, string> | undefined =
+            apiKey.length > 0 ? { Authorization: `Bearer ${apiKey}` } : undefined;
+          res.setTimeout(0);
+          const ollama = new Ollama({ host, headers });
+          const response = await ollama.chat({
+            model,
+            stream: false,
+            think: false,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              {
+                role: 'user',
+                content: `Write a NanoPine script that does the following:\n\n${prompt}`,
+              },
+            ],
+            options: {
+              temperature: 0.2,
+              num_ctx: cfg.AI_CONTEXT_SIZE,
+              num_predict: 1024,
             },
-          ],
-          options: {
-            temperature: 0.2,
-            num_ctx: cfg.AI_CONTEXT_SIZE,
-            num_predict: 1024,
-          },
-        });
-        const content =
-          typeof response?.message?.content === 'string'
-            ? response.message.content.trim()
-            : '';
+          });
+          content =
+            typeof response?.message?.content === 'string'
+              ? response.message.content.trim()
+              : '';
+        }
+
         if (!content) {
           sendJson(res, 502, {
             error: 'Ollama returned empty content. Check OLLAMA_MODEL is installed.',
