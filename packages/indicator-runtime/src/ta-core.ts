@@ -329,6 +329,48 @@ export class VwmaState {
   }
 }
 
+export class MacdState {
+  readonly fast: number;
+  readonly slow: number;
+  readonly signal: number;
+  private readonly fastEma: EmaState;
+  private readonly slowEma: EmaState;
+  private readonly signalEma: EmaState;
+  macd = NaN;
+  signalValue = NaN;
+  hist = NaN;
+
+  constructor(fast: number, slow: number, signal: number) {
+    if (!Number.isInteger(fast) || fast <= 0) {
+      throw new RangeError(`MACD fast period must be a positive integer (got ${fast})`);
+    }
+    if (!Number.isInteger(slow) || slow <= 0) {
+      throw new RangeError(`MACD slow period must be a positive integer (got ${slow})`);
+    }
+    if (!Number.isInteger(signal) || signal <= 0) {
+      throw new RangeError(`MACD signal period must be a positive integer (got ${signal})`);
+    }
+    this.fast = fast;
+    this.slow = slow;
+    this.signal = signal;
+    this.fastEma = new EmaState(fast);
+    this.slowEma = new EmaState(slow);
+    this.signalEma = new EmaState(signal);
+  }
+
+  update(x: number): { macd: number; signal: number; hist: number } {
+    const fast = this.fastEma.update(x);
+    const slow = this.slowEma.update(x);
+    this.macd = Number.isFinite(fast) && Number.isFinite(slow) ? fast - slow : NaN;
+    this.signalValue = this.signalEma.update(this.macd);
+    this.hist =
+      Number.isFinite(this.macd) && Number.isFinite(this.signalValue)
+        ? this.macd - this.signalValue
+        : NaN;
+    return { macd: this.macd, signal: this.signalValue, hist: this.hist };
+  }
+}
+
 export class TrendState {
   readonly period: number;
   readonly mode: 'falling' | 'rising';
