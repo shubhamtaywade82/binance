@@ -183,22 +183,94 @@ export const adx = (candles: Candle[], period = 14): AdxResult => {
 export interface SupertrendResult {
   value: number[];
   dir: ('LONG' | 'SHORT')[];
+  buySignal: boolean[];
+  sellSignal: boolean[];
+  regime: ('TRENDING' | 'VOLATILE' | 'RANGING' | 'CHOP')[];
+  score: number[];
 }
 
-export const supertrend = (candles: Candle[], period = 10, mult = 3): SupertrendResult => {
+export interface SupertrendOptions {
+  adxPeriod?: number;
+  adxTrendingThreshold?: number;
+  atrRegimeLookback?: number;
+  minMultiplier?: number;
+  maxMultiplier?: number;
+  volatilityExpansionFactor?: number;
+  rangingCompressionFactor?: number;
+  chopFactor?: number;
+  cooldownBars?: number;
+  minSignalScore?: number;
+  wickMode?: boolean;
+}
+
+export const supertrend = (
+  candles: Candle[],
+  period = 10,
+  mult = 3,
+  options: SupertrendOptions = {},
+): SupertrendResult => {
   const n = candles.length;
   const value: number[] = new Array(n).fill(NaN);
   const dir: ('LONG' | 'SHORT')[] = new Array(n).fill('LONG');
-  if (n <= period) return { value, dir };
+  const buySignal = new Array(n).fill(false);
+  const sellSignal = new Array(n).fill(false);
+  const regime: ('TRENDING' | 'VOLATILE' | 'RANGING' | 'CHOP')[] = new Array(n).fill('CHOP');
+  const score = new Array(n).fill(0);
+  if (n <= period) return { value, dir, buySignal, sellSignal, regime, score };
+
+  const adxPeriod = Math.max(2, Math.floor(options.adxPeriod ?? 14));
+  const adxTrendingThreshold = options.adxTrendingThreshold ?? 25;
+  const atrRegimeLookback = Math.max(5, Math.floor(options.atrRegimeLookback ?? 50));
+  const minMultiplier = Math.max(0.5, options.minMultiplier ?? 1);
+  const maxMultiplier = Math.max(minMultiplier, options.maxMultiplier ?? 5);
+  const volatilityExpansionFactor = Math.max(1, options.volatilityExpansionFactor ?? 1.6);
+  const rangingCompressionFactor = Math.max(0.2, options.rangingCompressionFactor ?? 0.75);
+  const chopFactor = Math.max(0.5, options.chopFactor ?? 1.15);
+  const cooldownBars = Math.max(0, Math.floor(options.cooldownBars ?? 3));
+  const minSignalScore = Math.max(0, Math.min(100, options.minSignalScore ?? 65));
+  const wickMode = options.wickMode ?? true;
+
   const a = atr(candles, period);
+  const adxRes = adx(candles, adxPeriod);
+  const volumeSma20 = ema(candles.map((c) => c.volume), 20);
   let finalUpper = NaN;
   let finalLower = NaN;
   let prevDir: 'LONG' | 'SHORT' = 'LONG';
+  let lastSignalIndex = -Infinity;
+
   for (let i = period; i < n; i++) {
     const c = candles[i];
+    const atrLookbackStart = Math.max(period - 1, i - atrRegimeLookback + 1);
+    let atrAvg = 0;
+    let atrCount = 0;
+    for (let j = atrLookbackStart; j <= i; j++) {
+      if (Number.isFinite(a[j])) {
+        atrAvg += a[j];
+        atrCount++;
+      }
+    }
+    atrAvg = atrCount > 0 ? atrAvg / atrCount : a[i];
+    const atrRatio = atrAvg > 0 ? a[i] / atrAvg : 1;
+    const adxVal = Number.isFinite(adxRes.adx[i]) ? adxRes.adx[i] : 0;
+
+    let adaptiveMult = mult;
+    if (adxVal >= adxTrendingThreshold && atrRatio >= 0.8 && atrRatio <= 1.2) {
+      regime[i] = 'TRENDING';
+    } else if (atrRatio > 1.3) {
+      regime[i] = 'VOLATILE';
+      adaptiveMult *= volatilityExpansionFactor;
+    } else if (adxVal < adxTrendingThreshold && atrRatio < 0.95) {
+      regime[i] = 'RANGING';
+      adaptiveMult *= rangingCompressionFactor;
+    } else {
+      regime[i] = 'CHOP';
+      adaptiveMult *= chopFactor;
+    }
+    adaptiveMult = Math.max(minMultiplier, Math.min(maxMultiplier, adaptiveMult));
+
     const hl2 = (c.high + c.low) / 2;
-    const basicUpper = hl2 + mult * a[i];
-    const basicLower = hl2 - mult * a[i];
+    const basicUpper = hl2 + adaptiveMult * a[i];
+    const basicLower = hl2 - adaptiveMult * a[i];
     if (i === period) {
       finalUpper = basicUpper;
       finalLower = basicLower;
@@ -209,13 +281,40 @@ export const supertrend = (candles: Candle[], period = 10, mult = 3): Supertrend
         basicUpper < finalUpper || prevClose > finalUpper ? basicUpper : finalUpper;
       finalLower =
         basicLower > finalLower || prevClose < finalLower ? basicLower : finalLower;
-      if (prevDir === 'LONG' && c.close < finalLower) prevDir = 'SHORT';
-      else if (prevDir === 'SHORT' && c.close > finalUpper) prevDir = 'LONG';
+      const brokeLower = wickMode ? c.low < finalLower : c.close < finalLower;
+      const brokeUpper = wickMode ? c.high > finalUpper : c.close > finalUpper;
+      if (prevDir === 'LONG' && brokeLower) prevDir = 'SHORT';
+      else if (prevDir === 'SHORT' && brokeUpper) prevDir = 'LONG';
     }
+    const flipped = i > period && dir[i - 1] !== prevDir;
+
+    const volBase = volumeSma20[i];
+    const volRatio = Number.isFinite(volBase) && volBase > 0 ? c.volume / volBase : 1;
+    const displacement = a[i] > 0 ? Math.abs(c.close - (prevDir === 'LONG' ? finalUpper : finalLower)) / a[i] : 0;
+    const htfBiasScore = prevDir === 'LONG'
+      ? (Number.isFinite(adxRes.plusDi[i]) && adxRes.plusDi[i] > adxRes.minusDi[i] ? 20 : 0)
+      : (Number.isFinite(adxRes.minusDi[i]) && adxRes.minusDi[i] > adxRes.plusDi[i] ? 20 : 0);
+    const regimeScore = regime[i] === 'TRENDING' ? 15 : regime[i] === 'VOLATILE' ? 10 : regime[i] === 'CHOP' ? 5 : 2;
+    const adxScore = Math.min(10, Math.max(0, (adxVal / 40) * 10));
+    score[i] = Math.round(
+      Math.min(15, Math.max(0, (volRatio - 0.6) * 25)) +
+      Math.min(20, displacement * 8) +
+      htfBiasScore +
+      regimeScore +
+      adxScore +
+      (prevDir === 'LONG' && c.close > c.open ? 8 : prevDir === 'SHORT' && c.close < c.open ? 8 : 0),
+    );
+
+    if (flipped && i - lastSignalIndex >= cooldownBars && score[i] >= minSignalScore) {
+      if (prevDir === 'LONG') buySignal[i] = true;
+      else sellSignal[i] = true;
+      lastSignalIndex = i;
+    }
+
     dir[i] = prevDir;
     value[i] = prevDir === 'LONG' ? finalLower : finalUpper;
   }
-  return { value, dir };
+  return { value, dir, buySignal, sellSignal, regime, score };
 }
 
 export interface SwingStructure {

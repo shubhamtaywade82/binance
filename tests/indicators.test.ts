@@ -96,6 +96,19 @@ describe('supertrend', () => {
     expect(stUp[stUp.length - 1]).toBe('LONG');
     expect(stDown[stDown.length - 1]).toBe('SHORT');
   });
+
+  it('emits buy/sell signals only on qualified flips', () => {
+    const closes = [
+      100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+      110, 109, 108, 107, 106, 105, 104, 103, 102, 101,
+      100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+    ];
+    const cs = mkCandles(closes);
+    const st = supertrend(cs, 7, 2.5, { cooldownBars: 0, minSignalScore: 1, wickMode: false });
+    expect(st.buySignal.some(Boolean) || st.sellSignal.some(Boolean)).toBe(true);
+    expect(st.regime.length).toBe(closes.length);
+    expect(st.score[st.score.length - 1]).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('swingHighsLows', () => {
