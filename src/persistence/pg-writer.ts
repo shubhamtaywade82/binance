@@ -1,11 +1,22 @@
 import { Pool, type PoolConfig } from 'pg';
 import type { ClosedPosition } from '../execution/types';
+import { EventWal, type WalEvent } from './event-wal';
 
 export interface PgWriterOptions {
   connectionString: string;
   maxPoolSize?: number;
   batchSize?: number;
   flushIntervalMs?: number;
+  /**
+   * C-8: path to a local write-ahead log file. When set, every event passed
+   * to appendEvent is durably written to this file before being enqueued for
+   * Postgres. The file is replayed on startup so events that landed on disk
+   * but not yet in Postgres survive a crash. When unset, the WAL is disabled
+   * and the legacy in-memory-only path runs (data-loss risk on overflow).
+   */
+  walPath?: string;
+  /** Compact the WAL after the in-mem flushed set reaches this size. Default 500. */
+  walCompactAfter?: number;
 }
 
 export class PgWriter {
@@ -16,10 +27,16 @@ export class PgWriter {
   private flushTimer: NodeJS.Timeout | null = null;
   private readonly batchSize: number;
   private readonly flushIntervalMs: number;
+  private readonly wal: EventWal | null;
+  private readonly walCompactAfter: number;
+  /** IDs that have been ACK'd by Postgres and are safe to drop from the WAL. */
+  private flushedIds = new Set<string>();
 
   constructor(private readonly opts: PgWriterOptions) {
     this.batchSize = opts.batchSize ?? 100;
     this.flushIntervalMs = opts.flushIntervalMs ?? 500;
+    this.wal = opts.walPath ? new EventWal(opts.walPath) : null;
+    this.walCompactAfter = opts.walCompactAfter ?? 500;
   }
 
   async connect(): Promise<void> {
@@ -33,6 +50,24 @@ export class PgWriter {
       this.pool = new Pool(config);
       await this.pool.query('SELECT 1');
       this.connected = true;
+
+      // C-8: replay any pre-crash WAL entries into the queue BEFORE we start
+      // the periodic flusher, so an interrupted run resumes from disk-durable
+      // state. ON CONFLICT (id) DO NOTHING in flushEvents() makes the replay
+      // idempotent if Postgres already saw some of them.
+      if (this.wal) {
+        this.wal.open();
+        const replay = this.wal.replayAll((line, err) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[pg-writer] WAL skip corrupt line (${err.message}): ${line.slice(0, 80)}`);
+        });
+        if (replay.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(`[pg-writer] replaying ${replay.length} events from WAL`);
+          for (const e of replay) this.eventQueue.push(e);
+          await this.flushEvents();
+        }
+      }
 
       // Start periodic flush
       this.flushTimer = setInterval(() => this.flushEvents(), this.flushIntervalMs);
@@ -57,6 +92,7 @@ export class PgWriter {
       this.pool = null;
       this.connected = false;
     }
+    if (this.wal) this.wal.close();
   }
 
   get isConnected(): boolean {
@@ -234,15 +270,35 @@ export class PgWriter {
   }): Promise<void> {
     if (!this.pool) return;
 
+    // C-8: write to WAL FIRST. Event is durable on disk before the in-mem
+    // queue mutates. If the in-mem queue overflows and drops events, the WAL
+    // still has them and they'll be replayed on next start.
+    if (this.wal) {
+      try {
+        this.wal.append(e as WalEvent);
+      } catch (err) {
+        // WAL write failure is loud — disk full or fs error. We still try to
+        // enqueue in memory so the event might survive the rest of the run,
+        // but the operator needs to know durability is broken.
+        // eslint-disable-next-line no-console
+        console.error('[pg-writer] WAL append failed:', (err as Error).message);
+      }
+    }
+
     this.eventQueue.push(e);
 
     if (this.eventQueue.length > this.queueMaxLen) {
-      // Backpressure: drop oldest. Better to lose events than to OOM the bot.
+      // Backpressure: drop oldest from the IN-MEM queue. With the WAL enabled,
+      // these events are still on disk and will be replayed on next start;
+      // without the WAL, this is irrecoverable data loss.
       const drop = this.eventQueue.length - this.queueMaxLen;
       this.eventQueue.splice(0, drop);
       this.droppedEvents += drop;
       if (this.droppedEvents % 1000 < drop) {
-        console.warn(`[pg-writer] event queue saturated; dropped ${this.droppedEvents} events total`);
+        const recoveryHint = this.wal
+          ? '(WAL has them; retry on next start)'
+          : '(NO WAL — data lost; set walPath to enable recovery)';
+        console.warn(`[pg-writer] event queue saturated; dropped ${this.droppedEvents} events total ${recoveryHint}`);
       }
     }
 
@@ -276,11 +332,29 @@ export class PgWriter {
                    ON CONFLICT (id) DO NOTHING`;
 
       await this.pool.query(sql, values);
+
+      // C-8: events successfully flushed → eligible to drop from WAL on next
+      // compaction. We compact when the flushed-id set grows past the
+      // configured threshold to amortise file-rewrite cost.
+      if (this.wal) {
+        for (const e of toFlush) this.flushedIds.add(e.id);
+        if (this.flushedIds.size >= this.walCompactAfter) {
+          try {
+            const flushed = this.flushedIds;
+            this.flushedIds = new Set();
+            this.wal.compact((e) => !flushed.has(e.id));
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('[pg-writer] WAL compact failed:', (err as Error).message);
+          }
+        }
+      }
     } catch (err) {
-      console.warn('[pg-writer] flushEvents failed:', (err as Error).message);
-      // Put back in queue? Or just log? 
-      // If it's a constraint error, retry might fail forever.
-      // For now, just log to prevent infinite loops.
+      // PG flush failed: put events back in queue so the next flush retries.
+      // The WAL still holds them, so even a process crash here is recoverable.
+      this.eventQueue.unshift(...toFlush);
+      // eslint-disable-next-line no-console
+      console.warn('[pg-writer] flushEvents failed (re-queued):', (err as Error).message);
     }
   }
 }

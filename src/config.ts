@@ -719,6 +719,17 @@ export const AppConfigSchema = z.object({
   /** PostgreSQL connection URL for PnL dashboard persistence (empty = disabled). */
   POSTGRES_URL: z.string().default(''),
 
+  /**
+   * C-8: path to a local append-only write-ahead log for the event store.
+   * When set, every event is fsync'd to disk before being enqueued for
+   * Postgres, and the file is replayed at startup so events that didn't make
+   * it to Postgres before a crash are not lost. Empty = WAL disabled (data
+   * loss possible on PG pool exhaustion + crash). Recommended for live mode.
+   */
+  EVENT_WAL_PATH: z.string().default('./data/event-wal.ndjson'),
+  /** Compact the WAL after this many events have been ACK'd by Postgres. */
+  EVENT_WAL_COMPACT_AFTER: numFromString(500),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 

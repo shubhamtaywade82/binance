@@ -79,7 +79,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
 
   let pgWriter: PgWriter | undefined;
   if (cfg.POSTGRES_URL) {
-    pgWriter = new PgWriter({ connectionString: cfg.POSTGRES_URL });
+    pgWriter = new PgWriter({
+      connectionString: cfg.POSTGRES_URL,
+      // C-8: durability primitive — every event hits disk before Postgres.
+      walPath: (cfg as any).EVENT_WAL_PATH || './data/event-wal.ndjson',
+      walCompactAfter: Number((cfg as any).EVENT_WAL_COMPACT_AFTER) || 500,
+    });
     pgWriter.connect().catch(() => {});
   }
 
