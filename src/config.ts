@@ -765,6 +765,12 @@ export const AppConfigSchema = z.object({
    * server runs unauthenticated so local dev tooling still works.
    */
   CONTROL_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  SELF_LEARNING_ENABLED: boolFromString(false),
+  SELF_LEARNING_PAPER_ONLY: boolFromString(true),
+  SELF_LEARNING_INTERVAL_MS: numFromString(3_600_000),
+  SELF_LEARNING_OLLAMA_URL: z.string().default('http://127.0.0.1:11434'),
+  SELF_LEARNING_OLLAMA_MODEL: z.string().default('llama3.1:8b-instruct-q8_0'),
   /** Optional JSON string for default partial profit targets: `[{"r":1, "pct":0.5}]` */
   DEFAULT_PARTIAL_TARGETS_JSON: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Allow adding to an existing position in the same direction. */
