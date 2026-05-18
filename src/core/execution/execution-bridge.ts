@@ -83,6 +83,16 @@ export class ExecutionBridge {
       this.publishRejected(p, 'PLACE_ORDER_DISABLED', marketClock.now());
       return;
     }
+    // M-11: SHADOW_MODE is enforced at this layer as a defense-in-depth check.
+    // The legacy PositionManager already honors it, but the event-bus path
+    // reaches the adapter via this bridge — without this guard a SHADOW_MODE=true
+    // run would still place live orders through ExecutionBridge → adapter.
+    // Publish a synthetic rejected event with a recognisable reason so the
+    // dashboard and Telegram can surface the inhibition for operator audit.
+    if (this.cfg.SHADOW_MODE === true) {
+      this.publishRejected(p, 'SHADOW_MODE', marketClock.now());
+      return;
+    }
 
     const leverageHint = Number((p as any).leverageHint);
     const leverage = Number.isFinite(leverageHint) && leverageHint > 0

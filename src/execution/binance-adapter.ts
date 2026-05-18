@@ -207,7 +207,39 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     };
 
     const closeSide = req.side === 'LONG' ? 'SELL' : 'BUY';
-    await this.attachAlgoTpSl(trade, closeSide, fillPrice, req.takeProfit, req.stopLoss, qty);
+    const slPlaced = await this.attachAlgoTpSl(trade, closeSide, fillPrice, req.takeProfit, req.stopLoss, qty);
+
+    // M-20: SL is mandatory. If it failed to land we have a filled position
+    // with TPs but unbounded downside. Cancel any TPs that did make it onto
+    // the exchange, then market-close the entry. This restores the
+    // pre-entry state from the bot's perspective and surfaces the failure
+    // to the caller via ok=false.
+    if (!slPlaced) {
+      this.cleanAlgoIndex(trade);
+      void Promise.allSettled([
+        cancelAllAlgoOrders(this.opts.client, sym),
+        cancelAllOrders(this.opts.client, sym),
+      ]);
+      try {
+        await placeOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: qty,
+          reduceOnly: true,
+          newOrderRespType: 'RESULT',
+          positionSide: this.positionSideFor(req.side),
+        });
+      } catch (e) {
+        this.log('binance_emergency_unwind_failed', {
+          sym,
+          internalId,
+          err: (e as Error).message,
+          hint: 'Position is open on exchange with NO SL. Operator intervention required.',
+        });
+      }
+      return this.failResult(req.referencePrice, qty, startedAt, 'sl_placement_failed_entry_unwound');
+    }
 
     this.trades.set(internalId, trade);
     this.log('binance_order_placed', {
@@ -651,6 +683,18 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
   /**
    * Place TP1 (partial, 60% at 0.9%), TP2 (full close at 1.5%), SL (full close).
    * All go to the Algo Service (POST /fapi/v1/algoOrder) per Dec 2025 migration.
+   *
+   * M-20 (bracket atomicity): SL is the only mandatory leg. If SL placement
+   * fails (network error, exchange rejection, insufficient margin to reserve
+   * the stop), the method MUST signal failure to the caller by returning
+   * false. The caller is responsible for rolling back the just-filled entry
+   * (cancel any TPs that did land, then market-close the position). A trade
+   * with TPs but no SL has unbounded downside — exactly the failure mode the
+   * audit's H-1 (concurrent fills) AND this fix's H-2 (silent SL absence)
+   * are guarding against.
+   *
+   * @returns true when SL is placed (TP1/TP2 may have failed; that's
+   * recoverable). false when SL is missing — caller must close the entry.
    */
   private async attachAlgoTpSl(
     trade: OpenLiveTrade,
@@ -659,7 +703,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     tpPrice: number | undefined,
     slPrice: number | undefined,
     qty: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sym = trade.symbol;
     const { stepSize, tickSize } = trade;
 
@@ -709,6 +753,8 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     }
 
     // SL: trailing stop if configured, otherwise fixed stop-market.
+    // This leg is MANDATORY — failure here returns false so the caller
+    // unwinds the just-filled entry.
     const trailRate = this.opts.trailingStopCallbackRate ?? 0;
     try {
       if (trailRate > 0) {
@@ -739,8 +785,10 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         trade.slStrategyId = r.strategyId;
         this.algoIdToInternal.set(r.strategyId, trade.internalId);
       }
+      return true;
     } catch (e) {
-      this.log('binance_sl_warn', { sym, err: (e as Error).message });
+      this.log('binance_sl_failed_unwinding_entry', { sym, err: (e as Error).message });
+      return false;
     }
   }
 
