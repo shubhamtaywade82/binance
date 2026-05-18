@@ -88,12 +88,29 @@ const CHART_OPTS = {
     alignLabels: true,
     entireTextOnly: true,
   },
+  localization: {
+    timeFormatter: (time) => {
+      if (typeof time !== 'number') return String(time);
+      return new Date(time * 1000).toLocaleString('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit', month: 'short', year: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      });
+    },
+  },
   timeScale: {
     borderColor: 'rgba(255,255,255,0.06)',
     timeVisible: true,
     secondsVisible: false,
-    /** LW default 0.5; keep a small floor so extreme zoom stays readable (was 2 for wider minimum gap). */
     minBarSpacing: 1,
+    tickMarkFormatter: (time, tickMarkType) => {
+      if (typeof time !== 'number') return String(time);
+      const d = new Date(time * 1000);
+      if (tickMarkType === 0) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+      if (tickMarkType === 1) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
+      if (tickMarkType === 2) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric' });
+      return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+    },
   },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
   handleScale: { mouseWheel: true, pinch: true },
@@ -1504,7 +1521,26 @@ export class ChartManager {
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: COLORS.text, fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
       grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
       rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.05, bottom: 0.05 } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5 },
+      localization: {
+        timeFormatter: (time) => {
+          if (typeof time !== 'number') return String(time);
+          return new Date(time * 1000).toLocaleString('en-GB', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+          });
+        },
+      },
+      timeScale: {
+        borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5,
+        tickMarkFormatter: (time, tickMarkType) => {
+          if (typeof time !== 'number') return String(time);
+          const d = new Date(time * 1000);
+          if (tickMarkType === 0) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+          if (tickMarkType === 1) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
+          if (tickMarkType === 2) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric' });
+          return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        }
+      },
       crosshair: { mode: 0 },
       handleScroll: { mouseWheel: true, pressedMouseMove: true },
       handleScale: { mouseWheel: true, pinch: true },
