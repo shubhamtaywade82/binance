@@ -265,6 +265,23 @@ export class RiskEngine {
     if (!symbol) return;
     const prev = this.positions.get(symbol);
     if (!prev) return;
+
+    const closedQty = Number(payload.quantity) || 0;
+    const reason = String(payload?.reason ?? '');
+    if (reason === 'PARTIAL_TP' && closedQty > 0 && closedQty < prev.quantity) {
+      const reduceRatio = closedQty / prev.quantity;
+      const notionalReduction = prev.notional * reduceRatio;
+      const nextQuantity = Math.max(0, prev.quantity - closedQty);
+      const nextNotional = Math.max(0, prev.notional - notionalReduction);
+      this.totalNotional = Math.max(0, this.totalNotional - notionalReduction);
+      this.positions.set(symbol, {
+        ...prev,
+        quantity: nextQuantity,
+        notional: nextNotional,
+      });
+      return;
+    }
+
     this.totalNotional = Math.max(0, this.totalNotional - prev.notional);
     this.positions.delete(symbol);
     // H-3: free the processed-fill id so a subsequent open of the same symbol

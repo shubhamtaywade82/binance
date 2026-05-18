@@ -73,6 +73,24 @@ describe('TimeStopManager', () => {
 
     expect(seen.filter((e) => e.type === 'execution.position.close.requested')).toHaveLength(0);
   });
+
+  it('keeps tracking the runner after a partial TP', () => {
+    const { b, seen } = bus();
+    new TimeStopManager(b, { barsThreshold: 3 });
+
+    pubFill(b, 'BTCUSDT', 'LONG', 100);
+    b.publish({
+      id: 'partial', type: 'execution.position.closed', ts: 2, source: 't', symbol: 'BTCUSDT',
+      payload: { symbol: 'BTCUSDT', orderId: 'o-BTCUSDT', reason: 'PARTIAL_TP', quantity: 0.5 },
+    });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 100, low: 98, close: 99, openTime: 3 });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 99, low: 97, close: 98, openTime: 4 });
+    pubKline(b, 'BTCUSDT', { open: 98, high: 99, low: 97, close: 97, openTime: 5 });
+
+    const closes = seen.filter((e) => e.type === 'execution.position.close.requested');
+    expect(closes).toHaveLength(1);
+    expect((closes[0].payload as any).reason).toBe('TIME_STOP');
+  });
 });
 
 describe('FundingExitManager', () => {

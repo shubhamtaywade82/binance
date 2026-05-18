@@ -54,6 +54,7 @@ export class TimeStopManager {
 
   private onClosed(event: DomainEvent<any>): void {
     const sym = event.payload?.symbol;
+    if (event.payload?.reason === 'PARTIAL_TP') return;
     if (sym) this.positions.delete(sym);
   }
 

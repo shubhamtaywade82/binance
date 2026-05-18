@@ -31,13 +31,13 @@ const fill = (
   },
 });
 
-const closed = (symbol: string, orderId?: string) => ({
+const closed = (symbol: string, orderId?: string, payload: Record<string, unknown> = {}) => ({
   id: `close-${symbol}-${Math.random()}`,
   type: 'execution.position.closed',
   ts: 0,
   source: 'test',
   symbol,
-  payload: { orderId: orderId ?? `o-${symbol}`, symbol },
+  payload: { orderId: orderId ?? `o-${symbol}`, symbol, ...payload },
 });
 
 describe('RiskEngine fill bookkeeping correctness (H-2 / H-3)', () => {
@@ -92,6 +92,22 @@ describe('RiskEngine fill bookkeeping correctness (H-2 / H-3)', () => {
     // Re-open with a fresh order — must NOT be blocked by stale dedupe entry.
     bus.publish(fill('SOLUSDT', { orderId: 'o-2', quantity: 1, price: 100 }));
     expect(engine.getExposure().total).toBe(100);
+  });
+
+  it('keeps remaining exposure after a PARTIAL_TP close event', () => {
+    const bus = new EventBus();
+    const engine = new RiskEngine(cfg, bus);
+    bus.publish(fill('SOLUSDT', { orderId: 'o-1', quantity: 4, price: 100 }));
+
+    bus.publish(closed('SOLUSDT', 'o-1', { reason: 'PARTIAL_TP', quantity: 1 }));
+
+    const exposure = engine.getExposure();
+    expect(exposure.total).toBe(300);
+    expect(exposure.positions.get('SOLUSDT')).toMatchObject({
+      quantity: 3,
+      notional: 300,
+      side: 'LONG',
+    });
   });
 });
 

@@ -124,4 +124,44 @@ describe('event-bus execution chain', () => {
     const rejects = captured.filter((e) => e.type === 'execution.order.rejected');
     expect(rejects.some((e: any) => e.payload.reason === 'OPPOSITE_SIDE_OPEN_POSITION')).toBe(true);
   });
+
+  it('forwards strategy risk metadata into adapter requests and fill events', async () => {
+    const cfg = fakeCfg({ LEVERAGE: 5 });
+    new RiskEngine(cfg, bus);
+    new ExecutionBridge(cfg, bus, adapter);
+
+    bus.publish({
+      id: 'req-1',
+      type: 'execution.order.requested',
+      ts: 1,
+      source: 'test',
+      symbol: 'ETHUSDT',
+      payload: {
+        symbol: 'ETHUSDT',
+        side: 'SHORT',
+        quantity: 2,
+        type: 'MARKET',
+        price: 100,
+        stopLoss: 103,
+        takeProfit: 95,
+        strategyId: 'adaptive-test',
+        leverageHint: 3,
+        atrAtEntry: 1,
+      } as any,
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(adapter.calls[0]).toMatchObject({
+      leverage: 3,
+      stopLoss: 103,
+      takeProfit: 95,
+    });
+    const fill = captured.find((e) => e.type === 'execution.order.filled');
+    expect(fill?.payload).toMatchObject({
+      leverage: 3,
+      stopLoss: 103,
+      takeProfit: 95,
+      atrAtEntry: 1,
+    });
+  });
 });

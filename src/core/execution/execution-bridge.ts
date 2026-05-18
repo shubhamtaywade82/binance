@@ -80,11 +80,15 @@ export class ExecutionBridge {
     const p = event.payload;
     if (!p.symbol || !p.price) return;
 
+    const leverageHint = Number((p as any).leverageHint);
+    const leverage = Number.isFinite(leverageHint) && leverageHint > 0
+      ? leverageHint
+      : Number(this.cfg.LEVERAGE) || 1;
     const req: OrderRequest = {
       pair: p.symbol,
       side: p.side,
       quantity: p.quantity,
-      leverage: Number(this.cfg.LEVERAGE) || 1,
+      leverage,
       marginCurrency: 'USDT',
       referencePrice: p.price,
       takeProfit: p.takeProfit,
@@ -141,6 +145,8 @@ export class ExecutionBridge {
             latencyMs: result.fill.latencyMs,
             liqPrice: this.lookupLiqPrice(result.orderId),
             leverage: req.leverage,
+            stopLoss: p.stopLoss,
+            takeProfit: p.takeProfit,
             strategyId: p.strategyId,
             correlationId: p.correlationId,
             reason: (p as any).reason,
@@ -151,6 +157,8 @@ export class ExecutionBridge {
             regime: (p as any).regime,
             modeId: (p as any).modeId,
             maxHoldBars: (p as any).maxHoldBars,
+            atrAtEntry: (p as any).atrAtEntry,
+            openedAt: result.fill.timestamp,
           },
         });
       } else if (!result.ok) {
