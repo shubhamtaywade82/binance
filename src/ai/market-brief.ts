@@ -27,6 +27,19 @@ export interface MarketSignalsSnapshot {
   };
   knnArchitecture?: any;
   solMtf?: { pass: boolean; direction: string; reasons: string[] } | null;
+  /** Optional concrete indicator values computed from local candles. Present
+   *  when caller has enough bars; absent fields signal "not enough data" and
+   *  the model is instructed to say `unknown` rather than invent numbers. */
+  indicators?: {
+    ema20?: number;
+    ema50?: number;
+    emaBias?: 'LONG' | 'SHORT' | 'NONE';
+    rsi14?: number;
+    macd?: { line: number; signal: number; hist: number };
+    supertrend?: { value: number; direction: 'LONG' | 'SHORT' | 'NONE' };
+    atr14?: number;
+    volZScore?: number;
+  };
 }
 
 export interface MarketBriefConfig {
@@ -80,8 +93,17 @@ export interface MarketBriefResult {
   error: string | null;
 }
 
+const FACTUAL_RULES = `
+STRICT FACTUAL RULES (anti-hallucination):
+- Only reference data that appears in the user JSON payload. Never name indicators (e.g. EMA, MACD, RSI, Supertrend, Bollinger, volume cues) unless that indicator's key is literally present in the payload.
+- Never invent prices, levels, percentages, or candle patterns.
+- If a payload field is missing, null, "NONE", or empty, write the word "unknown" instead of guessing.
+- If you need a fact not in the payload, call the available MCP tools (Binance / CoinDCX market data, klines, depth, ticker). Do not fabricate the answer.
+- Quote exact numeric values from the payload or tool result; do not round dramatically or paraphrase numbers.`;
+
 const SYSTEM_PROMPT_THINKING_ALLOWED = `You are a concise market-structure analyst assistant.
-You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack).
+You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack, and optional concrete indicator values).
+${FACTUAL_RULES}
 
 If the host exposes a reasoning channel, use it for scratch work only. The **assistant message body** must be GitHub-flavored Markdown for the trader (no HTML tags):
 - Start with a ## heading (e.g. "## Brief" or "## Snapshot").
@@ -94,7 +116,8 @@ If the host exposes a reasoning channel, use it for scratch work only. The **ass
 Keep total under 140 words.`;
 
 const SYSTEM_PROMPT_NO_EXTENDED_THINK = `You are a concise market-structure analyst assistant.
-You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack).
+You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack, and optional concrete indicator values).
+${FACTUAL_RULES}
 
 Output only the brief below — no separate chain-of-thought, analysis steps, or hidden reasoning blocks.
 
@@ -121,6 +144,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     smc: snapshot.smc,
     knnArchitecture: snapshot.knnArchitecture,
     solMtf: snapshot.solMtf,
+    indicators: snapshot.indicators,
   });
 };
 

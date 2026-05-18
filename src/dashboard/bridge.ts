@@ -20,7 +20,7 @@ import { analyzeKnnArchitecture, type KnnArchitectureResult } from '../strategy/
 import type { LiquidityEngineResult } from '../strategy/liquidity-engine';
 import type { OrderBookMicroSnapshot, OrderBookSnapshotRing } from '../liquidity/order-book-snapshot-ring';
 import { evaluateSolMtfStrategy } from '../strategy/sol-mtf-strategy';
-import { ema, rsi, macd, supertrend } from '../strategy/indicators';
+import { ema, rsi, macd, supertrend, atr } from '../strategy/indicators';
 import type { Candle } from '../types';
 import { requestMarketBrief, type MarketSignalsSnapshot, type MarketBriefConfig } from '../ai/market-brief';
 import {
@@ -665,6 +665,71 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         }
       }
 
+  /**
+   * Compute concrete indicator values from local candles for the AI brief
+   * payload. Returns only fields with enough bars; missing fields signal
+   * "not enough data" so the model can write `unknown` instead of inventing.
+   */
+  const computeBriefIndicators = (sym: string, tf: string): MarketSignalsSnapshot['indicators'] => {
+    const candles = store.getSeries(sym, tf);
+    if (candles.length < 21) return undefined;
+    const closes = candles.map((c) => c.close);
+    const last = (arr: number[]): number | undefined => {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (Number.isFinite(arr[i])) return +arr[i].toFixed(6);
+      }
+      return undefined;
+    };
+    const out: NonNullable<MarketSignalsSnapshot['indicators']> = {};
+    const e20Arr = ema(closes, 20);
+    const e50Arr = candles.length >= 50 ? ema(closes, 50) : null;
+    const e20 = last(e20Arr);
+    const e50 = e50Arr ? last(e50Arr) : undefined;
+    if (e20 !== undefined) out.ema20 = e20;
+    if (e50 !== undefined) out.ema50 = e50;
+    if (e20 !== undefined && e50 !== undefined) {
+      out.emaBias = e20 > e50 ? 'LONG' : e20 < e50 ? 'SHORT' : 'NONE';
+    }
+    if (candles.length >= 15) {
+      const r = last(rsi(closes, 14));
+      if (r !== undefined) out.rsi14 = r;
+    }
+    if (candles.length >= 35) {
+      const m = macd(closes);
+      const line = last(m.macd);
+      const sig = last(m.signal);
+      const hist = last(m.hist);
+      if (line !== undefined && sig !== undefined && hist !== undefined) {
+        out.macd = { line, signal: sig, hist };
+      }
+    }
+    if (candles.length >= 15) {
+      const a = last(atr(candles, 14));
+      if (a !== undefined) out.atr14 = a;
+    }
+    if (candles.length >= 30) {
+      const st = supertrend(candles, 10, 3);
+      const lastIdx = st.value.length - 1;
+      const v = st.value[lastIdx];
+      const d = st.dir[lastIdx];
+      if (Number.isFinite(v) && d) {
+        out.supertrend = { value: +v.toFixed(6), direction: d };
+      }
+    }
+    if (candles.length >= 20) {
+      const vols = candles.map((c) => c.volume);
+      const slice = vols.slice(-20);
+      const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+      const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / slice.length;
+      const sd = Math.sqrt(variance);
+      const lastVol = vols[vols.length - 1];
+      if (sd > 0 && Number.isFinite(lastVol)) {
+        out.volZScore = +(((lastVol - mean) / sd)).toFixed(3);
+      }
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+
   const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string, force = false): void => {
     if (!cfg.AI_MARKET_BRIEF_ENABLED) return;
 
@@ -702,6 +767,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     // but the intention is that events trigger it immediately if the gap has passed.
     if (!force && last > 0 && now - last < gapMs) return;
 
+    const indicators = computeBriefIndicators(watchSymbol, signals.refPriceTf || ltfTf);
     const snapshot: MarketSignalsSnapshot = {
       symbol: watchSymbol,
       refPrice: signals.refPrice,
@@ -714,6 +780,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       smc: signals.smc,
       knnArchitecture: signals.knnArchitecture,
       solMtf: signals.solMtf,
+      indicators,
     };
 
     aiBriefInflightBySym.add(watchSymbol);
