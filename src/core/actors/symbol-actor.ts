@@ -10,6 +10,12 @@ import { Candle } from '../../types';
 /**
  * SymbolActor — owns all state for one symbol (candles, orderbook, tape, strategies).
  * Lock-free: state never mutated from outside, only via inbound events.
+ *
+ * M-4: each actor subscribes to its four event types directly rather than
+ * walking every published event through a wildcard subscribeAll filter.
+ * Pre-fix, with N actors and an EventBus delivering K events/sec, the
+ * dispatch cost was O(N·K) per event — on a 50-symbol watchlist with
+ * dense bookticker / trade streams that's ~50× wasted iteration per tick.
  */
 export class SymbolActor {
   private readonly store = new MultiTimeframeStore({ maxBars: 1000 });
@@ -17,6 +23,7 @@ export class SymbolActor {
   private readonly tape = new AggTradeTape(1000);
   private readonly strategies: StrategyModule[] = [];
   private readonly executionTf: string;
+  private readonly subscriptions: Array<{ unsubscribe: () => void }> = [];
   private seq = 0;
 
   constructor(
@@ -45,24 +52,25 @@ export class SymbolActor {
     this.store.seed(this.symbol, tf, candles);
   }
 
+  /** Detach all bus subscriptions. Called by ActorSystem.shutdown(). */
+  public dispose(): void {
+    for (const s of this.subscriptions) s.unsubscribe();
+    this.subscriptions.length = 0;
+  }
+
   private subscribe(): void {
-    this.eventBus.subscribeAll((event: DomainEvent<any>) => {
-      if (event.symbol !== this.symbol) return;
-      switch (event.type) {
-        case 'market.kline.closed':
-          this.handleKline(event);
-          break;
-        case 'market.trade':
-          this.handleTrade(event);
-          break;
-        case 'market.depth.delta':
-          this.handleDepth(event);
-          break;
-        case 'market.bookticker':
-          this.handleBookTicker(event);
-          break;
-      }
-    });
+    // M-4: per-type targeted subscriptions, each one filtered by symbol.
+    // Stored so dispose() can detach them on shutdown.
+    const onlyMine = (handler: (e: DomainEvent<any>) => void) => (e: DomainEvent<any>) => {
+      if (e.symbol !== this.symbol) return;
+      handler(e);
+    };
+    this.subscriptions.push(
+      this.eventBus.subscribe('market.kline.closed', onlyMine((e) => this.handleKline(e))),
+      this.eventBus.subscribe('market.trade', onlyMine((e) => this.handleTrade(e))),
+      this.eventBus.subscribe('market.depth.delta', onlyMine((e) => this.handleDepth(e))),
+      this.eventBus.subscribe('market.bookticker', onlyMine((e) => this.handleBookTicker(e))),
+    );
   }
 
   private handleKline(event: DomainEvent<any>): void {

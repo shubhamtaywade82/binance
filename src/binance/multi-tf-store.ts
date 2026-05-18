@@ -3,8 +3,21 @@ import type { Candle } from '../types';
 export interface MultiTimeframeStoreOptions {
   /** Cap per (symbol, tf) series. Default 1000. */
   maxBars?: number;
+  /**
+   * M-1: hard ceiling on distinct symbols this store will track. A misconfig
+   * (e.g. BINANCE_WATCHLIST accidentally set to the full exchange list) was
+   * previously unbounded: 5000 symbols × 6 timeframes × maxBars × ~150B/bar
+   * ≈ 4.5 GB and Node OOMs in the middle of the trading session. The cap is
+   * advisory by default (logs + onSymbolCapExceeded callback) — set
+   * `enforceSymbolCap: true` to make the store refuse new symbols once full.
+   * Default 200, override via env (DASHBOARD_STORE_MAX_SYMBOLS).
+   */
+  maxSymbols?: number;
+  enforceSymbolCap?: boolean;
   /** Called when a kline's OHLC looks anomalous vs recent bars. */
   onAnomalousBar?: (symbol: string, tf: string, candle: Candle, medianRange: number) => void;
+  /** Called the first time `maxSymbols` is exceeded for a given symbol. */
+  onSymbolCapExceeded?: (symbol: string, currentSymbolCount: number, cap: number) => void;
 }
 
 const ANOMALY_LOOKBACK = 20;
@@ -12,15 +25,24 @@ const ANOMALY_MULTIPLIER = 8;
 
 export class MultiTimeframeStore {
   private readonly maxBars: number;
+  private readonly maxSymbols: number;
+  private readonly enforceSymbolCap: boolean;
   private readonly onAnomalousBar?: MultiTimeframeStoreOptions['onAnomalousBar'];
+  private readonly onSymbolCapExceeded?: MultiTimeframeStoreOptions['onSymbolCapExceeded'];
   private series = new Map<string, Map<string, Candle[]>>();
+  /** Symbols that were dropped because the cap is full + enforce=true. Logged once. */
+  private capRejectedLogged = new Set<string>();
 
   constructor(opts: MultiTimeframeStoreOptions = {}) {
     this.maxBars = Math.max(10, opts.maxBars ?? 1000);
+    this.maxSymbols = Math.max(1, opts.maxSymbols ?? 200);
+    this.enforceSymbolCap = opts.enforceSymbolCap ?? false;
     this.onAnomalousBar = opts.onAnomalousBar;
+    this.onSymbolCapExceeded = opts.onSymbolCapExceeded;
   }
 
   seed(symbol: string, tf: string, candles: Candle[]): void {
+    if (this.capWouldBlock(symbol)) return;
     const arr = this.bucket(symbol, tf);
     arr.length = 0;
     const sorted = [...candles].sort((a, b) => a.openTime - b.openTime);
@@ -39,6 +61,7 @@ export class MultiTimeframeStore {
   }
 
   applyKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): boolean {
+    if (this.capWouldBlock(symbol)) return false;
     const arr = this.bucket(symbol, tf);
     // M-12: anomalous-bar detection LOGS but no longer DROPS. Dropping made
     // the bot blind to exactly the bars where the highest-edge trades live
@@ -58,6 +81,7 @@ export class MultiTimeframeStore {
 
   /** Apply candle unconditionally (skip anomaly check). Used after REST confirms bar is valid. */
   forceApplyKline(symbol: string, tf: string, candle: Candle): void {
+    if (this.capWouldBlock(symbol)) return;
     const arr = this.bucket(symbol, tf);
     // REST historical bars are always closed.
     const stamped: Candle = candle.sealed === undefined ? { ...candle, sealed: true } : candle;
@@ -119,7 +143,12 @@ export class MultiTimeframeStore {
   }
 
   getSeries(symbol: string, tf: string): Candle[] {
-    return [...this.bucket(symbol, tf)];
+    // Read-only path — do NOT create empty buckets on miss, otherwise a
+    // dashboard query for an arbitrary symbol would bump symbolCount() and
+    // potentially trip the M-1 cap. Same for `closes()` below.
+    const key = this.k(symbol);
+    const arr = this.series.get(key)?.get(tf);
+    return arr ? [...arr] : [];
   }
 
   latest(symbol: string, tf: string): Candle | null {
@@ -129,11 +158,30 @@ export class MultiTimeframeStore {
   }
 
   closes(symbol: string, tf: string): number[] {
-    return this.bucket(symbol, tf).map((c) => c.close);
+    const key = this.k(symbol);
+    const arr = this.series.get(key)?.get(tf);
+    return arr ? arr.map((c) => c.close) : [];
   }
 
   private k(symbol: string): string {
     return symbol.toUpperCase();
+  }
+
+  /**
+   * M-1: returns true when the symbol cap would block a NEW symbol from being
+   * created. Existing symbols are always allowed. Fires the cap-exceeded
+   * callback at most once per symbol. Called by applyKline / seed / forceApply
+   * / prependOlder so all write paths honour the cap consistently.
+   */
+  private capWouldBlock(symbol: string): boolean {
+    const key = this.k(symbol);
+    if (this.series.has(key)) return false;
+    if (this.series.size < this.maxSymbols) return false;
+    if (!this.capRejectedLogged.has(key)) {
+      this.capRejectedLogged.add(key);
+      this.onSymbolCapExceeded?.(key, this.series.size, this.maxSymbols);
+    }
+    return this.enforceSymbolCap;
   }
 
   private bucket(symbol: string, tf: string): Candle[] {
@@ -149,6 +197,16 @@ export class MultiTimeframeStore {
       m.set(tf, arr);
     }
     return arr;
+  }
+
+  /** Number of distinct symbols currently tracked. */
+  public symbolCount(): number {
+    return this.series.size;
+  }
+
+  /** Whether the symbol cap has been hit (informational; cap is advisory by default). */
+  public isAtSymbolCap(): boolean {
+    return this.series.size >= this.maxSymbols;
   }
 
   /**

@@ -10,8 +10,22 @@ import { CorrelationGuard, type CorrelationPair } from '../../risk/correlation-g
 
 interface PositionExposure {
   side: 'LONG' | 'SHORT';
+  /** Sum of (price * quantity) across all fills. Used for portfolio caps. */
   notional: number;
+  /**
+   * M-19: cost basis including paid taker fees. Equals notional + accumulated
+   * feeUsdt from each fill event. Used by downstream PnL math that needs the
+   * actual money out, not just the underlying notional. RiskEngine does not
+   * use this for caps (those track notional alone) but persists it so the
+   * dashboard / equity service can compute realized PnL precisely.
+   */
+  costBasis: number;
   quantity: number;
+  /**
+   * Derived VWAP: notional / quantity. Recomputed on every pyramid add. Tracked
+   * explicitly (not on-the-fly) so callers that read it during an update window
+   * see a consistent snapshot.
+   */
   entryPrice: number;
 }
 
@@ -93,7 +107,16 @@ export class RiskEngine {
     for (const p of positions) {
       if (!p.symbol || p.quantity <= 0 || p.entryPrice <= 0) continue;
       const notional = p.quantity * p.entryPrice;
-      this.positions.set(p.symbol, { side: p.side, quantity: p.quantity, notional, entryPrice: p.entryPrice });
+      // M-19: reconciled positions from the exchange have no fee record locally,
+      // so costBasis is initialised to notional (fees are unknown). Subsequent
+      // fills via onFilled will accumulate fees correctly.
+      this.positions.set(p.symbol, {
+        side: p.side,
+        quantity: p.quantity,
+        notional,
+        costBasis: notional,
+        entryPrice: p.entryPrice,
+      });
       this.totalNotional += notional;
     }
   }
@@ -239,6 +262,7 @@ export class RiskEngine {
       RiskEngine.REDUCE_REASONS.has(reason);
     if (isReduceOnly) return;
 
+    const feeUsdt = Number(payload?.feeUsdt) || 0;
     const prev = this.positions.get(symbol);
     if (prev) {
       // H-2: never aggregate an opposite-side fill onto an existing position.
@@ -248,16 +272,24 @@ export class RiskEngine {
       if (prev.side !== side) return;
       const newQty = prev.quantity + qty;
       const newNotional = prev.notional + notional;
+      const newCostBasis = prev.costBasis + notional + feeUsdt;
       this.totalNotional += notional;
       this.positions.set(symbol, {
         side,
         quantity: newQty,
         notional: newNotional,
+        costBasis: newCostBasis,
         entryPrice: newNotional / newQty,
       });
     } else {
       this.totalNotional += notional;
-      this.positions.set(symbol, { side, quantity: qty, notional, entryPrice: price });
+      this.positions.set(symbol, {
+        side,
+        quantity: qty,
+        notional,
+        costBasis: notional + feeUsdt,
+        entryPrice: price,
+      });
     }
   }
 
