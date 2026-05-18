@@ -96,6 +96,32 @@ const main = async (): Promise<void> => {
     );
   }
 
+  // H-6: live mode requires explicit, non-zero values for the cardinal risk
+  // caps. Defaults of 0 / Infinity were originally intentional for paper
+  // development but make production runs unbounded: a stuck or runaway signal
+  // path can place an unlimited series of unbounded-size orders. Forcing
+  // operators to set these in env before going live makes the trade-off
+  // visible.
+  if (cfg.EXECUTION_MODE === 'live') {
+    const liveMisconfig: string[] = [];
+    if (!cfg.MAX_NOTIONAL_USDT || cfg.MAX_NOTIONAL_USDT <= 0) {
+      liveMisconfig.push('MAX_NOTIONAL_USDT must be > 0 (per-position notional cap)');
+    }
+    if (!cfg.MAX_OPEN_POSITIONS || cfg.MAX_OPEN_POSITIONS <= 0) {
+      liveMisconfig.push('MAX_OPEN_POSITIONS must be > 0');
+    }
+    if (!cfg.DAILY_DRAWDOWN_KILL_PCT || cfg.DAILY_DRAWDOWN_KILL_PCT <= 0) {
+      liveMisconfig.push('DAILY_DRAWDOWN_KILL_PCT must be > 0 (e.g. 0.05 = 5% daily drawdown halt)');
+    }
+    if (liveMisconfig.length > 0) {
+      throw new Error(
+        'Live trading requires explicit risk caps. Missing or zero:\n  - ' +
+        liveMisconfig.join('\n  - ') +
+        '\nSet each in your .env (or .env.secrets / .env.live).',
+      );
+    }
+  }
+
   const lifecycle = new Lifecycle({
     defaultTimeoutMs: cfg.SHUTDOWN_TIMEOUT_MS,
     forceExitMs: cfg.SHUTDOWN_FORCE_EXIT_MS,
@@ -120,6 +146,8 @@ const main = async (): Promise<void> => {
 
   const telegram = new TelegramNotifier(cfg, defaultEventBus, log);
   telegram.start();
+  // H-16: clear the digest timer + drain pending sends on shutdown.
+  lifecycle.register('telegram_notifier', () => telegram.stop(), { timeoutMs: 500 });
 
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);

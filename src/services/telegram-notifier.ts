@@ -303,12 +303,17 @@ export class TelegramNotifier {
     if (!this.cfg.token || !this.cfg.chatId) return;
     try {
       const url = `https://api.telegram.org/bot${this.cfg.token}/sendMessage`;
+      // H-13: aggressive timeout. Even though Telegram subscriptions are now
+      // subscribeAsync (C-4) and don't block the publisher, an indefinite
+      // axios wait still bloats the per-subscriber queue and delays alerts
+      // that should fire within seconds of the trigger event. 3s matches the
+      // typical Telegram API p99.
       await axios.post(url, {
         chat_id: this.cfg.chatId,
         text,
         parse_mode: this.cfg.parseMode,
         disable_web_page_preview: true,
-      }, { timeout: 5000 });
+      }, { timeout: 3000 });
     } catch (err: any) {
       this.log.warn('telegram_notifier_send_failed', { err: err?.message });
     }

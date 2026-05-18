@@ -1790,7 +1790,20 @@ export class HybridOrchestrator {
     const modelOutput = await this.mlInferenceClient.predict(features);
 
     if (!modelOutput) {
-      this.log.info('ml_inference_unavailable', { fallback: 'rule_based' });
+      // H-14: fail-CLOSED when ML is enabled in production mode (not shadow).
+      // The audit's concern: when the inference server is down, the gate
+      // silently degrades to no-op, so positions enter without the very
+      // filter the operator asked for. ML_SHADOW_MODE preserves the
+      // pre-fix soft-fail behaviour for safe parameter validation.
+      if (!this.cfg.ML_SHADOW_MODE) {
+        this.log.warn('ml_inference_unavailable_blocked', {
+          symbol,
+          smcSignal,
+          hint: 'ML_ENABLED=true with ML_SHADOW_MODE=false → fail-closed. Set ML_SHADOW_MODE=true to allow trading when the inference server is down.',
+        });
+        return 'blocked';
+      }
+      this.log.info('ml_inference_unavailable', { fallback: 'rule_based', shadow: true });
       return 'pass';
     }
 
