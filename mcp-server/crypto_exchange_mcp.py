@@ -1191,6 +1191,166 @@ async def cross_exchange_compare_depth(params: CrossDepthInput, ctx: Context) ->
         return handle_exchange_error(e)
 
 
+@mcp.tool(name="market_sentiment_analysis", annotations={**READ_ANNOTATIONS, "title": "Market Sentiment Analysis"})
+async def market_sentiment_analysis(params: SymbolInput, ctx: Context) -> str:
+    """Synthesize futures metrics (Funding, OI, Long/Short) into a sentiment profile.
+
+    Analysis includes:
+    - Funding Rate (Aggression)
+    - Open Interest trend (Conviction)
+    - Long/Short ratio (Crowdedness)
+    - Price/OI correlation
+    """
+    try:
+        # Parallel fetch of all required signals
+        p_task = _binance_get(ctx, Market.FUTURES, "/fapi/v1/premiumIndex", {"symbol": params.symbol})
+        oi_task = _binance_get(ctx, Market.FUTURES, "/futures/data/openInterestHist", {
+            "symbol": params.symbol, "period": "5m", "limit": 12  # Last hour in 5m chunks
+        })
+        ls_task = _binance_get(ctx, Market.FUTURES, "/futures/data/topLongShortAccountRatio", {
+            "symbol": params.symbol, "period": "5m", "limit": 2
+        })
+        price_task = _binance_get(ctx, Market.FUTURES, "/fapi/v1/ticker/price", {"symbol": params.symbol})
+
+        p_idx, oi_hist, ls_hist, last_price = await asyncio.gather(p_task, oi_task, ls_task, price_task)
+
+        # 1. Funding Sentiment
+        funding = float(p_idx.get("lastFundingRate", 0))
+        funding_desc = "Neutral"
+        if funding > 0.0001: funding_desc = "Bullish (Longs paying Shorts)"
+        elif funding < -0.0001: funding_desc = "Bearish (Shorts paying Longs)"
+
+        # 2. OI Trend (Conviction)
+        oi_now = float(oi_hist[-1]["sumOpenInterest"]) if oi_hist else 0
+        oi_prev = float(oi_hist[0]["sumOpenInterest"]) if len(oi_hist) > 1 else oi_now
+        oi_change_pct = ((oi_now / oi_prev) - 1) * 100 if oi_prev > 0 else 0
+        oi_trend = "Stable"
+        if oi_change_pct > 1: oi_trend = "Rising (Increasing Conviction)"
+        elif oi_change_pct < -1: oi_trend = "Falling (Position Unwinding)"
+
+        # 3. Long/Short Ratio (Crowdedness)
+        ls_ratio = float(ls_hist[-1]["longShortRatio"]) if ls_hist else 1.0
+        ls_desc = "Balanced"
+        if ls_ratio > 2.0: ls_desc = "Heavily Long (Crowded)"
+        elif ls_ratio < 0.5: ls_desc = "Heavily Short (Crowded)"
+
+        # 4. Final Sentiment Synthesis
+        sentiment = "Neutral"
+        score = 0
+        if funding > 0.00005: score += 1
+        if funding < -0.00005: score -= 1
+        if oi_change_pct > 0.5: score += 1
+        if oi_change_pct < -0.5: score -= 1
+        
+        if score >= 2: sentiment = "Strongly Bullish"
+        elif score == 1: sentiment = "Mildly Bullish"
+        elif score == -1: sentiment = "Mildly Bearish"
+        elif score <= -2: sentiment = "Strongly Bearish"
+
+        result = {
+            "symbol": params.symbol,
+            "sentiment": sentiment,
+            "metrics": {
+                "price": float(last_price["price"]),
+                "funding_rate": funding,
+                "funding_bias": funding_desc,
+                "oi_change_1h_pct": round(oi_change_pct, 2),
+                "oi_conviction": oi_trend,
+                "top_traders_ls_ratio": ls_ratio,
+                "ls_positioning": ls_desc
+            },
+            "interpretation": (
+                f"Market sentiment for {params.symbol} is currently {sentiment}. "
+                f"Funding is {funding_desc} and Open Interest is {oi_trend} over the last hour. "
+                f"Top traders are {ls_desc} with a ratio of {ls_ratio}."
+            )
+        }
+        return format_response(result, params.response_format, title=f"Sentiment Analysis {params.symbol}")
+    except Exception as e:
+        return handle_exchange_error(e)
+
+
+@mcp.tool(name="technical_analysis_summary", annotations={**READ_ANNOTATIONS, "title": "Technical Analysis Summary"})
+async def technical_analysis_summary(params: KlinesInput, ctx: Context) -> str:
+    """Compute basic indicators (RSI, MA) from recent OHLCV data.
+
+    Calculates:
+    - RSI (14)
+    - Simple Moving Averages (MA20, MA50)
+    - Price position relative to MAs
+    - Volume trend (last 5 vs previous 15)
+    """
+    try:
+        path = "/api/v3/klines" if params.market == Market.SPOT else "/fapi/v1/klines"
+        # Fetch slightly more than requested to calculate indicators
+        limit = max(params.limit, 100)
+        q: dict[str, Any] = {"symbol": params.symbol, "interval": params.interval, "limit": limit}
+        data = await _binance_get(ctx, params.market, path, q)
+        
+        if not data or len(data) < 20:
+            return "Error: Not enough data to calculate indicators (min 20 candles required)."
+
+        closes = [float(c[4]) for c in data]
+        volumes = [float(c[5]) for c in data]
+        current_price = closes[-1]
+
+        # 1. Simple Moving Averages
+        ma20 = sum(closes[-20:]) / 20
+        ma50 = sum(closes[-50:]) / 50 if len(closes) >= 50 else None
+        
+        ma_desc = f"Price is {'above' if current_price > ma20 else 'below'} MA20 ({round(ma20, 4)})"
+        if ma50:
+            ma_desc += f" and {'above' if current_price > ma50 else 'below'} MA50 ({round(ma50, 4)})"
+
+        # 2. RSI (14)
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        
+        avg_gain = sum(gains[-14:]) / 14
+        avg_loss = sum(losses[-14:]) / 14
+        
+        if avg_loss == 0:
+            rsi = 100
+        else:
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+        
+        rsi_desc = "Neutral"
+        if rsi > 70: rsi_desc = "Overbought"
+        elif rsi < 30: rsi_desc = "Oversold"
+
+        # 3. Volume Trend
+        vol_now = sum(volumes[-5:]) / 5
+        vol_prev = sum(volumes[-20:-5]) / 15 if len(volumes) >= 20 else vol_now
+        vol_ratio = vol_now / vol_prev if vol_prev > 0 else 1.0
+        vol_desc = "Normal"
+        if vol_ratio > 1.5: vol_desc = "High (Spiking)"
+        elif vol_ratio < 0.5: vol_desc = "Low (Drying up)"
+
+        result = {
+            "symbol": params.symbol,
+            "interval": params.interval,
+            "indicators": {
+                "current_price": current_price,
+                "rsi_14": round(rsi, 2),
+                "rsi_bias": rsi_desc,
+                "ma20": round(ma20, 4),
+                "ma50": round(ma50, 4) if ma50 else None,
+                "ma_bias": ma_desc,
+                "volume_ratio": round(vol_ratio, 2),
+                "volume_trend": vol_desc
+            },
+            "summary": (
+                f"On the {params.interval} timeframe, {params.symbol} is {rsi_desc} (RSI: {round(rsi, 1)}). "
+                f"{ma_desc}. Volume is {vol_desc}."
+            )
+        }
+        return format_response(result, params.response_format, title=f"Technical Summary {params.symbol} {params.interval}")
+    except Exception as e:
+        return handle_exchange_error(e)
+
+
 # endregion
 
 # region ---------- entrypoint ----------
