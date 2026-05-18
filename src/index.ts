@@ -166,6 +166,9 @@ const main = async (): Promise<void> => {
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
     eventStore.startRecording();
+    // M-16: detach the wildcard subscription so the EventBus doesn't hold a
+    // reference to a half-shutdown PgWriter during graceful exit.
+    lifecycle.register('event_store', () => eventStore.stop(), { timeoutMs: 500 });
   }
 
   actorSystem = new ActorSystem(cfg, defaultEventBus);

@@ -31,6 +31,8 @@ const DEFAULT_PERSIST_TYPES: ReadonlySet<string> = new Set([
 
 export class EventStore {
   private readonly persistTypes: ReadonlySet<string>;
+  /** M-16: handle to the wildcard subscription so stop() can detach. */
+  private subscription: { unsubscribe: () => void } | null = null;
 
   constructor(
     private readonly pgWriter: PgWriter,
@@ -42,7 +44,8 @@ export class EventStore {
 
   /** Subscribes to filtered event types and appends them to Postgres. */
   public startRecording(): void {
-    this.eventBus.subscribeAll((event) => {
+    if (this.subscription) return; // idempotent
+    this.subscription = this.eventBus.subscribeAll((event) => {
       if (!this.persistTypes.has(event.type)) return;
       this.pgWriter
         .appendEvent({
@@ -57,6 +60,18 @@ export class EventStore {
           console.error(`[EventStore] Failed to write event ${event.id}:`, err);
         });
     });
+  }
+
+  /**
+   * M-16: detach the wildcard subscription so the EventBus doesn't hold a
+   * reference to a half-shutdown PgWriter during graceful exit. Called by
+   * the lifecycle registration in src/index.ts.
+   */
+  public stop(): void {
+    if (this.subscription) {
+      this.subscription.unsubscribe();
+      this.subscription = null;
+    }
   }
 
   public async fetchEvents(

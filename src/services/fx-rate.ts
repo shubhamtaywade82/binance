@@ -29,6 +29,16 @@ export interface FxRateOptions {
   fetchImpl?: typeof fetch;
   /** Per-request timeout in ms. */
   requestTimeoutMs?: number;
+  /**
+   * M-17: how old a successful fetch is allowed to be before getInrPerUsdt()
+   * starts reporting `stale=true` again. Callers that convert PnL into INR
+   * MUST check the snapshot's `stale` flag and refuse to display / persist
+   * a converted value when stale. Default 10 min — generous enough to ride
+   * out a CoinDCX/Binance API blip but short enough that operator-facing
+   * dashboards never quote a stale conversion. Override via env to suit
+   * your tolerance (e.g. tighter on live).
+   */
+  maxAgeMs?: number;
 }
 
 const BINANCE_URL = 'https://api.binance.com/api/v3/ticker/price';
@@ -57,12 +67,28 @@ export class FxRateService {
   private stale = true;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly maxAgeMs: number;
   private startInflight: Promise<void> | null = null;
 
   constructor(private readonly opts: FxRateOptions) {
     this.rate = opts.fallbackInrPerUsdt;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.requestTimeoutMs ?? 5_000;
+    this.maxAgeMs = opts.maxAgeMs ?? 10 * 60_000;
+  }
+
+  /**
+   * M-17: returns true when the cached rate is older than maxAgeMs OR no
+   * successful fetch has happened yet (initial-fallback case). Callers that
+   * convert USDT → INR for operator-facing display or PnL persistence MUST
+   * check this flag and either refuse to convert or annotate the output as
+   * "stale FX". The previous getInrPerUsdt() silently returned the
+   * possibly-hours-old rate.
+   */
+  isRateStale(now: number = Date.now()): boolean {
+    if (this.opts.source === 'fixed') return false;
+    if (this.stale) return true;
+    return now - this.fetchedAt > this.maxAgeMs;
   }
 
   /**
@@ -101,7 +127,10 @@ export class FxRateService {
       rate: this.rate,
       source: this.opts.source,
       fetchedAt: this.fetchedAt,
-      stale: this.stale,
+      // M-17: `stale` now reflects BOTH "never successfully fetched" AND
+      // "fetched but older than maxAgeMs". Existing consumers that already
+      // honor this flag automatically pick up the ceiling.
+      stale: this.isRateStale(),
     };
   }
 
