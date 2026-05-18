@@ -35,6 +35,7 @@ import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
 import { reconcilePositionsAtStartup } from './core/execution/reconciliation';
 import { FreshnessWatchdog } from './core/execution/freshness-watchdog';
+import { FillMetadataStore } from './core/execution/fill-metadata-store';
 import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
@@ -202,7 +203,16 @@ const main = async (): Promise<void> => {
       freshnessWatchdog.start();
       lifecycle.register('freshness_watchdog', () => freshnessWatchdog.stop(), { timeoutMs: 500 });
 
-      new ExecutionBridge(cfg, defaultEventBus, adapter);
+      // C-9: fill-metadata store backs exit-manager re-arming after a crash.
+      // ExecutionBridge upserts on every successful fill; we replay the
+      // store below (after all exit managers are constructed) to publish
+      // synthetic `execution.order.filled` events so the trail / TP ladder /
+      // structure / time-stop managers register the positions they would
+      // have known about pre-crash.
+      const fillMetadataStore = new FillMetadataStore(
+        (cfg as any).FILL_METADATA_PATH || './data/fills.json',
+      );
+      new ExecutionBridge(cfg, defaultEventBus, adapter, fillMetadataStore);
       new PositionCloseBridge(defaultEventBus, adapter);
       if (execution.pgWriter) {
         new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
@@ -317,6 +327,56 @@ const main = async (): Promise<void> => {
           fundingExit: Boolean((cfg as any).FUNDING_EXIT_ENABLED),
         });
       }
+
+      // C-9: re-emit synthetic execution.order.filled events for every
+      // reconciled position so the trail / TP ladder / structure / time-stop
+      // managers register them. The fill-metadata store (persisted on every
+      // live fill) feeds the strategy-side metadata (atr, tp ladder, regime,
+      // initial SL/TP) so the re-armed exit logic matches the pre-crash
+      // strategy intent as closely as possible. Without this, exit managers
+      // start blank and only react to NEW fills — positions opened pre-crash
+      // would hold forever with no trailing or time-stop protection.
+      const reEmitTs = Date.now();
+      let rearmWithMetadata = 0;
+      for (const pos of reconciled.positions) {
+        const meta = fillMetadataStore.bySymbol(pos.symbol).find((m) => m.side === pos.side);
+        if (meta) rearmWithMetadata += 1;
+        defaultEventBus.publish({
+          id: `rearm-${pos.symbol}-${reEmitTs}`,
+          type: 'execution.order.filled',
+          ts: reEmitTs,
+          source: 'startup-rearm',
+          symbol: pos.symbol,
+          payload: {
+            orderId: meta?.orderId ?? `rearm-${pos.symbol}-${reEmitTs}`,
+            symbol: pos.symbol,
+            side: pos.side,
+            quantity: pos.quantity,
+            price: pos.entryPrice,
+            feeUsdt: 0,
+            slippageUsdt: 0,
+            latencyMs: 0,
+            stopLoss: meta?.stopLoss,
+            takeProfit: meta?.takeProfit,
+            strategyId: meta?.strategyId,
+            tpLadder: meta?.tpLadder,
+            maxHoldBars: meta?.maxHoldBars,
+            regime: meta?.regime,
+            modeId: meta?.modeId,
+            atrAtEntry: meta?.atrAtEntry,
+            openedAt: meta?.openedAt ?? reEmitTs,
+            reason: 'STARTUP_REARM',
+          },
+        });
+      }
+      if (reconciled.positions.length > 0) {
+        log.info('exit_managers_rearm', {
+          positions: reconciled.positions.length,
+          withMetadata: rearmWithMetadata,
+          withoutMetadata: reconciled.positions.length - rearmWithMetadata,
+        });
+      }
+
       log.info('event_bus_execution_wired', { adapter: adapter.name });
 
       // Push event-bus state to the dashboard WS so the chart + sidebar render

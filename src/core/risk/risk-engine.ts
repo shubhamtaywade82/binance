@@ -190,6 +190,11 @@ export class RiskEngine {
   private onFilled(payload: any): void {
     const symbol: string | undefined = payload.symbol;
     if (!symbol) return;
+    // C-9: STARTUP_REARM events are synthetic re-emissions used by exit
+    // managers to register pre-crash positions. RiskEngine state was already
+    // primed by `seedPositions` from the reconciliation pass earlier in boot;
+    // accumulating notional again here would double-count exposure.
+    if (payload?.reason === 'STARTUP_REARM') return;
     const qty = Number(payload.quantity) || 0;
     const price = Number(payload.price) || 0;
     if (qty <= 0 || price <= 0) return;

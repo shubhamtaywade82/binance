@@ -7,6 +7,7 @@ import {
 import { ExecutionAdapter, OrderRequest } from '../../execution/types';
 import { AppConfig } from '../../config';
 import { marketClock } from '../time/market-clock';
+import type { FillMetadataStore } from './fill-metadata-store';
 
 /**
  * ExecutionBridge — subscribes to `execution.order.accepted` (emitted by
@@ -26,8 +27,47 @@ export class ExecutionBridge {
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
     private readonly adapter: ExecutionAdapter,
+    /** C-9: persist fill metadata for cross-restart exit-manager re-arming. */
+    private readonly fillMetadataStore?: FillMetadataStore,
   ) {
     this.subscribe();
+    this.subscribeForMetadataUpsert();
+  }
+
+  /**
+   * C-9: capture every successful fill's metadata to disk so exit managers
+   * (trail / TP ladder / structure / time stop) can be re-armed on restart.
+   * The store survives kill -9; restart re-emits synthetic
+   * `execution.order.filled` events from these records.
+   */
+  private subscribeForMetadataUpsert(): void {
+    if (!this.fillMetadataStore) return;
+    this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => {
+      const p = e.payload;
+      const orderId = String(p?.orderId ?? '');
+      const symbol = (p?.symbol ?? e.symbol) as string | undefined;
+      if (!orderId || !symbol) return;
+      this.fillMetadataStore!.upsert({
+        orderId,
+        symbol,
+        side: (p?.side === 'SHORT' ? 'SHORT' : 'LONG'),
+        quantity: Number(p?.quantity) || 0,
+        price: Number(p?.price) || 0,
+        stopLoss: Number(p?.stopLoss) || undefined,
+        takeProfit: Number(p?.takeProfit) || undefined,
+        strategyId: p?.strategyId,
+        tpLadder: p?.tpLadder,
+        maxHoldBars: p?.maxHoldBars,
+        regime: p?.regime,
+        modeId: p?.modeId,
+        atrAtEntry: Number(p?.atrAtEntry) || undefined,
+        openedAt: Number(p?.openedAt) || Date.now(),
+      });
+    });
+    this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => {
+      const orderId = String(e.payload?.orderId ?? '');
+      if (orderId) this.fillMetadataStore!.remove(orderId);
+    });
   }
 
   private subscribe(): void {
