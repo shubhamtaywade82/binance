@@ -1,28 +1,24 @@
 import { parentPort, workerData } from 'worker_threads';
+import { runInSandbox } from './sandbox';
 
 /**
- * Isolated worker for running NanoPine scripts.
- * Context is limited to provided data.
+ * Worker entry point — delegates to `runInSandbox` (see sandbox.ts) for the
+ * actual isolation logic so the security-critical code is unit-testable
+ * without spinning up a Worker per test.
  */
 if (parentPort) {
-  const { source, candles, inputs } = workerData;
+  const { source, candles, inputs, timeoutMs } = workerData as {
+    source: string;
+    candles: unknown[];
+    inputs: Record<string, unknown>;
+    timeoutMs?: number;
+  };
 
   try {
-    // Basic sandboxing using a Function constructor with restricted scope
-    // In a real production system, we'd use 'vm' module or a more robust sandbox like 'isolated-vm'
-    const sandbox = {
-      candles,
-      inputs,
-      Math,
-      Date,
-      console: {
-        log: (...args: any[]) => parentPort?.postMessage({ type: 'log', data: args }),
-      },
-    };
-
-    const fn = new Function(...Object.keys(sandbox), source);
-    const result = fn(...Object.values(sandbox));
-
+    const result = runInSandbox(source, candles, inputs, {
+      timeoutMs,
+      onLog: (...args) => parentPort?.postMessage({ type: 'log', data: args }),
+    });
     parentPort.postMessage({ type: 'result', data: result });
   } catch (err) {
     parentPort.postMessage({ type: 'error', data: (err as Error).message });

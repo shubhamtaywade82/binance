@@ -1152,6 +1152,13 @@ export class HybridOrchestrator {
     if (!Number.isFinite(price)) return;
     const symU = symbol.toUpperCase();
     this.execution.adapter.onMark?.(symU, price);
+    // TODO_CLEANUP_LEGACY_EXECUTION: legacy PositionManager-driven onMark auto
+    // reversal/SL/TP. Under the event-bus path, TrailingStopManager,
+    // StructureExitManager, TimeStopManager, and TpLadderManager own these
+    // decisions (driven off market.* and execution.* events). Letting the
+    // legacy onMark fire concurrently re-introduces the REVERSAL death-spiral
+    // condition that was patched in commit d82da26 for the primary symbol.
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
     if (!this.positionManager.hasOpenPosition(symU)) return;
     const tier = tierFor(symU);
     const htfBias = tier
@@ -1297,8 +1304,13 @@ export class HybridOrchestrator {
       if (!binanceAdapter) return;
       const fillPrice = Number(o.ap) || Number(o.L) || this.lastMark || 0;
       if (fillPrice > 0) {
-        const result = binanceAdapter.notifyFilled(o.si, fillPrice);
-        if (result?.fullyFilled) {
+        // notifyFilled is now async (H-1): cancellation of TP/SL siblings is
+        // awaited so the close event is only published once the bracket is
+        // verifiably clean. Fire-and-forget here is intentional — the WS
+        // callback contract is synchronous; errors are logged inside the
+        // adapter, never bubble.
+        void binanceAdapter.notifyFilled(o.si, fillPrice).then((result) => {
+          if (!result?.fullyFilled) return;
           const sym = this.pairs.binanceSymbol.toUpperCase();
           clearPosition(this.redis, sym);
           publish(this.redis, CHANNELS.POSITIONS, {
@@ -1310,7 +1322,9 @@ export class HybridOrchestrator {
             ts: Date.now(),
           });
           void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason as CloseReason);
-        }
+        }).catch((err: Error) => {
+          this.log.warn('binance_notify_filled_failed', { strategyId: o.si, err: err.message });
+        });
       }
     }
   }
@@ -1487,6 +1501,16 @@ export class HybridOrchestrator {
   }
 
   private async evaluate(ltfBar: Candle): Promise<void> {
+    // TODO_CLEANUP_LEGACY_EXECUTION: when the event-bus path is active the
+    // SymbolActor + SignalToOrderBridge + RiskEngine chain owns strategy
+    // dispatch end-to-end. Running this legacy method in parallel would
+    // bypass RiskEngine / allocator / opposite-side guard, so we early-exit.
+    // The whole function (and its multi-asset sibling below, plus the legacy
+    // PositionManager / RiskManager wiring in the constructor) is slated for
+    // deletion once the event-bus migration is confirmed in production.
+    // Live mode boot-asserts EVENT_BUS_EXECUTION_ENABLED=true (see src/index.ts).
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
+
     const primary = this.pairs.binanceSymbol.toUpperCase();
     const existing = this.positionManager.getPosition(primary);
     
@@ -1654,6 +1678,11 @@ export class HybridOrchestrator {
    * - swing tier: lighter `evaluateSwingSignal` (HTF bias + displacement + zone).
    */
   private async evaluateForSymbol(symbol: string, tier: AssetTierConfig, ltfBar: Candle): Promise<void> {
+    // TODO_CLEANUP_LEGACY_EXECUTION: see evaluate(). Same gating logic — under
+    // the event-bus path, this method is dead weight; remove with the rest of
+    // the legacy strategy dispatch when the migration is finalised.
+    if (this.cfg.EVENT_BUS_EXECUTION_ENABLED) return;
+
     const symU = symbol.toUpperCase();
     if (this.positionManager.hasOpenPosition(symU)) return;
     if (this.tradingHaltedDrawdown || this.orderRatePauseActive) return;
@@ -1761,7 +1790,20 @@ export class HybridOrchestrator {
     const modelOutput = await this.mlInferenceClient.predict(features);
 
     if (!modelOutput) {
-      this.log.info('ml_inference_unavailable', { fallback: 'rule_based' });
+      // H-14: fail-CLOSED when ML is enabled in production mode (not shadow).
+      // The audit's concern: when the inference server is down, the gate
+      // silently degrades to no-op, so positions enter without the very
+      // filter the operator asked for. ML_SHADOW_MODE preserves the
+      // pre-fix soft-fail behaviour for safe parameter validation.
+      if (!this.cfg.ML_SHADOW_MODE) {
+        this.log.warn('ml_inference_unavailable_blocked', {
+          symbol,
+          smcSignal,
+          hint: 'ML_ENABLED=true with ML_SHADOW_MODE=false → fail-closed. Set ML_SHADOW_MODE=true to allow trading when the inference server is down.',
+        });
+        return 'blocked';
+      }
+      this.log.info('ml_inference_unavailable', { fallback: 'rule_based', shadow: true });
       return 'pass';
     }
 

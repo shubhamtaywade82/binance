@@ -25,6 +25,7 @@ import { ExecutionBridge } from './core/execution/execution-bridge';
 import { TrailingStopManager } from './core/execution/trailing-stop-manager';
 import { StructureExitManager } from './core/execution/structure-exit-manager';
 import { TimeStopManager } from './core/execution/time-stop-manager';
+import { SignalReversalExitManager } from './core/execution/signal-reversal-exit-manager';
 import { FundingExitManager } from './core/execution/funding-exit-manager';
 import { TpLadderManager } from './core/execution/tp-ladder-manager';
 import { PositionCloseBridge } from './core/execution/position-close-bridge';
@@ -33,13 +34,19 @@ import { LiveAccountPoller } from './core/execution/live-account-poller';
 import { CoinDcxUserDataWs } from './coindcx/user-data-ws';
 import { MarkPriceBridge } from './core/execution/mark-price-bridge';
 import { SignalAllocator } from './core/execution/signal-allocator';
+import { reconcilePositionsAtStartup } from './core/execution/reconciliation';
+import { FreshnessWatchdog } from './core/execution/freshness-watchdog';
+import { FillMetadataStore } from './core/execution/fill-metadata-store';
+import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
+import { SelfLearningRuntime } from './self-learning/runtime';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
 let dashboardBridge: DashboardBridge | null = null;
 let controlServer: ControlHttpServer | null = null;
+let selfLearning: SelfLearningRuntime | null = null;
 
 const main = async (): Promise<void> => {
   const cfg = loadConfig();
@@ -77,6 +84,47 @@ const main = async (): Promise<void> => {
     });
   }
 
+  // C-1 single-path interlock: live mode MUST go through the event-bus stack.
+  // The legacy HybridOrchestrator strategy/position-dispatch path still exists
+  // (see TODO_CLEANUP_LEGACY_EXECUTION markers in src/orchestrator.ts) but is
+  // gated off whenever EVENT_BUS_EXECUTION_ENABLED=true so the two paths never
+  // compete on a shared EventBus. Live without the event bus would mean orders
+  // bypass RiskEngine / SignalAllocator / cooldown / opposite-side guard.
+  if (cfg.EXECUTION_MODE === 'live' && !cfg.EVENT_BUS_EXECUTION_ENABLED) {
+    throw new Error(
+      'EVENT_BUS_EXECUTION_ENABLED must be true when EXECUTION_MODE=live. ' +
+      'The legacy HybridOrchestrator dispatch path bypasses the RiskEngine, ' +
+      'SignalAllocator, opposite-side guard, and cooldown. ' +
+      'Set EVENT_BUS_EXECUTION_ENABLED=true (or run paper mode for legacy-path development).',
+    );
+  }
+
+  // H-6: live mode requires explicit, non-zero values for the cardinal risk
+  // caps. Defaults of 0 / Infinity were originally intentional for paper
+  // development but make production runs unbounded: a stuck or runaway signal
+  // path can place an unlimited series of unbounded-size orders. Forcing
+  // operators to set these in env before going live makes the trade-off
+  // visible.
+  if (cfg.EXECUTION_MODE === 'live') {
+    const liveMisconfig: string[] = [];
+    if (!cfg.MAX_NOTIONAL_USDT || cfg.MAX_NOTIONAL_USDT <= 0) {
+      liveMisconfig.push('MAX_NOTIONAL_USDT must be > 0 (per-position notional cap)');
+    }
+    if (!cfg.MAX_OPEN_POSITIONS || cfg.MAX_OPEN_POSITIONS <= 0) {
+      liveMisconfig.push('MAX_OPEN_POSITIONS must be > 0');
+    }
+    if (!cfg.DAILY_DRAWDOWN_KILL_PCT || cfg.DAILY_DRAWDOWN_KILL_PCT <= 0) {
+      liveMisconfig.push('DAILY_DRAWDOWN_KILL_PCT must be > 0 (e.g. 0.05 = 5% daily drawdown halt)');
+    }
+    if (liveMisconfig.length > 0) {
+      throw new Error(
+        'Live trading requires explicit risk caps. Missing or zero:\n  - ' +
+        liveMisconfig.join('\n  - ') +
+        '\nSet each in your .env (or .env.secrets / .env.live).',
+      );
+    }
+  }
+
   const lifecycle = new Lifecycle({
     defaultTimeoutMs: cfg.SHUTDOWN_TIMEOUT_MS,
     forceExitMs: cfg.SHUTDOWN_FORCE_EXIT_MS,
@@ -99,12 +147,39 @@ const main = async (): Promise<void> => {
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
 
+  // M-13: lightweight freshness counters consumed by the /health probe. We
+  // track last observed timestamp per source so a container healthcheck can
+  // detect a stuck bot (no kline in N seconds) without coupling to the full
+  // FreshnessWatchdog API.
+  let healthLastKlineTs = 0;
+  let healthLastBookTickerTs = 0;
+  let healthLastFillTs = 0;
+  defaultEventBus.subscribe('market.kline.closed', () => { healthLastKlineTs = Date.now(); });
+  defaultEventBus.subscribe('market.bookticker', () => { healthLastBookTickerTs = Date.now(); });
+  defaultEventBus.subscribe('execution.order.filled', () => { healthLastFillTs = Date.now(); });
+
+  selfLearning = new SelfLearningRuntime({
+    enabled: cfg.SELF_LEARNING_ENABLED,
+    paperOnly: cfg.SELF_LEARNING_PAPER_ONLY,
+    executionMode: cfg.EXECUTION_MODE,
+    intervalMs: cfg.SELF_LEARNING_INTERVAL_MS,
+    ollamaUrl: cfg.SELF_LEARNING_OLLAMA_URL,
+    ollamaModel: cfg.SELF_LEARNING_OLLAMA_MODEL,
+  }, defaultEventBus, getRedisClient(cfg.REDIS_URL), log);
+  await selfLearning.start();
+  lifecycle.register('self_learning', () => selfLearning?.stop(), { timeoutMs: 500 });
+
   const telegram = new TelegramNotifier(cfg, defaultEventBus, log);
   telegram.start();
+  // H-16: clear the digest timer + drain pending sends on shutdown.
+  lifecycle.register('telegram_notifier', () => telegram.stop(), { timeoutMs: 500 });
 
   if (execution.pgWriter) {
     const eventStore = new EventStore(execution.pgWriter, defaultEventBus);
     eventStore.startRecording();
+    // M-16: detach the wildcard subscription so the EventBus doesn't hold a
+    // reference to a half-shutdown PgWriter during graceful exit.
+    lifecycle.register('event_store', () => eventStore.stop(), { timeoutMs: 500 });
   }
 
   actorSystem = new ActorSystem(cfg, defaultEventBus);
@@ -113,19 +188,39 @@ const main = async (): Promise<void> => {
     actorSystem.spawnSymbolActor(sym);
   }
 
-  // Restart safety: PaperWallet survives via wallet.json but RiskEngine
-  // exposure is in-memory only. Without seeding, a restart while in-position
-  // would let opposite-side signals bypass OPPOSITE_SIDE_OPEN_POSITION and
-  // the adapter would record REVERSAL trades.
-  if (execution.paperAdapter) {
-    const open = execution.paperAdapter.getOpenPositions();
-    if (open.length > 0) {
-      actorSystem.getRiskEngine().seedPositions(
-        open.map((p) => ({ symbol: p.symbol, side: p.side, quantity: p.quantity, entryPrice: p.entryPrice })),
-      );
-      log.info('risk_engine_seeded', { positions: open.length });
-    }
+  // Mandatory startup reconciliation — MUST run before any strategy / bridge
+  // wiring or the first kline close could place an order against unknown
+  // exchange exposure. On `EXECUTION_MODE=live` a transport failure THROWS:
+  // the bot refuses to start rather than trade against an unverified account.
+  // Paper mode reads the local PaperExecutionAdapter (wallet.json was already
+  // reloaded inside createExecutionRuntime), so this is a fast in-memory pass.
+  const reconciled = await reconcilePositionsAtStartup(
+    execution,
+    cfg,
+    allSymbols,
+    log,
+  );
+  if (reconciled.positions.length > 0) {
+    actorSystem.getRiskEngine().seedPositions(reconciled.positions);
+    log.info('risk_engine_seeded', {
+      positions: reconciled.positions.length,
+      source: reconciled.source,
+    });
+  } else {
+    log.info('risk_engine_seed_empty', { source: reconciled.source });
   }
+  defaultEventBus.publish({
+    id: `system-reconciled-${Date.now()}`,
+    type: 'system.reconciled',
+    ts: Date.now(),
+    source: 'startup',
+    payload: {
+      positionsSeeded: reconciled.positions.length,
+      source: reconciled.source,
+      symbols: reconciled.positions.map((p) => p.symbol),
+      errors: reconciled.errors,
+    },
+  });
 
   if (cfg.EVENT_BUS_EXECUTION_ENABLED) {
     const adapter = execution.paperAdapter ?? execution.cdcxAdapter ?? execution.adapter;
@@ -154,7 +249,26 @@ const main = async (): Promise<void> => {
           flushMs: (cfg as any).SIGNAL_ALLOCATOR_FLUSH_MS,
         });
       }
-      new ExecutionBridge(cfg, defaultEventBus, adapter);
+      // C-7: stale-feed risk-off. Watchdog publishes system.stale / .fresh
+      // per symbol; RiskEngine subscribes and rejects orders for stale feeds.
+      const freshnessWatchdog = new FreshnessWatchdog(defaultEventBus, {
+        staleAfterMs: Number((cfg as any).STALE_FEED_THRESHOLD_MS) || 30_000,
+        checkIntervalMs: Number((cfg as any).STALE_FEED_CHECK_INTERVAL_MS) || 5_000,
+        log,
+      });
+      freshnessWatchdog.start();
+      lifecycle.register('freshness_watchdog', () => freshnessWatchdog.stop(), { timeoutMs: 500 });
+
+      // C-9: fill-metadata store backs exit-manager re-arming after a crash.
+      // ExecutionBridge upserts on every successful fill; we replay the
+      // store below (after all exit managers are constructed) to publish
+      // synthetic `execution.order.filled` events so the trail / TP ladder /
+      // structure / time-stop managers register the positions they would
+      // have known about pre-crash.
+      const fillMetadataStore = new FillMetadataStore(
+        (cfg as any).FILL_METADATA_PATH || './data/fills.json',
+      );
+      new ExecutionBridge(cfg, defaultEventBus, adapter, fillMetadataStore);
       new PositionCloseBridge(defaultEventBus, adapter);
       if (execution.pgWriter) {
         new EventToPostgresBridge(cfg, defaultEventBus, execution.pgWriter);
@@ -178,10 +292,12 @@ const main = async (): Promise<void> => {
           pgWriter: execution.pgWriter,
           redisState: (execution as any).redisState,
           fxRate: staticFx,
-          // Require 3 consecutive empty polls (~15s at 5s cadence) before
-          // declaring a position closed via REST. WS user-data fires the
-          // authoritative close instantly.
-          missConfirms: 3,
+          // H-5: drop missConfirms from 3 to 1 — when the user-data WS is
+          // up it is the authoritative source for closes. The poller now
+          // only runs while WS is disconnected (see onConnectionChange);
+          // a single empty poll while disconnected is enough to publish a
+          // close. Previous 3×5s = up to 15s of stale exposure window.
+          missConfirms: 1,
         });
         poller.start();
         lifecycle.register('live_account_poller', () => poller.stop(), { timeoutMs: 1000 });
@@ -220,17 +336,26 @@ const main = async (): Promise<void> => {
           partialTpR: (cfg as any).PARTIAL_TP_ENABLED ? Number((cfg as any).PARTIAL_TP_R) : 0,
           partialTpPct: Number((cfg as any).PARTIAL_TP_FRACTION) || 0.5,
           smcExitEnabled: false, // handled by StructureExitManager below
+          watermarkActivationPct: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
+          dropFromPeakPct: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
         });
 
         if ((cfg as any).STRUCTURE_EXIT_ENABLED) {
           new StructureExitManager(defaultEventBus, {
             swingLookback: Number((cfg as any).STRUCTURE_SWING_LOOKBACK) || 5,
             bufferBars: Math.max(60, Number((cfg as any).STRUCTURE_SWING_LOOKBACK) * 12),
+            checkSignals: (cfg as any).STRUCTURE_EXIT_CHECK_SIGNALS ?? true,
           });
         }
         if ((cfg as any).TIME_STOP_ENABLED) {
           new TimeStopManager(defaultEventBus, {
             barsThreshold: Number((cfg as any).TIME_STOP_BARS) || 24,
+            thresholdPct: Number((cfg as any).TIME_STOP_THRESHOLD_PCT) || 0.5,
+          });
+        }
+        if ((cfg as any).SIGNAL_REVERSAL_EXIT_ENABLED) {
+          new SignalReversalExitManager(defaultEventBus, {
+            minConfidence: Number((cfg as any).MIN_SIGNAL_CONFIDENCE) || 0.5,
           });
         }
         if ((cfg as any).FUNDING_EXIT_ENABLED) {
@@ -265,10 +390,65 @@ const main = async (): Promise<void> => {
           atrMult: (cfg as any).SEYKOTA_ATR_MULT,
           intrabarTrail: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR),
           structureExit: Boolean((cfg as any).STRUCTURE_EXIT_ENABLED),
+          structureCheckSignals: (cfg as any).STRUCTURE_EXIT_CHECK_SIGNALS ?? true,
           timeStop: Boolean((cfg as any).TIME_STOP_ENABLED),
+          timeStopThreshold: Number((cfg as any).TIME_STOP_THRESHOLD_PCT) || 0.5,
+          reversalExit: Boolean((cfg as any).SIGNAL_REVERSAL_EXIT_ENABLED),
           fundingExit: Boolean((cfg as any).FUNDING_EXIT_ENABLED),
+          watermarkActivation: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
+          dropFromPeak: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
         });
       }
+
+      // C-9: re-emit synthetic execution.order.filled events for every
+      // reconciled position so the trail / TP ladder / structure / time-stop
+      // managers register them. The fill-metadata store (persisted on every
+      // live fill) feeds the strategy-side metadata (atr, tp ladder, regime,
+      // initial SL/TP) so the re-armed exit logic matches the pre-crash
+      // strategy intent as closely as possible. Without this, exit managers
+      // start blank and only react to NEW fills — positions opened pre-crash
+      // would hold forever with no trailing or time-stop protection.
+      const reEmitTs = Date.now();
+      let rearmWithMetadata = 0;
+      for (const pos of reconciled.positions) {
+        const meta = fillMetadataStore.bySymbol(pos.symbol).find((m) => m.side === pos.side);
+        if (meta) rearmWithMetadata += 1;
+        defaultEventBus.publish({
+          id: `rearm-${pos.symbol}-${reEmitTs}`,
+          type: 'execution.order.filled',
+          ts: reEmitTs,
+          source: 'startup-rearm',
+          symbol: pos.symbol,
+          payload: {
+            orderId: meta?.orderId ?? `rearm-${pos.symbol}-${reEmitTs}`,
+            symbol: pos.symbol,
+            side: pos.side,
+            quantity: pos.quantity,
+            price: pos.entryPrice,
+            feeUsdt: 0,
+            slippageUsdt: 0,
+            latencyMs: 0,
+            stopLoss: meta?.stopLoss,
+            takeProfit: meta?.takeProfit,
+            strategyId: meta?.strategyId,
+            tpLadder: meta?.tpLadder,
+            maxHoldBars: meta?.maxHoldBars,
+            regime: meta?.regime,
+            modeId: meta?.modeId,
+            atrAtEntry: meta?.atrAtEntry,
+            openedAt: meta?.openedAt ?? reEmitTs,
+            reason: 'STARTUP_REARM',
+          },
+        });
+      }
+      if (reconciled.positions.length > 0) {
+        log.info('exit_managers_rearm', {
+          positions: reconciled.positions.length,
+          withMetadata: rearmWithMetadata,
+          withoutMetadata: reconciled.positions.length - rearmWithMetadata,
+        });
+      }
+
       log.info('event_bus_execution_wired', { adapter: adapter.name });
 
       // Push event-bus state to the dashboard WS so the chart + sidebar render
@@ -381,15 +561,20 @@ const main = async (): Promise<void> => {
         // closes positions and downstream state goes stale → strategy
         // keeps emitting same-symbol orders → adapter records REVERSAL on
         // next flip → death spiral.
+        // Canonicalise: the CoinDCX live adapter populates trade.symbol with
+        // 'B-SOL_USDT'-style pairs; exit managers + RiskEngine key by canonical
+        // 'SOLUSDT'. Without this, the close event arrives under the wrong key
+        // and the trailing stop / risk exposure never releases.
+        const closeSymbol = normalizeSymbol((trade as any).symbol ?? (trade as any).pair);
         defaultEventBus.publish({
           id: `adapter-close-${trade.orderId}-${trade.closedAt}`,
           type: 'execution.position.closed',
           ts: trade.closedAt,
           source: `execution:${activeAdapter.name}:adapter-internal`,
-          symbol: (trade as any).symbol ?? (trade as any).pair,
+          symbol: closeSymbol,
           payload: {
             orderId: trade.orderId,
-            symbol: (trade as any).symbol ?? (trade as any).pair,
+            symbol: closeSymbol,
             side: trade.side,
             entryPrice: trade.entryPrice,
             exitPrice: trade.exitPrice,
@@ -450,7 +635,53 @@ const main = async (): Promise<void> => {
   const router = orch.getRouter();
   if (router && cfg.CONTROL_PORT > 0) {
     const redis = getRedisClient(cfg.REDIS_URL);
-    controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition());
+    const authToken = cfg.CONTROL_AUTH_TOKEN?.trim();
+    // Live mode REQUIRES a control token. Anything reachable on localhost
+    // (sidecars, kubectl port-forward, shared shells) can otherwise curl
+    // /runtime/kill or hot-swap the adapter mid-trade. Refuse to start.
+    if (cfg.EXECUTION_MODE === 'live' && !authToken) {
+      throw new Error(
+        'CONTROL_AUTH_TOKEN is required when EXECUTION_MODE=live and CONTROL_PORT>0. ' +
+        'Set it to a long random string (≥16 chars) in your environment, or disable the ' +
+        'control plane with CONTROL_PORT=0.',
+      );
+    }
+    controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition(), {
+      authToken,
+      log,
+      // M-13: health probe — green when at least one source has fired
+      // recently. Threshold tracks STALE_FEED_THRESHOLD_MS so /health is
+      // consistent with the RiskEngine's stale-feed veto.
+      healthProbe: () => {
+        const now = Date.now();
+        const threshold = Number((cfg as any).STALE_FEED_THRESHOLD_MS) || 30_000;
+        const klineAgeMs = healthLastKlineTs === 0 ? Infinity : now - healthLastKlineTs;
+        const bookTickerAgeMs = healthLastBookTickerTs === 0 ? Infinity : now - healthLastBookTickerTs;
+        const reasons: string[] = [];
+        // During the boot window (no kline events yet) we treat the bot as
+        // healthy for up to 5 minutes so containers don't restart-loop while
+        // the kline backfill is still flowing.
+        const bootWindowMs = 5 * 60_000;
+        const uptimeMs = now - (process.uptime() * 1000 ? Math.max(0, now - process.uptime() * 1000) : now);
+        const inBootWindow = uptimeMs < bootWindowMs;
+        if (!inBootWindow && klineAgeMs > threshold * 2 && bookTickerAgeMs > threshold * 2) {
+          reasons.push(`no_market_data: kline_age=${Number.isFinite(klineAgeMs) ? klineAgeMs : 'never'}ms bookticker_age=${Number.isFinite(bookTickerAgeMs) ? bookTickerAgeMs : 'never'}ms`);
+        }
+        return {
+          ok: reasons.length === 0,
+          reasons,
+          details: {
+            uptimeSec: Math.floor(process.uptime()),
+            klineAgeMs: Number.isFinite(klineAgeMs) ? klineAgeMs : null,
+            bookTickerAgeMs: Number.isFinite(bookTickerAgeMs) ? bookTickerAgeMs : null,
+            lastFillAgeMs: healthLastFillTs === 0 ? null : now - healthLastFillTs,
+            hasPosition: orch!.hasPosition(),
+            executionMode: cfg.EXECUTION_MODE,
+            adapter: router.currentConfig(),
+          },
+        };
+      },
+    });
 
     // Subscribe to Redis pub/sub config changes (separate connection required for sub mode).
     if (cfg.REDIS_URL) {

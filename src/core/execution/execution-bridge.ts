@@ -7,6 +7,7 @@ import {
 import { ExecutionAdapter, OrderRequest } from '../../execution/types';
 import { AppConfig } from '../../config';
 import { marketClock } from '../time/market-clock';
+import type { FillMetadataStore } from './fill-metadata-store';
 
 /**
  * ExecutionBridge — subscribes to `execution.order.accepted` (emitted by
@@ -26,8 +27,47 @@ export class ExecutionBridge {
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
     private readonly adapter: ExecutionAdapter,
+    /** C-9: persist fill metadata for cross-restart exit-manager re-arming. */
+    private readonly fillMetadataStore?: FillMetadataStore,
   ) {
     this.subscribe();
+    this.subscribeForMetadataUpsert();
+  }
+
+  /**
+   * C-9: capture every successful fill's metadata to disk so exit managers
+   * (trail / TP ladder / structure / time stop) can be re-armed on restart.
+   * The store survives kill -9; restart re-emits synthetic
+   * `execution.order.filled` events from these records.
+   */
+  private subscribeForMetadataUpsert(): void {
+    if (!this.fillMetadataStore) return;
+    this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => {
+      const p = e.payload;
+      const orderId = String(p?.orderId ?? '');
+      const symbol = (p?.symbol ?? e.symbol) as string | undefined;
+      if (!orderId || !symbol) return;
+      this.fillMetadataStore!.upsert({
+        orderId,
+        symbol,
+        side: (p?.side === 'SHORT' ? 'SHORT' : 'LONG'),
+        quantity: Number(p?.quantity) || 0,
+        price: Number(p?.price) || 0,
+        stopLoss: Number(p?.stopLoss) || undefined,
+        takeProfit: Number(p?.takeProfit) || undefined,
+        strategyId: p?.strategyId,
+        tpLadder: p?.tpLadder,
+        maxHoldBars: p?.maxHoldBars,
+        regime: p?.regime,
+        modeId: p?.modeId,
+        atrAtEntry: Number(p?.atrAtEntry) || undefined,
+        openedAt: Number(p?.openedAt) || Date.now(),
+      });
+    });
+    this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => {
+      const orderId = String(e.payload?.orderId ?? '');
+      if (orderId) this.fillMetadataStore!.remove(orderId);
+    });
   }
 
   private subscribe(): void {
@@ -39,17 +79,39 @@ export class ExecutionBridge {
   private async handleAccepted(event: DomainEvent<OrderValidatedPayload>): Promise<void> {
     const p = event.payload;
     if (!p.symbol || !p.price) return;
+    if (this.cfg.PLACE_ORDER === false) {
+      this.publishRejected(p, 'PLACE_ORDER_DISABLED', marketClock.now());
+      return;
+    }
+    // M-11: SHADOW_MODE is enforced at this layer as a defense-in-depth check.
+    // The legacy PositionManager already honors it, but the event-bus path
+    // reaches the adapter via this bridge — without this guard a SHADOW_MODE=true
+    // run would still place live orders through ExecutionBridge → adapter.
+    // Publish a synthetic rejected event with a recognisable reason so the
+    // dashboard and Telegram can surface the inhibition for operator audit.
+    if (this.cfg.SHADOW_MODE === true) {
+      this.publishRejected(p, 'SHADOW_MODE', marketClock.now());
+      return;
+    }
 
+    const leverageHint = Number((p as any).leverageHint);
+    const leverage = Number.isFinite(leverageHint) && leverageHint > 0
+      ? leverageHint
+      : Number(this.cfg.LEVERAGE) || 1;
     const req: OrderRequest = {
       pair: p.symbol,
       side: p.side,
       quantity: p.quantity,
-      leverage: Number(this.cfg.LEVERAGE) || 1,
+      leverage,
       marginCurrency: 'USDT',
       referencePrice: p.price,
       takeProfit: p.takeProfit,
       stopLoss: p.stopLoss,
       reason: (p as any).reason,
+      // Idempotency: bus event id is unique per validated order request. Adapters
+      // dedupe duplicate submissions (e.g. retries triggered by transient errors)
+      // by this key and derive the exchange-side client_order_id from it.
+      idempotencyKey: p.correlationId ?? event.id,
     };
 
     this.seq += 1;
@@ -97,6 +159,8 @@ export class ExecutionBridge {
             latencyMs: result.fill.latencyMs,
             liqPrice: this.lookupLiqPrice(result.orderId),
             leverage: req.leverage,
+            stopLoss: p.stopLoss,
+            takeProfit: p.takeProfit,
             strategyId: p.strategyId,
             correlationId: p.correlationId,
             reason: (p as any).reason,
@@ -107,6 +171,8 @@ export class ExecutionBridge {
             regime: (p as any).regime,
             modeId: (p as any).modeId,
             maxHoldBars: (p as any).maxHoldBars,
+            atrAtEntry: (p as any).atrAtEntry,
+            openedAt: result.fill.timestamp,
           },
         });
       } else if (!result.ok) {

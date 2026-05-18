@@ -207,7 +207,39 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     };
 
     const closeSide = req.side === 'LONG' ? 'SELL' : 'BUY';
-    await this.attachAlgoTpSl(trade, closeSide, fillPrice, req.takeProfit, req.stopLoss, qty);
+    const slPlaced = await this.attachAlgoTpSl(trade, closeSide, fillPrice, req.takeProfit, req.stopLoss, qty);
+
+    // M-20: SL is mandatory. If it failed to land we have a filled position
+    // with TPs but unbounded downside. Cancel any TPs that did make it onto
+    // the exchange, then market-close the entry. This restores the
+    // pre-entry state from the bot's perspective and surfaces the failure
+    // to the caller via ok=false.
+    if (!slPlaced) {
+      this.cleanAlgoIndex(trade);
+      void Promise.allSettled([
+        cancelAllAlgoOrders(this.opts.client, sym),
+        cancelAllOrders(this.opts.client, sym),
+      ]);
+      try {
+        await placeOrder(this.opts.client, {
+          symbol: sym,
+          side: closeSide,
+          type: 'MARKET',
+          quantity: qty,
+          reduceOnly: true,
+          newOrderRespType: 'RESULT',
+          positionSide: this.positionSideFor(req.side),
+        });
+      } catch (e) {
+        this.log('binance_emergency_unwind_failed', {
+          sym,
+          internalId,
+          err: (e as Error).message,
+          hint: 'Position is open on exchange with NO SL. Operator intervention required.',
+        });
+      }
+      return this.failResult(req.referencePrice, qty, startedAt, 'sl_placement_failed_entry_unwound');
+    }
 
     this.trades.set(internalId, trade);
     this.log('binance_order_placed', {
@@ -411,10 +443,19 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
   /**
    * Called by the orchestrator when a TP or SL algo order is FILLED by the exchange.
-   * Cancels sibling orders and removes internal state without sending a new market order.
-   * Returns the ClosedPosition for the position manager to log, or null if unknown.
+   * Awaits the cancellation of sibling algo / regular orders before resolving so
+   * downstream consumers can assume the bracket is fully cleaned. Returns the
+   * ClosedPosition for the position manager to log, or null when the strategyId
+   * is unknown / already handled.
+   *
+   * H-1 guarantees:
+   *   • If TP2 and SL fire near-simultaneously on the exchange, the second
+   *     notifyFilled() observes `closingIds.has(internalId)` and returns null
+   *     instead of double-processing.
+   *   • Cancellation of siblings is awaited; the returned Promise resolves
+   *     only after Binance has acknowledged the cancel calls.
    */
-  notifyFilled(strategyId: number, fillPrice: number): { closed: ClosedPosition; internalId: string; fullyFilled: boolean } | null {
+  async notifyFilled(strategyId: number, fillPrice: number): Promise<{ closed: ClosedPosition; internalId: string; fullyFilled: boolean } | null> {
     const internalId = this.algoIdToInternal.get(strategyId);
     if (!internalId) return null;
     const trade = this.trades.get(internalId);
@@ -426,6 +467,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
     if (isTp1) {
       // Partial close — 60% qty filled. Update remaining, leave position open.
+      // SL stays armed (closePosition=true so it scales to remaining qty).
       const tp1Qty = floorToStep(trade.quantity * 0.6, trade.stepSize);
       trade.remainingQty = floorToStep(trade.quantity - tp1Qty, trade.stepSize);
       trade.tp1StrategyId = null;
@@ -435,13 +477,29 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     }
 
     if (isTp2 || isSl) {
-      // Full close — remove trade and cancel siblings.
+      // H-1: serialize against a concurrent sibling fill. If a TP2/SL fill is
+      // already in flight for this internalId, the second call returns null
+      // rather than racing the cancel-all dispatch.
+      if (this.closingIds.has(internalId)) {
+        this.log('binance_exchange_close_already_in_progress', { id: internalId, strategyId });
+        return null;
+      }
+      this.closingIds.add(internalId);
+      // Remove the trade up-front so a concurrent unrelated handler can't
+      // mutate it while cancellation is in flight.
       this.trades.delete(internalId);
       this.cleanAlgoIndex(trade);
-      void Promise.allSettled([
-        cancelAllAlgoOrders(this.opts.client, trade.symbol),
-        cancelAllOrders(this.opts.client, trade.symbol),
-      ]);
+      try {
+        // Await cancellation so the caller can rely on a clean bracket state
+        // by the time the close event is published. Errors are tolerated
+        // (the position is already closed on the exchange).
+        await Promise.allSettled([
+          cancelAllAlgoOrders(this.opts.client, trade.symbol),
+          cancelAllOrders(this.opts.client, trade.symbol),
+        ]);
+      } finally {
+        this.closingIds.delete(internalId);
+      }
       const reason: CloseReason = isSl ? 'SL' : 'TP';
       this.log('binance_exchange_close', { id: internalId, strategyId, reason, fillPrice });
       return { closed: this.buildClosedPosition(trade, fillPrice, reason), internalId, fullyFilled: true };
@@ -625,6 +683,18 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
   /**
    * Place TP1 (partial, 60% at 0.9%), TP2 (full close at 1.5%), SL (full close).
    * All go to the Algo Service (POST /fapi/v1/algoOrder) per Dec 2025 migration.
+   *
+   * M-20 (bracket atomicity): SL is the only mandatory leg. If SL placement
+   * fails (network error, exchange rejection, insufficient margin to reserve
+   * the stop), the method MUST signal failure to the caller by returning
+   * false. The caller is responsible for rolling back the just-filled entry
+   * (cancel any TPs that did land, then market-close the position). A trade
+   * with TPs but no SL has unbounded downside — exactly the failure mode the
+   * audit's H-1 (concurrent fills) AND this fix's H-2 (silent SL absence)
+   * are guarding against.
+   *
+   * @returns true when SL is placed (TP1/TP2 may have failed; that's
+   * recoverable). false when SL is missing — caller must close the entry.
    */
   private async attachAlgoTpSl(
     trade: OpenLiveTrade,
@@ -633,7 +703,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     tpPrice: number | undefined,
     slPrice: number | undefined,
     qty: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sym = trade.symbol;
     const { stepSize, tickSize } = trade;
 
@@ -683,6 +753,8 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     }
 
     // SL: trailing stop if configured, otherwise fixed stop-market.
+    // This leg is MANDATORY — failure here returns false so the caller
+    // unwinds the just-filled entry.
     const trailRate = this.opts.trailingStopCallbackRate ?? 0;
     try {
       if (trailRate > 0) {
@@ -713,8 +785,10 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
         trade.slStrategyId = r.strategyId;
         this.algoIdToInternal.set(r.strategyId, trade.internalId);
       }
+      return true;
     } catch (e) {
-      this.log('binance_sl_warn', { sym, err: (e as Error).message });
+      this.log('binance_sl_failed_unwinding_entry', { sym, err: (e as Error).message });
+      return false;
     }
   }
 

@@ -1,5 +1,6 @@
-import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import type { CoinDcxFuturesClient } from '../coindcx/futures-client';
+import { normalizeSymbol } from '../mapping/symbol-normalize';
 import type {
   CloseReason,
   ClosedPosition,
@@ -16,6 +17,14 @@ export interface CoinDcxAdapterOptions {
   fundingFeeEst: number;
   /** If true, skip leverage update call (already set). */
   skipLeverageUpdate?: boolean;
+  /**
+   * How long an idempotency cache entry is honored. A duplicate `placeOrder`
+   * with the same `idempotencyKey` (or derived bucket key) within this window
+   * returns the cached result without resubmitting. Default 5 min.
+   */
+  idempotencyTtlMs?: number;
+  /** Override for tests. */
+  now?: () => number;
 }
 
 interface OpenLiveOrder {
@@ -29,22 +38,129 @@ interface OpenLiveOrder {
   entryFeeUsdt: number;
 }
 
+interface IdempotencyEntry {
+  clientOrderId: string;
+  status: 'pending' | 'completed' | 'failed';
+  result?: OrderResult;
+  expiresAt: number;
+}
+
+const DEFAULT_IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Deterministic `client_order_id` derived from an explicit idempotency key
+ * (preferred) or from the request shape + a short time bucket. The bucket is
+ * intentionally short (5s) so legitimate distinct orders (e.g. pyramids) more
+ * than 5s apart get distinct ids; rapid retries within 5s collapse to one.
+ */
+export const deriveClientOrderId = (req: OrderRequest, now: number): string => {
+  const seed = req.idempotencyKey
+    ? `key|${req.idempotencyKey}`
+    : `req|${req.pair}|${req.side}|${req.quantity.toFixed(8)}|${req.referencePrice.toFixed(8)}|${Math.floor(now / 5_000)}`;
+  return 'bot_' + createHash('sha256').update(seed).digest('hex').slice(0, 28);
+};
+
 export class CoinDcxExecutionAdapter implements ExecutionAdapter {
   readonly name = 'live' as const;
   private orders = new Map<string, OpenLiveOrder>();
   private lastMarkBySymbol = new Map<string, number>();
+  private idempotencyCache = new Map<string, IdempotencyEntry>();
+  private readonly idempotencyTtlMs: number;
+  private readonly nowFn: () => number;
 
-  constructor(private readonly opts: CoinDcxAdapterOptions) {}
+  constructor(private readonly opts: CoinDcxAdapterOptions) {
+    this.idempotencyTtlMs = opts.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
+    this.nowFn = opts.now ?? (() => Date.now());
+  }
 
   /** Live mark price hook — called by MarkPriceBridge for every market.mark event. */
   onMark(symbol: string, markPrice: number): void {
     if (!Number.isFinite(markPrice) || markPrice <= 0) return;
-    this.lastMarkBySymbol.set(symbol.toUpperCase(), markPrice);
+    this.lastMarkBySymbol.set(normalizeSymbol(symbol), markPrice);
   }
 
   /** Quote mid for a symbol — fallback when REST snapshot lacks a mark price. */
   public latestMark(symbol: string): number | undefined {
-    return this.lastMarkBySymbol.get(symbol.toUpperCase());
+    return this.lastMarkBySymbol.get(normalizeSymbol(symbol));
+  }
+
+  private pruneIdempotencyCache(now: number): void {
+    for (const [key, entry] of this.idempotencyCache.entries()) {
+      if (entry.expiresAt < now) this.idempotencyCache.delete(key);
+    }
+  }
+
+  private emptyFill(req: OrderRequest, now: number): Fill {
+    return {
+      price: req.referencePrice,
+      quantity: req.quantity,
+      feeUsdt: 0,
+      slippageUsdt: 0,
+      latencyMs: 0,
+      timestamp: now,
+    };
+  }
+
+  /**
+   * After a submit error, query CoinDCX positions to determine whether the order
+   * actually landed despite the failed-looking response. The most common failure
+   * mode is a TCP timeout *after* the request was accepted server-side — without
+   * this check the caller would record a failed entry while the exchange holds an
+   * unmanaged open position.
+   */
+  private async tryReconcileAfterError(
+    req: OrderRequest,
+    clientOrderId: string,
+    originalError: string,
+  ): Promise<OrderResult> {
+    try {
+      const data = (await this.opts.client.getFuturesPositionByPair(req.pair)) as
+        | Array<Record<string, unknown>>
+        | Record<string, unknown>
+        | null;
+      const arr = Array.isArray(data) ? data : data ? [data] : [];
+      const expectedSide = req.side === 'LONG' ? 'buy' : 'sell';
+      const tolerance = Math.max(req.quantity * 0.01, 1e-9);
+      const match = arr.find((p) => {
+        const apiSide = String((p as Record<string, unknown>).side ?? '').toLowerCase();
+        const apiQtyRaw = (p as Record<string, unknown>).active_pos ?? (p as Record<string, unknown>).quantity ?? 0;
+        const apiQty = Number(apiQtyRaw);
+        if (!Number.isFinite(apiQty) || apiQty <= 0) return false;
+        return apiSide === expectedSide && Math.abs(apiQty - req.quantity) <= tolerance;
+      });
+      if (match) {
+        const entryPrice = Number((match as Record<string, unknown>).avg_price) || req.referencePrice;
+        const now = this.nowFn();
+        const entryFee = entryPrice * req.quantity * this.opts.takerFee;
+        const fill: Fill = {
+          price: entryPrice,
+          quantity: req.quantity,
+          feeUsdt: entryFee,
+          slippageUsdt: 0,
+          latencyMs: 0,
+          timestamp: now,
+        };
+        this.orders.set(clientOrderId, {
+          orderId: clientOrderId,
+          side: req.side,
+          pair: req.pair,
+          leverage: req.leverage,
+          entryPrice,
+          quantity: req.quantity,
+          openedAt: now,
+          entryFeeUsdt: entryFee,
+        });
+        return { ok: true, orderId: clientOrderId, fill };
+      }
+    } catch {
+      // best-effort; fall through to failure
+    }
+    return {
+      ok: false,
+      orderId: clientOrderId,
+      fill: this.emptyFill(req, this.nowFn()),
+      error: `submit_failed:${originalError}`,
+    };
   }
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
@@ -58,18 +174,34 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
         return {
           ok: false,
           orderId: id,
-          fill: {
-            price: req.referencePrice,
-            quantity: req.quantity,
-            feeUsdt: 0,
-            slippageUsdt: 0,
-            latencyMs: 0,
-            timestamp: Date.now(),
-          },
+          fill: this.emptyFill(req, this.nowFn()),
           error: 'opposite_side_open_position_no_internal_reversal',
         };
       }
     }
+
+    // Idempotency: short-circuit duplicate submissions inside the TTL window.
+    const now0 = this.nowFn();
+    this.pruneIdempotencyCache(now0);
+    const clientOrderId = deriveClientOrderId(req, now0);
+    const cached = this.idempotencyCache.get(clientOrderId);
+    if (cached) {
+      if (cached.status === 'completed' && cached.result) return cached.result;
+      if (cached.status === 'pending') {
+        return {
+          ok: false,
+          orderId: clientOrderId,
+          fill: this.emptyFill(req, now0),
+          error: 'idempotency_pending_duplicate',
+        };
+      }
+      if (cached.status === 'failed' && cached.result) return cached.result;
+    }
+    this.idempotencyCache.set(clientOrderId, {
+      clientOrderId,
+      status: 'pending',
+      expiresAt: now0 + this.idempotencyTtlMs,
+    });
 
     if (!this.opts.skipLeverageUpdate) {
       try {
@@ -78,9 +210,10 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
         // best-effort: continue to order
       }
     }
-    const startedAt = Date.now();
+    const startedAt = this.nowFn();
     try {
       await this.opts.client.createFuturesOrder({
+        client_order_id: clientOrderId,
         pair: req.pair,
         side: req.side === 'LONG' ? 'buy' : 'sell',
         order_type: 'market',
@@ -91,24 +224,21 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
         margin_currency_short_name: req.marginCurrency || this.opts.marginCurrency,
       });
     } catch (e) {
-      return {
-        ok: false,
-        orderId: randomUUID(),
-        fill: {
-          price: req.referencePrice,
-          quantity: req.quantity,
-          feeUsdt: 0,
-          slippageUsdt: 0,
-          latencyMs: Date.now() - startedAt,
-          timestamp: Date.now(),
-        },
-        error: (e as Error).message,
-      };
+      const originalError = (e as Error).message;
+      const reconciled = await this.tryReconcileAfterError(req, clientOrderId, originalError);
+      this.idempotencyCache.set(clientOrderId, {
+        clientOrderId,
+        status: reconciled.ok ? 'completed' : 'failed',
+        result: reconciled,
+        expiresAt: this.nowFn() + this.idempotencyTtlMs,
+      });
+      return reconciled;
     }
 
     if (req.takeProfit !== undefined && req.stopLoss !== undefined) {
       try {
         await this.opts.client.createFuturesTpSlOrders({
+          client_order_id: `${clientOrderId}_tpsl`,
           pair: req.pair,
           side: req.side === 'LONG' ? 'sell' : 'buy',
           total_quantity: req.quantity,
@@ -121,16 +251,17 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       }
     }
 
-    const orderId = randomUUID();
+    const orderId = clientOrderId;
     const entryNotional = req.referencePrice * req.quantity;
     const entryFee = entryNotional * this.opts.takerFee;
+    const filledAt = this.nowFn();
     const fill: Fill = {
       price: req.referencePrice,
       quantity: req.quantity,
       feeUsdt: entryFee,
       slippageUsdt: 0,
-      latencyMs: Date.now() - startedAt,
-      timestamp: Date.now(),
+      latencyMs: filledAt - startedAt,
+      timestamp: filledAt,
     };
     this.orders.set(orderId, {
       orderId,
@@ -139,10 +270,17 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       leverage: req.leverage,
       entryPrice: req.referencePrice,
       quantity: req.quantity,
-      openedAt: Date.now(),
+      openedAt: filledAt,
       entryFeeUsdt: entryFee,
     });
-    return { ok: true, orderId, fill };
+    const result: OrderResult = { ok: true, orderId, fill };
+    this.idempotencyCache.set(clientOrderId, {
+      clientOrderId,
+      status: 'completed',
+      result,
+      expiresAt: filledAt + this.idempotencyTtlMs,
+    });
+    return result;
   }
 
   private onTradeCloseCb?: (trade: ClosedPosition) => void;
@@ -180,7 +318,7 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     }
     if (exitPrice === open.entryPrice) {
       // REST didn't give us a fresh price — fall back to last live mark.
-      const mark = this.latestMark(open.pair) ?? this.latestMark(open.pair.replace(/^B-/, '').replace('_', ''));
+      const mark = this.latestMark(normalizeSymbol(open.pair));
       if (mark && mark > 0) exitPrice = mark;
     }
 
@@ -194,7 +332,9 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     const net = gross - fees - funding;
     const closed: ClosedPosition = {
       orderId,
-      symbol: open.pair,
+      // Canonical symbol on the event bus (e.g. SOLUSDT, not B-SOL_USDT) so
+      // exit managers and RiskEngine match the same key everywhere.
+      symbol: normalizeSymbol(open.pair),
       side: open.side,
       leverage: open.leverage,
       entryPrice: open.entryPrice,
@@ -288,7 +428,9 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
       const data = (await this.opts.client.getFuturesPositions()) as any[];
       return (data || []).map((p) => ({
         orderId: p.position_id,
-        symbol: p.pair,
+        // Canonicalise so seedPositions / reconciliation feeds the RiskEngine
+        // the same symbol the event bus uses.
+        symbol: normalizeSymbol(p.pair),
         side: p.side === 'buy' ? 'LONG' : 'SHORT',
         entryPrice: p.avg_price,
         quantity: p.active_pos,
@@ -308,4 +450,3 @@ export class CoinDcxExecutionAdapter implements ExecutionAdapter {
     this.onTradeCloseCb = cb;
   }
 }
-

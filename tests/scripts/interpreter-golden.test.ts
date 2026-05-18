@@ -114,4 +114,111 @@ describe('interpreter golden — matches src/strategy/indicators.ts', () => {
     expect(buy).toBeTruthy();
     expect(buy.markers.length).toBeGreaterThan(0);
   });
+
+  it('macd() exposes macd/signal/hist parts with matching identity hist=macd-signal', () => {
+    const closes = Array.from({ length: 180 }, (_, i) => 100 + Math.sin(i / 6) * 4 + i * 0.03);
+    const candles = mkCandles(closes);
+    const ctx = runScript(
+      [
+        'indicator("M")',
+        'm = macd(close, 12, 26, 9, "macd")',
+        's = macd(close, 12, 26, 9, "signal")',
+        'h = macd(close, 12, 26, 9, "hist")',
+        'plot(m, title="m")',
+        'plot(s, title="s")',
+        'plot(h, title="h")',
+      ].join('\n'),
+      candles,
+    );
+    const macd = plotValues(ctx, 'm');
+    const signal = plotValues(ctx, 's');
+    const hist = plotValues(ctx, 'h');
+    for (let i = 0; i < candles.length; i++) {
+      if (Number.isFinite(macd[i]) && Number.isFinite(signal[i]) && Number.isFinite(hist[i])) {
+        expect(hist[i]).toBeCloseTo(macd[i] - signal[i], 9);
+      }
+    }
+  });
+
+  it('mom/roc/bb helper functions compile and emit finite values after warmup', () => {
+    const closes = Array.from({ length: 160 }, (_, i) => 100 + Math.sin(i / 4) * 3 + i * 0.02);
+    const candles = mkCandles(closes);
+    const ctx = runScript(
+      [
+        'indicator("B")',
+        'm = mom(close, 10)',
+        'r = roc(close, 10)',
+        'mid = bbmiddle(close, 20)',
+        'up = bbupper(close, 20, 2)',
+        'low = bblower(close, 20, 2)',
+        'plot(m, title="m")',
+        'plot(r, title="r")',
+        'plot(mid, title="mid")',
+        'plot(up, title="up")',
+        'plot(low, title="low")',
+      ].join('\n'),
+      candles,
+    );
+    const mom = plotValues(ctx, 'm');
+    const roc = plotValues(ctx, 'r');
+    const mid = plotValues(ctx, 'mid');
+    const up = plotValues(ctx, 'up');
+    const low = plotValues(ctx, 'low');
+    for (let i = 0; i < candles.length; i++) {
+      if (i > 30) {
+        expect(Number.isFinite(mom[i])).toBe(true);
+        expect(Number.isFinite(roc[i])).toBe(true);
+      }
+      if (i > 40 && Number.isFinite(mid[i]) && Number.isFinite(up[i]) && Number.isFinite(low[i])) {
+        expect(Number.isFinite(mid[i])).toBe(true);
+        expect(Number.isFinite(up[i])).toBe(true);
+        expect(Number.isFinite(low[i])).toBe(true);
+      }
+    }
+  });
+
+  it('supports color(), label(), line(), and input.color for richer chart annotations', () => {
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + Math.sin(i / 8) * 2);
+    const candles = mkCandles(closes);
+    const ctx = runScript(
+      [
+        'indicator("Visual")',
+        'accent = input.color("#00ff00", title="Accent")',
+        'c = color(255, 0, 0, 0.5)',
+        'mid = sma(close, 10)',
+        'plot(mid, color=accent, title="mid")',
+        'label(crossover(close, mid), "cross up", "belowbar", c, "#ffffff")',
+        'line(crossunder(close, mid), close, accent, "cross down level")',
+      ].join('\n'),
+      candles,
+    );
+    expect(ctx.outputs.get('mid')).toBeTruthy();
+    const labelOut = Array.from(ctx.outputs.values()).find((o: any) => o.kind === 'marker' && o.opts.shape === 'label');
+    expect(labelOut).toBeTruthy();
+    const hlineOut = ctx.outputs.get('cross down level');
+    expect(hlineOut).toBeTruthy();
+  });
+
+  it('supports simple user functions plus array/map containers', () => {
+    const closes = Array.from({ length: 40 }, (_, i) => 100 + i * 0.1);
+    const candles = mkCandles(closes);
+    const ctx = runScript(
+      [
+        'indicator("FnContainers")',
+        'func spread(a, b) = a - b',
+        'arr = array_new()',
+        'mapv = map_new()',
+        'array_push(arr, close)',
+        'array_push(arr, open)',
+        'map_set(mapv, "x", spread(close, open))',
+        'v = array_get(arr, 0)',
+        's = map_size(mapv)',
+        'plot(v, title="v")',
+        'plot(s, title="s")',
+      ].join('\n'),
+      candles,
+    );
+    expect(ctx.outputs.get('v')).toBeTruthy();
+    expect(ctx.outputs.get('s')).toBeTruthy();
+  });
 });

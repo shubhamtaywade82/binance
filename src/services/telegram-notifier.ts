@@ -85,25 +85,32 @@ export class TelegramNotifier {
       return;
     }
 
+    // C-4: every Telegram dispatch is an HTTPS call. Use subscribeAsync so a
+    // slow Telegram API never back-pressures kline ingestion or order
+    // routing. Per-subscriber queue absorbs short stalls; repeated failures
+    // dead-letter the message so a single malformed payload doesn't lock
+    // the channel.
+    const opts = { name: 'telegram-notifier', queueWarnThreshold: 50, maxConsecutiveErrors: 3 };
+
     // Trade lifecycle
-    this.eventBus.subscribe<any>('execution.order.filled', (e) => this.onOrderFilled(e));
-    this.eventBus.subscribe<any>('execution.order.rejected', (e) => this.onOrderRejected(e));
-    this.eventBus.subscribe<any>('execution.position.closed', (e) => this.onPositionClosed(e));
-    this.eventBus.subscribe<any>('execution.order.submitted', (e) => this.onOrderSubmitted(e));
+    this.eventBus.subscribeAsync<any>('execution.order.filled', (e) => this.onOrderFilled(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.order.rejected', (e) => this.onOrderRejected(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.position.closed', (e) => this.onPositionClosed(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.order.submitted', (e) => this.onOrderSubmitted(e), opts);
 
     // Strategy
-    this.eventBus.subscribe<any>('strategy.signal', (e) => this.onStrategySignal(e));
-    this.eventBus.subscribe<any>('trail.update', (e) => this.onTrailUpdate(e));
+    this.eventBus.subscribeAsync<any>('strategy.signal', (e) => this.onStrategySignal(e), opts);
+    this.eventBus.subscribeAsync<any>('trail.update', (e) => this.onTrailUpdate(e), opts);
 
     // Account
-    this.eventBus.subscribe<any>('wallet.update', (e) => this.onWalletUpdate(e));
+    this.eventBus.subscribeAsync<any>('wallet.update', (e) => this.onWalletUpdate(e), opts);
 
     // AI
-    this.eventBus.subscribe<any>('ai.market.brief', (e) => this.onAiBrief(e));
+    this.eventBus.subscribeAsync<any>('ai.market.brief', (e) => this.onAiBrief(e), opts);
 
     // System / risk
-    this.eventBus.subscribe<any>('system.killswitch', (e) => this.onKillSwitch(e));
-    this.eventBus.subscribe<any>('risk.drawdown', (e) => this.onDrawdown(e));
+    this.eventBus.subscribeAsync<any>('system.killswitch', (e) => this.onKillSwitch(e), opts);
+    this.eventBus.subscribeAsync<any>('risk.drawdown', (e) => this.onDrawdown(e), opts);
 
     // Periodic digest
     if (this.cfg.digestIntervalMin > 0) {
@@ -296,12 +303,17 @@ export class TelegramNotifier {
     if (!this.cfg.token || !this.cfg.chatId) return;
     try {
       const url = `https://api.telegram.org/bot${this.cfg.token}/sendMessage`;
+      // H-13: aggressive timeout. Even though Telegram subscriptions are now
+      // subscribeAsync (C-4) and don't block the publisher, an indefinite
+      // axios wait still bloats the per-subscriber queue and delays alerts
+      // that should fire within seconds of the trigger event. 3s matches the
+      // typical Telegram API p99.
       await axios.post(url, {
         chat_id: this.cfg.chatId,
         text,
         parse_mode: this.cfg.parseMode,
         disable_web_page_preview: true,
-      }, { timeout: 5000 });
+      }, { timeout: 3000 });
     } catch (err: any) {
       this.log.warn('telegram_notifier_send_failed', { err: err?.message });
     }

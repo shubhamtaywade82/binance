@@ -7,20 +7,26 @@ interface TrackedPosition {
   symbol: string;
   side: 'LONG' | 'SHORT';
   entry: number;
+  initialStop?: number;
   barsElapsed: number;
 }
 
 export interface TimeStopOptions {
   /** Force close after this many execution-TF bars if PnL still ≤ 0. */
   barsThreshold: number;
+  /** Percentage of initial SL distance to require for exit (e.g. 0.5 = 50% drawdown). */
+  thresholdPct: number;
 }
 
 /**
- * TimeStopManager — closes positions that have gone nowhere.
+ * TimeStopManager — last-resort exit for stale positions.
  *
- * Trend-followers bleed equity holding losers; even a small adverse drift
- * eats funding + opportunity cost. Rule: if position open ≥ N bars and net
- * unrealized ≤ 0 → close (reason=TIME_STOP).
+ * Fires only when a position has been open ≥ `barsThreshold` bars AND is
+ * deeply underwater (price has moved ≥ `thresholdPct` of the initial stop
+ * distance against entry). This prevents premature exits on positions that
+ * are only mildly adverse while still catching truly stalled losers.
+ *
+ * When no initial stop is available, falls back to a breakeven check.
  *
  * Bars counted from kline.closed events on the position symbol; assumes the
  * actor's execution TF.
@@ -49,11 +55,13 @@ export class TimeStopManager {
     const side: 'LONG' | 'SHORT' = p?.side === 'SHORT' ? 'SHORT' : 'LONG';
     const entry = Number(p?.price) || 0;
     if (entry <= 0) return;
-    this.positions.set(symbol, { orderId: String(p?.orderId ?? ''), symbol, side, entry, barsElapsed: 0 });
+    const initialStop = Number(p?.stopLoss) || undefined;
+    this.positions.set(symbol, { orderId: String(p?.orderId ?? ''), symbol, side, entry, initialStop, barsElapsed: 0 });
   }
 
   private onClosed(event: DomainEvent<any>): void {
     const sym = event.payload?.symbol;
+    if (event.payload?.reason === 'PARTIAL_TP') return;
     if (sym) this.positions.delete(sym);
   }
 
@@ -69,8 +77,21 @@ export class TimeStopManager {
     const close = Number(event.payload?.close);
     if (!Number.isFinite(close)) return;
 
-    const adverse = pos.side === 'LONG' ? close <= pos.entry : close >= pos.entry;
-    if (!adverse) return; // give winners more time
+    // TIME_STOP as a final resort: Only trigger if the position is deeply underwater 
+    // (e.g., -50% of the way to the initial stop loss). If no initial stop, fallback to breakeven.
+    let isDeepDrawdown = false;
+    if (pos.initialStop && pos.initialStop > 0) {
+      const riskDistance = Math.abs(pos.entry - pos.initialStop);
+      if (pos.side === 'LONG') {
+        isDeepDrawdown = close <= pos.entry - riskDistance * this.opts.thresholdPct;
+      } else {
+        isDeepDrawdown = close >= pos.entry + riskDistance * this.opts.thresholdPct;
+      }
+    } else {
+      isDeepDrawdown = pos.side === 'LONG' ? close <= pos.entry : close >= pos.entry;
+    }
+
+    if (!isDeepDrawdown) return; // give positions more room to breathe
 
     this.positions.delete(symbol);
     this.seq += 1;

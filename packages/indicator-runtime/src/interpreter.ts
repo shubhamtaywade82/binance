@@ -11,6 +11,7 @@ import type { ExecutionContext } from './context.js';
 import type { Expr, InputKind, Program, Statement } from './nodes.js';
 
 export function prepare(program: Program, ctx: ExecutionContext): void {
+  (ctx as unknown as { __program?: Program }).__program = program;
   let seenHeader = false;
   for (const stmt of program.body) {
     if (stmt.type === 'IndicatorDecl' || stmt.type === 'StrategyDecl') {
@@ -40,6 +41,8 @@ export function prepare(program: Program, ctx: ExecutionContext): void {
           ctx.inputs.set(stmt.name, ctx.builtins[raw as keyof typeof ctx.builtins]);
         }
       }
+    } else if (stmt.type === 'FunctionDecl') {
+      // validated at call-time
     }
   }
 }
@@ -47,7 +50,12 @@ export function prepare(program: Program, ctx: ExecutionContext): void {
 export function runBar(program: Program, ctx: ExecutionContext, barIndex: number): void {
   ctx.resetForBar(barIndex);
   for (const stmt of program.body) {
-    if (stmt.type === 'IndicatorDecl' || stmt.type === 'StrategyDecl' || stmt.type === 'InputDecl')
+    if (
+      stmt.type === 'IndicatorDecl' ||
+      stmt.type === 'StrategyDecl' ||
+      stmt.type === 'InputDecl' ||
+      stmt.type === 'FunctionDecl'
+    )
       continue;
     execStatement(stmt, ctx);
   }
@@ -185,10 +193,29 @@ function evalBinary(node: Extract<Expr, { type: 'Binary' }>, ctx: ExecutionConte
 
 function evalCall(node: Extract<Expr, { type: 'Call' }>, ctx: ExecutionContext): unknown {
   if (!isBuiltin(node.callee)) {
-    throw new RuntimeError(`Unknown function '${node.callee}'`, {
-      line: node.line,
-      col: node.col,
-    });
+    const program = (ctx as unknown as { __program?: Program }).__program;
+    const decl = program?.body.find(
+      (s) => s.type === 'FunctionDecl' && s.name === node.callee,
+    ) as Extract<Statement, { type: 'FunctionDecl' }> | undefined;
+    if (!decl) {
+      throw new RuntimeError(`Unknown function '${node.callee}'`, {
+        line: node.line,
+        col: node.col,
+      });
+    }
+    const args = node.args.map((a) => evalExpr(a, ctx));
+    const prior: Array<[string, unknown | undefined]> = [];
+    for (let i = 0; i < decl.params.length; i++) {
+      const name = decl.params[i]!;
+      prior.push([name, ctx.resolve(name)]);
+      ctx.assign(name, args[i] ?? NaN);
+    }
+    const result = evalExpr(decl.body, ctx);
+    for (const [name, prev] of prior) {
+      if (prev === undefined) ctx.userSeries.delete(name);
+      else ctx.assign(name, prev);
+    }
+    return result;
   }
   const args = node.args.map((a) => evalExpr(a, ctx));
   const handler = BUILTINS[node.callee]!;
@@ -285,6 +312,8 @@ function coerceInput(value: unknown, kind: InputKind, name: string, ctx: Executi
       if (seriesName in ctx.builtins) return ctx.builtins[seriesName as keyof typeof ctx.builtins];
       return seriesName;
     }
+    case 'color':
+      return String(value ?? '#42a5f5');
     default:
       return value;
   }

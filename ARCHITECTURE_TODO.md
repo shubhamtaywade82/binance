@@ -4,6 +4,11 @@ This file tracks the architectural pivot from orchestrator-centric runtime
 to event-sourced trading core. Phase 1 has shipped in `architectural-updates`
 (see "Landed" below). Phases 2–3 are scoped here.
 
+> **See also:** [`docs/INSTITUTIONAL_AUDIT_2026-05.md`](docs/INSTITUTIONAL_AUDIT_2026-05.md)
+> — Principal-level audit (2026-05-17) covering 10 CRITICAL and 16 HIGH issues
+> across architecture, execution, market-data, risk, observability, and DR.
+> Items here intersect with that audit's prioritised fix-order (Section 10).
+
 ---
 
 ## Landed (this session)
@@ -158,6 +163,39 @@ packages/
 move to:
 - ONNX Runtime (Node binding) — load model in-process; or
 - Triton Inference Server with HTTP/gRPC + dynamic batching.
+
+---
+
+## TODO_CLEANUP_LEGACY_EXECUTION — scheduled deletion
+
+The legacy `HybridOrchestrator` strategy-dispatch / position-management path
+is currently **gated off** by the event-bus interlock (audit fix C-1) but
+still lives in `src/orchestrator.ts`. Search the codebase for the marker
+`TODO_CLEANUP_LEGACY_EXECUTION` to find every site that must be deleted in a
+single follow-up commit:
+
+- `HybridOrchestrator.evaluate(ltfBar)` — primary-symbol strategy dispatch
+  + `positionManager.open(...)` calls (SOL MTF, HTF/LTF SMC).
+- `HybridOrchestrator.evaluateForSymbol(symbol, tier, ltfBar)` — multi-asset
+  tier-aware dispatch.
+- `HybridOrchestrator.applyMarkForSymbol()` — legacy onMark-driven exits for
+  non-primary symbols (the primary-symbol equivalent in `applyMarkReference()`
+  is already gated by the original "REVERSAL death spiral" patch).
+- `HybridOrchestrator` constructor: `PositionManager`, `RiskManager`, ML
+  recorders/normalizers, `runMlGate`, structure-break/correlation-guard wiring
+  that exists solely to support the legacy paths.
+- `src/strategy/position-manager.ts` — once the legacy paths are gone the
+  whole module + `RiskManager` go with them (RiskEngine is the survivor).
+- All tests that exercise `evaluateBar` against `PositionManager` state
+  rather than against `defaultEventBus` events.
+
+Boot-time interlock: `src/index.ts` THROWS when `EXECUTION_MODE=live` and
+`EVENT_BUS_EXECUTION_ENABLED=false`. Paper mode still allows the legacy path
+so existing paper tooling keeps working until the cutover is finalised.
+
+Deletion criteria: after one live-paper week with no event-bus regressions,
+remove every marked site, drop the `EVENT_BUS_EXECUTION_ENABLED` flag, and
+make the event-bus stack the only execution path.
 
 ---
 

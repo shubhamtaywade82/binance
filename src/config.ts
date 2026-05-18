@@ -512,6 +512,20 @@ export const AppConfigSchema = z.object({
    */
   EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
 
+  /**
+   * C-7: stale-feed risk-off thresholds. The FreshnessWatchdog publishes
+   * `system.stale` for a symbol when none of its market data sources
+   * (kline/bookticker/mark) has reported within this many ms, and
+   * `system.fresh` as soon as any source recovers. RiskEngine subscribes
+   * and rejects `execution.order.requested` for stale symbols with reason
+   * `STALE_FEED`. Default 30s — long enough to ride out a single missed
+   * kline on a fast TF, short enough to catch real feed loss before a
+   * signal fires on cached candles.
+   */
+  STALE_FEED_THRESHOLD_MS: numFromString(30_000),
+  /** How often the watchdog scans the lastSeen map. Default 5s. */
+  STALE_FEED_CHECK_INTERVAL_MS: numFromString(5_000),
+
   /** Min signal confidence for SignalToOrderBridge to emit an order request. */
   MIN_SIGNAL_CONFIDENCE: numFromString(0.5),
 
@@ -603,10 +617,22 @@ export const AppConfigSchema = z.object({
   /** Time stop: close if position has been open ≥ N bars AND net is negative. */
   TIME_STOP_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
   TIME_STOP_BARS: numFromString(24),
+  /** Percentage of initial stop-loss distance required to trigger time stop (0.5 = 50%). */
+  TIME_STOP_THRESHOLD_PCT: numFromString(0.5),
+
+  /** Signal reversal exit: close if strategy emits a confident opposite-side signal. */
+  SIGNAL_REVERSAL_EXIT_ENABLED: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
+
+  /** High-watermark exit: activate after favorable move of this % of entry price (0.005 = 0.5%). 0 = disabled. */
+  WATERMARK_ACTIVATION_PCT: numFromString(0.005),
+  /** Drop from peak PnL to trigger watermark exit (0.4 = 40% retrace from peak profit). */
+  DROP_FROM_PEAK_PCT: numFromString(0.4),
 
   /** Structure exit: close LONG if recent swing low broken (and vice versa for SHORT). */
   STRUCTURE_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
   STRUCTURE_SWING_LOOKBACK: numFromString(20),
+  /** Gate structure exit on signal confirmation — skip if latest signal still agrees with position. */
+  STRUCTURE_EXIT_CHECK_SIGNALS: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
 
   /** Funding-aware exit: close before next funding tick when |rate|*8h > threshold bps and adverse. */
   FUNDING_EXIT_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
@@ -705,6 +731,17 @@ export const AppConfigSchema = z.object({
   /** PostgreSQL connection URL for PnL dashboard persistence (empty = disabled). */
   POSTGRES_URL: z.string().default(''),
 
+  /**
+   * C-8: path to a local append-only write-ahead log for the event store.
+   * When set, every event is fsync'd to disk before being enqueued for
+   * Postgres, and the file is replayed at startup so events that didn't make
+   * it to Postgres before a crash are not lost. Empty = WAL disabled (data
+   * loss possible on PG pool exhaustion + crash). Recommended for live mode.
+   */
+  EVENT_WAL_PATH: z.string().default('./data/event-wal.ndjson'),
+  /** Compact the WAL after this many events have been ACK'd by Postgres. */
+  EVENT_WAL_COMPACT_AFTER: numFromString(500),
+
   SHUTDOWN_TIMEOUT_MS: numFromString(5000),
   SHUTDOWN_FORCE_EXIT_MS: numFromString(10000),
 
@@ -729,6 +766,23 @@ export const AppConfigSchema = z.object({
       if (!Number.isFinite(n) || n < 0 || n > 65535) return 4002;
       return n;
     }),
+
+  /**
+   * Shared-secret bearer token required by the runtime control HTTP server.
+   * Every request must include `Authorization: Bearer <CONTROL_AUTH_TOKEN>` —
+   * this protects /runtime/config, /runtime/kill, /runtime/unkill, and /runtime/status
+   * from any process that gains access to localhost (sidecars, kubectl port-forward,
+   * shared user accounts). REQUIRED when `EXECUTION_MODE=live` and `CONTROL_PORT>0`;
+   * startup throws if missing. In paper mode the bot logs a loud warning and the
+   * server runs unauthenticated so local dev tooling still works.
+   */
+  CONTROL_AUTH_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  SELF_LEARNING_ENABLED: boolFromString(false),
+  SELF_LEARNING_PAPER_ONLY: boolFromString(true),
+  SELF_LEARNING_INTERVAL_MS: numFromString(3_600_000),
+  SELF_LEARNING_OLLAMA_URL: z.string().default('http://127.0.0.1:11434'),
+  SELF_LEARNING_OLLAMA_MODEL: z.string().default('llama3.1:8b-instruct-q8_0'),
   /** Optional JSON string for default partial profit targets: `[{"r":1, "pct":0.5}]` */
   DEFAULT_PARTIAL_TARGETS_JSON: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Allow adding to an existing position in the same direction. */

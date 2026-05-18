@@ -8,14 +8,14 @@ import type { DomainEvent } from '@coindcx/contracts';
 function bus() {
   const b = new EventBus();
   const seen: DomainEvent[] = [];
-  b.subscribeAll((e) => seen.push(e));
+  b.subscribeAll((e) => { seen.push(e); });
   return { b, seen };
 }
 
-function pubFill(b: EventBus, symbol: string, side: 'LONG' | 'SHORT', price: number) {
+function pubFill(b: EventBus, symbol: string, side: 'LONG' | 'SHORT', price: number, stopLoss?: number) {
   b.publish({
     id: `fill-${symbol}`, type: 'execution.order.filled', ts: 1, source: 't', symbol,
-    payload: { symbol, side, price, quantity: 1, orderId: `o-${symbol}` },
+    payload: { symbol, side, price, quantity: 1, orderId: `o-${symbol}`, stopLoss },
   });
 }
 
@@ -48,11 +48,43 @@ describe('StructureExitManager', () => {
 });
 
 describe('TimeStopManager', () => {
-  it('closes after N bars when adverse', () => {
+  it('closes after N bars when deep underwater (50% of stop distance)', () => {
     const { b, seen } = bus();
-    new TimeStopManager(b, { barsThreshold: 3 });
+    new TimeStopManager(b, { barsThreshold: 3, thresholdPct: 0.5 });
 
-    pubFill(b, 'BTCUSDT', 'LONG', 100);
+    // Entry 100, Stop 90 -> Risk 10. 50% threshold is 95.
+    pubFill(b, 'BTCUSDT', 'LONG', 100, 90);
+    pubKline(b, 'BTCUSDT', { open: 99, high: 100, low: 98, close: 99, openTime: 1 });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 99, low: 97, close: 98, openTime: 2 });
+    // This bar hits the N-bar threshold (3). Price is 94 which is < 95 (50% threshold).
+    pubKline(b, 'BTCUSDT', { open: 98, high: 99, low: 94, close: 94, openTime: 3 });
+
+    const closes = seen.filter((e) => e.type === 'execution.position.close.requested');
+    expect(closes).toHaveLength(1);
+    expect((closes[0].payload as any).reason).toBe('TIME_STOP');
+  });
+
+  it('does NOT close after N bars if only slightly underwater (breakeven rule relaxed)', () => {
+    const { b, seen } = bus();
+    new TimeStopManager(b, { barsThreshold: 3, thresholdPct: 0.5 });
+
+    // Entry 100, Stop 90 -> Risk 10. 50% threshold is 95.
+    pubFill(b, 'BTCUSDT', 'LONG', 100, 90);
+    pubKline(b, 'BTCUSDT', { open: 99, high: 100, low: 98, close: 99, openTime: 1 });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 99, low: 97, close: 98, openTime: 2 });
+    // This bar hits the N-bar threshold (3). Price is 97 which is ABOVE 95.
+    // Legacy logic would have closed here (since 97 < 100), but new logic holds.
+    pubKline(b, 'BTCUSDT', { open: 98, high: 99, low: 97, close: 97, openTime: 3 });
+
+    const closes = seen.filter((e) => e.type === 'execution.position.close.requested');
+    expect(closes).toHaveLength(0);
+  });
+
+  it('falls back to breakeven if no initial stop was provided', () => {
+    const { b, seen } = bus();
+    new TimeStopManager(b, { barsThreshold: 3, thresholdPct: 0.5 });
+
+    pubFill(b, 'BTCUSDT', 'LONG', 100); // no stop
     pubKline(b, 'BTCUSDT', { open: 99, high: 100, low: 98, close: 99, openTime: 1 });
     pubKline(b, 'BTCUSDT', { open: 99, high: 99, low: 97, close: 98, openTime: 2 });
     pubKline(b, 'BTCUSDT', { open: 98, high: 99, low: 97, close: 97, openTime: 3 });
@@ -64,7 +96,7 @@ describe('TimeStopManager', () => {
 
   it('does not close if winner', () => {
     const { b, seen } = bus();
-    new TimeStopManager(b, { barsThreshold: 3 });
+    new TimeStopManager(b, { barsThreshold: 3, thresholdPct: 0.5 });
 
     pubFill(b, 'BTCUSDT', 'LONG', 100);
     pubKline(b, 'BTCUSDT', { open: 101, high: 102, low: 100, close: 102, openTime: 1 });
@@ -72,6 +104,24 @@ describe('TimeStopManager', () => {
     pubKline(b, 'BTCUSDT', { open: 103, high: 104, low: 102, close: 104, openTime: 3 });
 
     expect(seen.filter((e) => e.type === 'execution.position.close.requested')).toHaveLength(0);
+  });
+
+  it('keeps tracking the runner after a partial TP', () => {
+    const { b, seen } = bus();
+    new TimeStopManager(b, { barsThreshold: 3, thresholdPct: 0.5 });
+
+    pubFill(b, 'BTCUSDT', 'LONG', 100);
+    b.publish({
+      id: 'partial', type: 'execution.position.closed', ts: 2, source: 't', symbol: 'BTCUSDT',
+      payload: { symbol: 'BTCUSDT', orderId: 'o-BTCUSDT', reason: 'PARTIAL_TP', quantity: 0.5 },
+    });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 100, low: 98, close: 99, openTime: 3 });
+    pubKline(b, 'BTCUSDT', { open: 99, high: 99, low: 97, close: 98, openTime: 4 });
+    pubKline(b, 'BTCUSDT', { open: 98, high: 99, low: 97, close: 97, openTime: 5 });
+
+    const closes = seen.filter((e) => e.type === 'execution.position.close.requested');
+    expect(closes).toHaveLength(1);
+    expect((closes[0].payload as any).reason).toBe('TIME_STOP');
   });
 });
 

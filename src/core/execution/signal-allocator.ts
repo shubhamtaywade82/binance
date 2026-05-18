@@ -42,16 +42,28 @@ export class SignalAllocator {
   private readonly adxThreshold: number;
   private readonly minAtrPct: number;
   private seq = 0;
+  /**
+   * M-18: runners-up from the previous bar(s) that could not fit in the
+   * MAX_OPEN_SYMBOLS budget. Re-evaluated at the start of the next flush:
+   * if a slot opened up (another position closed), the highest-score
+   * carryover takes it. Bounded by `carryoverCapacity` so a chronically
+   * over-firing strategy doesn't grow this queue unboundedly.
+   */
+  private carryover: BufferedCandidate[] = [];
+  private readonly carryoverCapacity: number;
+  private readonly carryoverMaxAgeMs: number;
 
   constructor(
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
     private readonly riskEngine: RiskEngine,
-    opts: { flushDelayMs?: number } = {},
+    opts: { flushDelayMs?: number; carryoverCapacity?: number; carryoverMaxAgeMs?: number } = {},
   ) {
     this.flushDelayMs = opts.flushDelayMs ?? 1500;
     this.adxThreshold = Number((cfg as any).SEYKOTA_ADX_THRESHOLD) || 20;
     this.minAtrPct = Number((cfg as any).SEYKOTA_MIN_ATR_PCT) || 0.003;
+    this.carryoverCapacity = Math.max(0, opts.carryoverCapacity ?? 20);
+    this.carryoverMaxAgeMs = Math.max(0, opts.carryoverMaxAgeMs ?? 60_000); // 1 bar's worth
     this.subscribe();
   }
 
@@ -59,6 +71,11 @@ export class SignalAllocator {
     this.eventBus.subscribe<OrderRequestedPayload>('execution.order.requested', (e) => {
       this.bufferCandidate(e);
     });
+  }
+
+  /** M-18: observability — current carryover depth (runners-up awaiting a slot). */
+  public carryoverDepth(): number {
+    return this.carryover.length;
   }
 
   private bufferCandidate(event: DomainEvent<OrderRequestedPayload>): void {
@@ -89,24 +106,42 @@ export class SignalAllocator {
     const candidates = this.buckets.get(closeTime) ?? [];
     this.buckets.delete(closeTime);
     this.flushTimers.delete(closeTime);
-    if (candidates.length === 0) return;
 
-    candidates.sort((a, b) => b.score - a.score);
+    // M-18: prepend any carryover from the previous bar that's still within
+    // age budget — they were already deemed ready-to-trade once; if a slot
+    // opened up since, they should claim it before fresh candidates lose
+    // their slot. Carryover events keep their original score (and original
+    // bus event id, so dedup downstream still works).
+    const now = marketClock.now();
+    const liveCarryover = this.carryover.filter(
+      (c) => now - c.event.ts <= this.carryoverMaxAgeMs,
+    );
+    this.carryover = []; // consumed
+    const merged = [...liveCarryover, ...candidates];
+    if (merged.length === 0) return;
+
+    merged.sort((a, b) => b.score - a.score);
 
     const exposure = this.riskEngine.getExposure();
     const maxSymbols = Number((this.cfg as any).MAX_OPEN_SYMBOLS) || Infinity;
     const slotsLeft = Math.max(0, maxSymbols - exposure.symbols);
 
     let allocated = 0;
-    for (const c of candidates) {
+    const newCarryover: BufferedCandidate[] = [];
+    for (const c of merged) {
       const already = exposure.positions.has(c.event.payload.symbol);
       if (allocated < slotsLeft || already) {
         this.forward(c.event, c.score);
         if (!already) allocated += 1;
+      } else if (newCarryover.length < this.carryoverCapacity) {
+        // Park as carryover — it may get a slot at the next flush.
+        newCarryover.push(c);
       } else {
+        // Carryover is full → reject definitively.
         this.reject(c.event, c.score);
       }
     }
+    this.carryover = newCarryover;
   }
 
   private forward(event: DomainEvent<OrderRequestedPayload>, score?: number): void {

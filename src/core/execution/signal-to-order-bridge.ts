@@ -23,6 +23,12 @@ interface LastPriceProvider {
 export class SignalToOrderBridge {
   private seq = 0;
   private readonly cooldownMs: number;
+  /**
+   * H-4: cooldown key is `(symbol, side, strategyId)` so two strategies on
+   * the same symbol don't share a cooldown bucket, and a flip from LONG to
+   * SHORT on the same symbol isn't suppressed by a prior LONG signal still
+   * inside the cooldown window.
+   */
   private readonly lastEmit = new Map<string, number>();
 
   constructor(
@@ -33,6 +39,10 @@ export class SignalToOrderBridge {
   ) {
     this.cooldownMs = opts.cooldownMs ?? 60_000;
     this.subscribe();
+  }
+
+  private cooldownKey(symbol: string, side: string, strategyId?: string): string {
+    return `${symbol}|${side}|${strategyId ?? ''}`;
   }
 
   private subscribe(): void {
@@ -48,7 +58,8 @@ export class SignalToOrderBridge {
     if (sig.confidence < ((this.cfg as any).MIN_SIGNAL_CONFIDENCE ?? 0.5)) return;
 
     const now = marketClock.now();
-    const last = this.lastEmit.get(symbol) ?? 0;
+    const key = this.cooldownKey(symbol, sig.signal, sig.strategyId);
+    const last = this.lastEmit.get(key) ?? 0;
     if (now - last < this.cooldownMs) return;
 
     const price = this.priceProvider.lastPrice(symbol);
@@ -89,6 +100,6 @@ export class SignalToOrderBridge {
       payload,
     });
 
-    this.lastEmit.set(symbol, now);
+    this.lastEmit.set(key, now);
   }
 }

@@ -5,7 +5,7 @@ import { Node } from './ast.js';
 import type { Expr, InputKind, KwArg, Program, Statement } from './nodes.js';
 import type { Token } from './lexer.js';
 
-const INPUT_KINDS = new Set(['int', 'float', 'bool', 'source', 'string']);
+const INPUT_KINDS = new Set(['int', 'float', 'bool', 'source', 'string', 'color']);
 
 interface ParseState {
   tokens: Token[];
@@ -36,6 +36,9 @@ function parseStatement(state: ParseState): Statement | null {
   if (tok.type === 'strategy') {
     return parseIndicatorDecl(state, 'StrategyDecl', 'strategy');
   }
+  if (tok.type === 'func') {
+    return parseFunctionDecl(state);
+  }
 
   if (tok.type === 'ident' && peek(state, 1).type === '=') {
     return parseAssignmentOrInput(state);
@@ -43,6 +46,24 @@ function parseStatement(state: ParseState): Statement | null {
 
   const expr = parseExpression(state);
   return Node.ExprStmt(expr, locOf(tok));
+}
+
+function parseFunctionDecl(state: ParseState): Statement {
+  const tok = expect(state, 'func');
+  const nameTok = expect(state, 'ident');
+  expect(state, '(');
+  const params: string[] = [];
+  if (peek(state).type !== ')') {
+    while (true) {
+      params.push(expect(state, 'ident').value);
+      if (peek(state).type !== ',') break;
+      advance(state);
+    }
+  }
+  expect(state, ')');
+  expect(state, '=');
+  const body = parseExpression(state);
+  return Node.FunctionDecl(nameTok.value, params, body, locOf(tok));
 }
 
 function parseIndicatorDecl(

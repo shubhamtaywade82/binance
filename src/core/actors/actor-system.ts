@@ -91,6 +91,9 @@ export class ActorSystem {
   }
 
   public shutdown(): void {
+    // M-4: detach each actor's per-type subscriptions so the EventBus
+    // doesn't keep them alive past shutdown.
+    for (const actor of this.actors.values()) actor.dispose();
     this.actors.clear();
   }
 }

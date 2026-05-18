@@ -18,11 +18,12 @@ export type Expr =
   | ({ type: 'Index'; target: Expr; index: Expr } & SourceLoc)
   | ({ type: 'Call'; callee: string; args: Expr[]; kwargs: KwArg[] } & SourceLoc);
 
-export type InputKind = 'int' | 'float' | 'bool' | 'source' | 'string';
+export type InputKind = 'int' | 'float' | 'bool' | 'source' | 'string' | 'color';
 
 export type Statement =
   | ({ type: 'IndicatorDecl'; name: string; opts: KwArg[] } & SourceLoc)
   | ({ type: 'StrategyDecl'; name: string; opts: KwArg[] } & SourceLoc)
+  | ({ type: 'FunctionDecl'; name: string; params: string[]; body: Expr } & SourceLoc)
   | ({ type: 'InputDecl'; name: string; kind: InputKind; args: Expr[]; kwargs: KwArg[] } & SourceLoc)
   | ({ type: 'Assign'; name: string; value: Expr } & SourceLoc)
   | ({ type: 'ExprStmt'; expr: Expr } & SourceLoc);

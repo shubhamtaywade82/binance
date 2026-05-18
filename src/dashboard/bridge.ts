@@ -339,17 +339,6 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     ];
 
     try {
-      const headers: Record<string, string> | undefined = chatApiKey ? { Authorization: `Bearer ${chatApiKey}` } : undefined;
-      const ollama = new Ollama({ host: chatOllamaHost, headers });
-      const stream = await ollama.chat({
-        model: chatModel,
-        messages,
-        stream: true,
-        options: {
-          num_ctx: cfg.AI_CONTEXT_SIZE,
-        },
-      });
-
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -357,11 +346,79 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       });
       res.setTimeout(0);
 
-      for await (const chunk of stream) {
-        if (res.destroyed) break;
-        const token = chunk.message?.content ?? '';
-        if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
-        if (chunk.done) res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      if (cfg.AI_PROVIDER === 'openai') {
+        const host = (cfg.AI_OPENAI_URL || 'http://127.0.0.1:8080/v1').trim().replace(/\/+$/, '');
+        const url = `${host}/chat/completions`;
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: cfg.AI_OPENAI_MODEL || 'local-model',
+            messages,
+            stream: true,
+            temperature: 0.25,
+            max_tokens: cfg.AI_CONTEXT_SIZE,
+          }),
+        });
+
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+        if (!resp.body) throw new Error('Response body is null');
+        
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+          if (res.destroyed) break;
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const data = trimmed.slice(6).trim();
+            if (data === '[DONE]') {
+              res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+              break;
+            }
+            try {
+              const json = JSON.parse(data);
+              const token = json.choices?.[0]?.delta?.content;
+              if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+            } catch {}
+          }
+        }
+        if (!res.destroyed && buffer.trim().startsWith('data: ')) {
+          try {
+            const json = JSON.parse(buffer.trim().slice(6).trim());
+            const token = json.choices?.[0]?.delta?.content;
+            if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+          } catch {}
+        }
+        if (!res.destroyed) res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      } else {
+        const headers: Record<string, string> | undefined = chatApiKey ? { Authorization: `Bearer ${chatApiKey}` } : undefined;
+        const ollama = new Ollama({ host: chatOllamaHost, headers });
+        const stream = await ollama.chat({
+          model: chatModel,
+          messages,
+          stream: true,
+          options: {
+            num_ctx: cfg.AI_CONTEXT_SIZE,
+          },
+        });
+
+        for await (const chunk of stream) {
+          if (res.destroyed) break;
+          const token = chunk.message?.content ?? '';
+          if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+          if (chunk.done) res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        }
       }
       res.end();
     } catch (err) {
@@ -796,19 +853,29 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
 
   const maybePeriodicSupertrendTune = (sym: string): void => {
         if (!cfg.AI_SUPERTREND_TUNING_ENABLED) return;
-        if (!cfg.OLLAMA_MODEL.trim()) {
-          if (!stTuneWarnedNoModel) {
-            stTuneWarnedNoModel = true;
-            log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_MODEL empty' });
+        if (cfg.AI_PROVIDER === 'ollama') {
+          if (!cfg.OLLAMA_MODEL.trim()) {
+            if (!stTuneWarnedNoModel) {
+              stTuneWarnedNoModel = true;
+              log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_MODEL empty' });
+            }
+            return;
           }
-          return;
-        }
-        if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
-          if (!stTuneWarnedCloudKey) {
-            stTuneWarnedCloudKey = true;
-            log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+          if (cfg.OLLAMA_TARGET === 'cloud' && !cfg.OLLAMA_API_KEY.trim()) {
+            if (!stTuneWarnedCloudKey) {
+              stTuneWarnedCloudKey = true;
+              log.warn('dashboard_supertrend_tune_skipped', { reason: 'OLLAMA_TARGET=cloud but OLLAMA_API_KEY empty' });
+            }
+            return;
           }
-          return;
+        } else if (cfg.AI_PROVIDER === 'openai') {
+          if (!cfg.AI_OPENAI_URL.trim() || !cfg.AI_OPENAI_MODEL.trim()) {
+            if (!stTuneWarnedNoModel) {
+              stTuneWarnedNoModel = true;
+              log.warn('dashboard_supertrend_tune_skipped', { reason: 'AI_OPENAI_URL or MODEL empty' });
+            }
+            return;
+          }
         }
         if (supertrendTuneInflight.has(sym)) return;
         const gapMs = cfg.AI_SUPERTREND_TUNING_INTERVAL_SEC * 1000;
@@ -824,8 +891,9 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         supertrendTuneInflight.add(sym);
         void requestSupertrendTune(
           {
-            host: ollamaApiUrl(cfg.OLLAMA_TARGET),
-            model: cfg.OLLAMA_MODEL,
+            provider: cfg.AI_PROVIDER as 'ollama' | 'openai',
+            host: cfg.AI_PROVIDER === 'openai' ? cfg.AI_OPENAI_URL : ollamaApiUrl(cfg.OLLAMA_TARGET),
+            model: cfg.AI_PROVIDER === 'openai' ? cfg.AI_OPENAI_MODEL : cfg.OLLAMA_MODEL,
             apiKey: cfg.OLLAMA_API_KEY.trim() || undefined,
             timeoutMs: cfg.AI_REQUEST_TIMEOUT_MS,
             contextSize: cfg.AI_CONTEXT_SIZE,

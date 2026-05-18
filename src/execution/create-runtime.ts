@@ -31,6 +31,8 @@ export interface ExecutionRuntime {
   paperAdapter?: PaperExecutionAdapter;
   /** Present when EXECUTION_MODE=live and BINANCE_EXECUTION_ADAPTER=false. */
   cdcxAdapter?: CoinDcxExecutionAdapter;
+  /** Present when EXECUTION_MODE=live and BINANCE_EXECUTION_ADAPTER=true. */
+  binanceAdapter?: BinanceLiveExecutionAdapter;
   paperFundingEngine?: FundingEngine;
   /** Shared database writer for dashboard persistence. */
   pgWriter?: PgWriter;
@@ -77,7 +79,12 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
 
   let pgWriter: PgWriter | undefined;
   if (cfg.POSTGRES_URL) {
-    pgWriter = new PgWriter({ connectionString: cfg.POSTGRES_URL });
+    pgWriter = new PgWriter({
+      connectionString: cfg.POSTGRES_URL,
+      // C-8: durability primitive — every event hits disk before Postgres.
+      walPath: (cfg as any).EVENT_WAL_PATH || './data/event-wal.ndjson',
+      walCompactAfter: Number((cfg as any).EVENT_WAL_COMPACT_AFTER) || 500,
+    });
     pgWriter.connect().catch(() => {});
   }
 
@@ -134,6 +141,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
         book,
         binanceRestClient,
         router,
+        binanceAdapter: liveAdapter,
         pgWriter,
         redisState,
         stopPgWriter: pgWriter ? () => pgWriter!.close() : undefined,

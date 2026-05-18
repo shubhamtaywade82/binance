@@ -88,12 +88,29 @@ const CHART_OPTS = {
     alignLabels: true,
     entireTextOnly: true,
   },
+  localization: {
+    timeFormatter: (time) => {
+      if (typeof time !== 'number') return String(time);
+      return new Date(time * 1000).toLocaleString('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit', month: 'short', year: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      });
+    },
+  },
   timeScale: {
     borderColor: 'rgba(255,255,255,0.06)',
     timeVisible: true,
     secondsVisible: false,
-    /** LW default 0.5; keep a small floor so extreme zoom stays readable (was 2 for wider minimum gap). */
     minBarSpacing: 1,
+    tickMarkFormatter: (time, tickMarkType) => {
+      if (typeof time !== 'number') return String(time);
+      const d = new Date(time * 1000);
+      if (tickMarkType === 0) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+      if (tickMarkType === 1) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
+      if (tickMarkType === 2) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric' });
+      return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+    },
   },
   handleScroll: { mouseWheel: true, pressedMouseMove: true },
   handleScale: { mouseWheel: true, pinch: true },
@@ -189,7 +206,8 @@ export class ChartManager {
     this.ema9Series = null;
     this.ema21Series = null;
     this.ema50Series = null;
-    this.stSeries = null;
+    this.stSeriesList = [];
+    this._supertrendMarkers = [];
     this.currentTf = readStoredChartTf() ?? '5m';
     this.candleMap = {}; // tf → candle[] cache
     this.indicMap = {}; // tf → indicators cache
@@ -1108,7 +1126,8 @@ export class ChartManager {
     const smcMarkers = this._lastSmcMarkers ?? [];
     const liqMarkers = this._liquidationsEnabled ? this._liquidationMarkers : [];
     const posMarkers = this._positionMarkers ?? [];
-    const all = [...smcMarkers, ...liqMarkers, ...posMarkers].sort((a, b) => a.time - b.time);
+    const stMarkers = this.showSupertrend ? (this._supertrendMarkers ?? []) : [];
+    const all = [...smcMarkers, ...liqMarkers, ...posMarkers, ...stMarkers].sort((a, b) => a.time - b.time);
     try {
       this.candleSeries.setMarkers(all);
     } catch (e) {
@@ -1355,7 +1374,7 @@ export class ChartManager {
       this._fundingPriceLine = null;
     }
     if (!this._lastFunding || !this.candleSeries) return;
-    const { rate, zscore, extreme, crowdedSide } = this._lastFunding;
+    const { rate, extreme } = this._lastFunding;
     if (!Number.isFinite(rate)) return;
 
     const pctStr = (rate * 100).toFixed(4) + '%';
@@ -1502,7 +1521,26 @@ export class ChartManager {
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: COLORS.text, fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
       grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
       rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.05, bottom: 0.05 } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5 },
+      localization: {
+        timeFormatter: (time) => {
+          if (typeof time !== 'number') return String(time);
+          return new Date(time * 1000).toLocaleString('en-GB', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+          });
+        },
+      },
+      timeScale: {
+        borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: true, rightOffset: 5,
+        tickMarkFormatter: (time, tickMarkType) => {
+          if (typeof time !== 'number') return String(time);
+          const d = new Date(time * 1000);
+          if (tickMarkType === 0) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+          if (tickMarkType === 1) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', month: 'short' });
+          if (tickMarkType === 2) return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric' });
+          return d.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        }
+      },
       crosshair: { mode: 0 },
       handleScroll: { mouseWheel: true, pressedMouseMove: true },
       handleScale: { mouseWheel: true, pinch: true },
@@ -1743,7 +1781,7 @@ export class ChartManager {
     if (this.ema9Series) this.ema9Series.applyOptions({ priceFormat: pf });
     if (this.ema21Series) this.ema21Series.applyOptions({ priceFormat: pf });
     if (this.ema50Series) this.ema50Series.applyOptions({ priceFormat: pf });
-    if (this.stSeries) this.stSeries.applyOptions({ priceFormat: pf });
+    this.stSeriesList.forEach((s) => s.applyOptions({ priceFormat: pf }));
     if (this._vwapSeries) this._vwapSeries.applyOptions({ priceFormat: pf });
   }
 
@@ -1845,14 +1883,8 @@ export class ChartManager {
     this.ema21Series = this._addLineSeries(COLORS.ema21, 1, 'EMA21');
     this.ema50Series = this._addLineSeries(COLORS.ema50, 1.5, 'EMA50');
 
-    this.stSeries = this.chart.addLineSeries({
-      color: COLORS.bull,
-      lineWidth: 1.5,
-      lineStyle: 2,
-      priceScaleId: 'right',
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
+    // Supertrend series are dynamically allocated per continuous segment in _paintIndicators
+    this.stSeriesList = [];
 
     this._vwapSeries = this.chart.addLineSeries({
       color: '#e040fb',
@@ -1967,7 +1999,8 @@ export class ChartManager {
     document.getElementById('toggle-supertrend').addEventListener('change', (e) => {
       this.showSupertrend = e.target.checked;
       storeIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, this.showSupertrend);
-      this.stSeries.applyOptions({ visible: this.showSupertrend });
+      this.stSeriesList.forEach((s) => s.applyOptions({ visible: this.showSupertrend }));
+      this._paintAllMarkers();
     });
 
     const emaEl = document.getElementById('toggle-ema');
@@ -1975,7 +2008,7 @@ export class ChartManager {
     const stEl = document.getElementById('toggle-supertrend');
     if (stEl instanceof HTMLInputElement) stEl.checked = this.showSupertrend;
     this._toggleEma(this.showEma);
-    this.stSeries.applyOptions({ visible: this.showSupertrend });
+    this.stSeriesList.forEach((s) => s.applyOptions({ visible: this.showSupertrend }));
 
     const ctWrap = document.getElementById('candle-theme-wrap');
     const ctTrigger = document.getElementById('candle-theme-trigger');
@@ -2313,7 +2346,12 @@ export class ChartManager {
     this.ema9Series.setData([]);
     this.ema21Series.setData([]);
     this.ema50Series.setData([]);
-    this.stSeries.setData([]);
+    while (this.stSeriesList.length > 0) {
+      const s = this.stSeriesList.pop();
+      try { this.chart.removeSeries(s); } catch { /* ignore */ }
+    }
+    this._supertrendMarkers = [];
+    this._paintAllMarkers();
     this._vwapSeries?.setData([]);
     this._rsiSeries?.setData([]);
     this._tfiSeries?.setData([]);
@@ -2849,17 +2887,130 @@ export class ChartManager {
     if (ind.supertrend?.value && ind.supertrend?.dir) {
       const vals = ind.supertrend.value;
       const dirs = ind.supertrend.dir;
-      const stData = vals
-        .map((v, j) => {
-          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
-          const i = vals.length === n ? j : n - vals.length + j;
-          if (i < 0 || i >= n) return null;
-          const col = dirs[j] === 'LONG' ? COLORS.bull : COLORS.bear;
-          return { time: candleTime(i), value: v, color: col };
-        })
-        .filter(Boolean);
-      const stPadded = this._padLineLikeToLastTime(stData, tLastCandle);
-      this.stSeries.setData(stPadded);
+
+      // Group into continuous segments
+      const segments = [];
+      let curSeg = null;
+      for (let j = 0; j < vals.length; j++) {
+        if (vals[j] == null || !Number.isFinite(vals[j])) continue;
+        const i = vals.length === n ? j : n - vals.length + j;
+        if (i < 0 || i >= n) continue;
+        const dir = dirs[j];
+        if (!curSeg || curSeg.dir !== dir) {
+          curSeg = { dir, data: [] };
+          segments.push(curSeg);
+        }
+        curSeg.data.push({ time: candleTime(i), value: vals[j] });
+      }
+
+      // Pad the very last segment to tLastCandle
+      if (segments.length > 0) {
+        const lastSeg = segments[segments.length - 1];
+        lastSeg.data = this._padLineLikeToLastTime(lastSeg.data, tLastCandle);
+      }
+
+      // Match segments to this.stSeriesList
+      while (this.stSeriesList.length < segments.length) {
+        const s = this.chart.addLineSeries({
+          lineWidth: 1.5,
+          lineStyle: 0, // Solid
+          priceScaleId: 'right',
+          lastValueVisible: false,
+          priceLineVisible: false,
+          visible: this.showSupertrend,
+        });
+        if (this.candleSeries) {
+          const pf = this.candleSeries.options().priceFormat;
+          if (pf) s.applyOptions({ priceFormat: pf });
+        }
+        this.stSeriesList.push(s);
+      }
+      while (this.stSeriesList.length > segments.length) {
+        const s = this.stSeriesList.pop();
+        try { this.chart.removeSeries(s); } catch { /* ignore */ }
+      }
+
+      // Update data and colors
+      for (let k = 0; k < segments.length; k++) {
+        const s = this.stSeriesList[k];
+        const seg = segments[k];
+        const col = seg.dir === 'LONG' ? COLORS.bull : COLORS.bear;
+        s.applyOptions({ color: col, visible: this.showSupertrend });
+        s.setData(seg.data);
+      }
+
+      // Calculate Entry, 1%, and 1.5% target markers for Supertrend flips
+      const stMarkers = [];
+      const dp = getMinTickDecimalPlaces();
+      const fmt = (v) => v.toFixed(dp);
+
+      for (let j = 1; j < vals.length; j++) {
+        if (dirs[j] !== dirs[j - 1] && vals[j] != null) {
+          const flipIdx = vals.length === n ? j : n - vals.length + j;
+          if (flipIdx < 0 || flipIdx >= n) continue;
+          const basePrice = candles[flipIdx].close;
+          if (!basePrice || !Number.isFinite(basePrice)) continue;
+
+          const isLong = dirs[j] === 'LONG';
+          const t1Price = isLong ? basePrice * 1.01 : basePrice * 0.99;
+          const t2Price = isLong ? basePrice * 1.015 : basePrice * 0.985;
+          let hitT1 = false;
+          let hitT2 = false;
+
+          const cFlip = candles[flipIdx];
+          stMarkers.push({
+            time: Math.floor(cFlip.openTime / 1000),
+            position: isLong ? 'belowBar' : 'aboveBar',
+            shape: isLong ? 'arrowUp' : 'arrowDown',
+            color: isLong ? COLORS.bull : COLORS.bear,
+            text: `${isLong ? '🟢 LONG' : '🔴 SHORT'} @ ${fmt(basePrice)}`,
+            size: 1,
+            id: `st-entry-${cFlip.openTime}`,
+          });
+
+          // Scan forward within the same trend phase to find where targets are met
+          for (let scan = j; scan < vals.length; scan++) {
+            if (dirs[scan] !== dirs[j]) break; // trend ended
+            const scanIdx = vals.length === n ? scan : n - vals.length + scan;
+            if (scanIdx < 0 || scanIdx >= n) continue;
+            const c = candles[scanIdx];
+
+            if (!hitT1) {
+              const metT1 = isLong ? c.high >= t1Price : c.low <= t1Price;
+              if (metT1) {
+                hitT1 = true;
+                stMarkers.push({
+                  time: Math.floor(c.openTime / 1000),
+                  position: isLong ? 'aboveBar' : 'belowBar',
+                  shape: isLong ? 'arrowDown' : 'arrowUp',
+                  color: isLong ? COLORS.bull : COLORS.bear,
+                  text: `🎯 +1.0% @ ${fmt(t1Price)}`,
+                  size: 1,
+                  id: `st-t1-${c.openTime}`,
+                });
+              }
+            }
+            if (!hitT2) {
+              const metT2 = isLong ? c.high >= t2Price : c.low <= t2Price;
+              if (metT2) {
+                hitT2 = true;
+                stMarkers.push({
+                  time: Math.floor(c.openTime / 1000),
+                  position: isLong ? 'aboveBar' : 'belowBar',
+                  shape: isLong ? 'arrowDown' : 'arrowUp',
+                  color: isLong ? COLORS.bull : COLORS.bear,
+                  text: `🚀 +1.5% @ ${fmt(t2Price)}`,
+                  size: 1,
+                  id: `st-t2-${c.openTime}`,
+                });
+              }
+            }
+            if (hitT1 && hitT2) break; // both targets achieved for this trend phase
+          }
+        }
+      }
+      this._supertrendMarkers = stMarkers;
+      this._paintAllMarkers();
     }
 
     if (ind.rsi && this._rsiEnabled) {

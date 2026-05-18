@@ -14,6 +14,8 @@ interface OpenPosition {
   atr: number;
   atrMult: number;
   partialDone?: boolean;
+  /** Best favorable PnL % achieved during this position's lifetime. */
+  peakPnlPct: number;
 }
 
 export interface TrailingStopOptions {
@@ -32,15 +34,32 @@ export interface TrailingStopOptions {
   partialTpPct?: number;
   /** Enable SMC structure-break (CHoCH) exit. */
   smcExitEnabled?: boolean;
+  /**
+   * Activate watermark exit once favorable PnL reaches this % of entry price.
+   * Default 0.005 = +0.5%. Set to 0 to disable.
+   */
+  watermarkActivationPct?: number;
+  /**
+   * Exit when PnL drops by this fraction of peakPnlPct.
+   * Default 0.4 = exit if 40% of peak unrealized gains are given back.
+   */
+  dropFromPeakPct?: number;
 }
 
 const DEFAULTS: TrailingStopOptions = { atrMult: 3, defaultAtrPct: 0.005, klineOnly: true };
 
 /**
- * TrailingStopManager — Chandelier-exit style ATR trail.
+ * TrailingStopManager — Chandelier-exit style ATR trail + high-watermark exit.
  *
  *   LONG:  stop = max(entryStop, highWater - atrMult * atr)
  *   SHORT: stop = min(entryStop, lowWater + atrMult * atr)
+ *
+ * High-watermark (drop-from-peak) exit:
+ *   Once favorable PnL reaches `watermarkActivationPct` of entry price, tracks
+ *   the peak unrealized profit. If the PnL subsequently drops by
+ *   `dropFromPeakPct` × peak, the position is closed with reason
+ *   `WATERMARK_EXIT`. This protects winners from giving back significant
+ *   unrealized gains before the chandelier trail catches up.
  *
  * Subscribes:
  *   execution.order.filled              → register new position
@@ -110,6 +129,7 @@ export class TrailingStopManager {
       atr,
       atrMult: this.opts.atrMult,
       partialDone: false,
+      peakPnlPct: 0,
     });
   }
 
@@ -179,6 +199,25 @@ export class TrailingStopManager {
     let trail: number;
     const atrDist = pos.atrMult * pos.atr;
 
+    // Track current PnL % for watermark logic
+    const currentPnlPct = pos.side === 'LONG'
+      ? (ref - pos.entry) / pos.entry
+      : (pos.entry - ref) / pos.entry;
+    if (currentPnlPct > pos.peakPnlPct) {
+      pos.peakPnlPct = currentPnlPct;
+    }
+
+    // Watermark (drop-from-peak) exit — fires BEFORE trail check
+    const wmActivation = this.opts.watermarkActivationPct ?? 0;
+    const wmDrop = this.opts.dropFromPeakPct ?? 0.4;
+    if (wmActivation > 0 && pos.peakPnlPct >= wmActivation && currentPnlPct > 0) {
+      const dropRatio = 1 - (currentPnlPct / pos.peakPnlPct);
+      if (dropRatio >= wmDrop) {
+        this.requestClose(pos, ref, 'WATERMARK_EXIT', source);
+        return;
+      }
+    }
+
     if (pos.side === 'LONG') {
       if (Number.isFinite(high) && high > pos.highWater) pos.highWater = high;
       
@@ -234,6 +273,7 @@ export class TrailingStopManager {
         lowWater: pos.lowWater,
         atr: pos.atr,
         atrMult: pos.atrMult,
+        peakPnlPct: pos.peakPnlPct,
       },
     });
   }
