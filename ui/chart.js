@@ -1775,6 +1775,40 @@ export class ChartManager {
     this._refreshFormingCandleFromCtx();
   }
 
+  resetForSymbolSwitch() {
+    this._cancelLtpAnim();
+    this._hideLtpPriceLine();
+    this._emitLtpDisplay(null);
+    this.candleMap = {};
+    this.indicMap = {};
+    this._historyExhausted = {};
+    this._historyLoading = {};
+    this.set24hHighLow(null, null);
+    this._liquidationMarkers = [];
+    this._lastMarkPrice = null;
+    this._lastFunding = null;
+    this._oiRegime = null;
+    this._tfiBarMap?.clear();
+    this._lastDepthPressure = null;
+    this._currentObi = null;
+    this._resetVolumeAnimState();
+    this.candleSeries?.setData([]);
+    this.volumeSeries?.setData([]);
+    this._microCandleSeries?.setData([]);
+    this._clearOverlaySeries();
+    this._partialLinesPrimitive?.clear();
+    this._openPositionLines?.clear();
+    this._positionMarkers = [];
+    if (this._oiRegimePriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._oiRegimePriceLine); } catch { /* ignore */ }
+      this._oiRegimePriceLine = null;
+    }
+    if (this._fundingPriceLine && this.candleSeries) {
+      try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
+      this._fundingPriceLine = null;
+    }
+  }
+
   init() {
     const container = document.getElementById(this.containerId);
 

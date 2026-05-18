@@ -250,6 +250,43 @@ const selectWatchSymbol = (sym) => {
   localStorage.setItem(STORAGE_KEY_SYMBOL, sym);
   syncUiWithSymbol(sym);
   updateUrlWithSymbol(sym);
+
+  const priceEl = document.getElementById('hdr-price');
+  if (priceEl) priceEl.textContent = '—';
+  const markEl = document.getElementById('hdr-mark');
+  if (markEl) markEl.textContent = '—';
+  const bidEl = document.getElementById('hdr-bid');
+  if (bidEl) bidEl.textContent = '—';
+  const askEl = document.getElementById('hdr-ask');
+  if (askEl) askEl.textContent = '—';
+  const spreadEl = document.getElementById('hdr-spread');
+  if (spreadEl) spreadEl.textContent = '—';
+  lastPrice = null;
+  lastLtpTarget = null;
+
+  chart.resetForSymbolSwitch();
+  obMgr.resetForSymbol(0.01);
+  obMgr.update({ bids: [], asks: [] });
+  tape.loadHistory([]);
+  signals.update({
+    mtf: { smc: { direction: 'NEUTRAL', label: '—' } },
+    confluence: { score: 0, regime: 'NEUTRAL' }
+  });
+  msPanel.update({
+    volume24h: 0,
+    quoteVolume24h: 0,
+    trades24h: 0,
+    buyVolume24h: 0,
+    sellVolume24h: 0,
+    takerBuyBaseAssetVolume: 0,
+    takerBuyQuoteAssetVolume: 0,
+    orderBookImbalance: { ratio: 0.5, bidDepth: 0, askDepth: 0 },
+    tradeFlowImbalance: { ratio: 0.5, buyVolume: 0, sellVolume: 0 },
+    volatility24h: 0,
+    tickTrend: { up: 0, down: 0, neutral: 0 }
+  });
+  gauge.update(0.5);
+
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'set_watch_symbol', symbol: sym }));
   }
@@ -723,6 +760,28 @@ const dispatch = (msg) => {
       break;
     }
 
+    case 'precision_update': {
+      if (!appliesToActiveWatch(msg)) break;
+      chart.applyDashboardLtpPrecision(msg);
+      break;
+    }
+
+    case 'telegram_sent': {
+      const badge = document.getElementById('telegram-telemetry');
+      const textEl = document.getElementById('telegram-status-text');
+      if (!badge || !textEl) break;
+      badge.className = 'telegram-badge active flash-send';
+      textEl.textContent = 'Sent';
+      badge.title = `Last alert sent at ${new Date(msg.ts).toLocaleTimeString()}:\n${msg.text}`;
+      setTimeout(() => {
+        if (badge.className.includes('flash-send')) {
+          badge.className = 'telegram-badge active';
+          textEl.textContent = 'Ready';
+        }
+      }, 2000);
+      break;
+    }
+
     /* ── Book Ticker ─ */
     case 'book_ticker': {
       if (!appliesToActiveWatch(msg)) break;
@@ -825,13 +884,6 @@ const dispatch = (msg) => {
       break;
     }
 
-    case 'position_update':
-    case 'paper_position_update': {
-      lastOpenPositions = Array.isArray(msg.positions) ? msg.positions : [];
-      refreshOpenPositionOverlay();
-      break;
-    }
-
     /* ── Server-side NanoPine alerts ─ */
     case 'script_alert': {
       scripts?.ingestServerAlert?.(msg);
@@ -858,14 +910,14 @@ const initSidebarToggle = () => {
     btn.classList.toggle('active', hidden);
     try {
       localStorage.setItem(SIDEBAR_STORAGE_KEY, hidden ? '1' : '0');
-    } catch {}
+    } catch (e) { /* ignore */ }
   };
 
   // Restore state
   try {
     const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
     if (stored === '1') setHidden(true);
-  } catch {}
+  } catch (e) { /* ignore */ }
 
   btn.addEventListener('click', () => {
     const isHidden = grid.classList.contains('sidebar-hidden');

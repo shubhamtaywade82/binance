@@ -437,6 +437,13 @@ const main = async (): Promise<void> => {
   }
   if (dashboardBridge) {
     lifecycle.register('dashboard', () => dashboardBridge!.stop(), { timeoutMs: 3000 });
+    defaultEventBus.subscribe('telegram.sent', (evt) => {
+      dashboardBridge!.broadcast({
+        type: 'telegram_sent',
+        text: (evt.payload as any)?.text ?? '',
+        ts: evt.ts,
+      });
+    });
   }
 
   // ── Runtime control plane ───────────────────────────────────────────────
