@@ -85,25 +85,32 @@ export class TelegramNotifier {
       return;
     }
 
+    // C-4: every Telegram dispatch is an HTTPS call. Use subscribeAsync so a
+    // slow Telegram API never back-pressures kline ingestion or order
+    // routing. Per-subscriber queue absorbs short stalls; repeated failures
+    // dead-letter the message so a single malformed payload doesn't lock
+    // the channel.
+    const opts = { name: 'telegram-notifier', queueWarnThreshold: 50, maxConsecutiveErrors: 3 };
+
     // Trade lifecycle
-    this.eventBus.subscribe<any>('execution.order.filled', (e) => this.onOrderFilled(e));
-    this.eventBus.subscribe<any>('execution.order.rejected', (e) => this.onOrderRejected(e));
-    this.eventBus.subscribe<any>('execution.position.closed', (e) => this.onPositionClosed(e));
-    this.eventBus.subscribe<any>('execution.order.submitted', (e) => this.onOrderSubmitted(e));
+    this.eventBus.subscribeAsync<any>('execution.order.filled', (e) => this.onOrderFilled(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.order.rejected', (e) => this.onOrderRejected(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.position.closed', (e) => this.onPositionClosed(e), opts);
+    this.eventBus.subscribeAsync<any>('execution.order.submitted', (e) => this.onOrderSubmitted(e), opts);
 
     // Strategy
-    this.eventBus.subscribe<any>('strategy.signal', (e) => this.onStrategySignal(e));
-    this.eventBus.subscribe<any>('trail.update', (e) => this.onTrailUpdate(e));
+    this.eventBus.subscribeAsync<any>('strategy.signal', (e) => this.onStrategySignal(e), opts);
+    this.eventBus.subscribeAsync<any>('trail.update', (e) => this.onTrailUpdate(e), opts);
 
     // Account
-    this.eventBus.subscribe<any>('wallet.update', (e) => this.onWalletUpdate(e));
+    this.eventBus.subscribeAsync<any>('wallet.update', (e) => this.onWalletUpdate(e), opts);
 
     // AI
-    this.eventBus.subscribe<any>('ai.market.brief', (e) => this.onAiBrief(e));
+    this.eventBus.subscribeAsync<any>('ai.market.brief', (e) => this.onAiBrief(e), opts);
 
     // System / risk
-    this.eventBus.subscribe<any>('system.killswitch', (e) => this.onKillSwitch(e));
-    this.eventBus.subscribe<any>('risk.drawdown', (e) => this.onDrawdown(e));
+    this.eventBus.subscribeAsync<any>('system.killswitch', (e) => this.onKillSwitch(e), opts);
+    this.eventBus.subscribeAsync<any>('risk.drawdown', (e) => this.onDrawdown(e), opts);
 
     // Periodic digest
     if (this.cfg.digestIntervalMin > 0) {

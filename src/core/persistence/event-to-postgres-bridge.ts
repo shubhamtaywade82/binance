@@ -30,19 +30,25 @@ export class EventToPostgresBridge {
   }
 
   private subscribe(): void {
-    this.eventBus.subscribe('execution.order.submitted', (e: DomainEvent<any>) =>
+    // C-4: Postgres writes are I/O and can stall during pool exhaustion or a
+    // network blip. Use subscribeAsync so a slow flush never back-pressures
+    // the publisher (kline ingestion / order routing). Per-subscriber queue
+    // absorbs short stalls; consecutive failures dead-letter the offending
+    // event so the bridge resumes processing the next one.
+    const opts = { name: 'pg-bridge', queueWarnThreshold: 200, maxConsecutiveErrors: 8 };
+    this.eventBus.subscribeAsync('execution.order.submitted', (e: DomainEvent<any>) =>
       this.writeOrder(e, 'SUBMITTED'),
-    );
-    this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => {
+    opts);
+    this.eventBus.subscribeAsync('execution.order.filled', (e: DomainEvent<any>) => {
       this.writeOrder(e, 'FILLED');
       this.upsertPositionFromFill(e);
-    });
-    this.eventBus.subscribe('execution.order.rejected', (e: DomainEvent<any>) =>
+    }, opts);
+    this.eventBus.subscribeAsync('execution.order.rejected', (e: DomainEvent<any>) =>
       this.writeOrder(e, 'REJECTED'),
-    );
-    this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) =>
+    opts);
+    this.eventBus.subscribeAsync('execution.position.closed', (e: DomainEvent<any>) =>
       this.onPositionClosed(e),
-    );
+    opts);
   }
 
   private writeOrder(event: DomainEvent<any>, status: string): void {
