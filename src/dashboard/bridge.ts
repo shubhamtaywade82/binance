@@ -158,6 +158,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
   const refTfByClient = new Map<WebSocket, string>();
   /** Per-client symbol from the multiplex watchlist (defaults to execution / primary symbol). */
   const watchSymbolByClient = new Map<WebSocket, string>();
+  /** Clients currently building a snapshot for a new symbol; skip live broadcasts to prevent race conditions. */
+  const clientSnapshotting = new Set<WebSocket>();
   /** Sticky depth snapshot for the active sweep bar (survives ring prune after first attach). */
   const sweepOrderBookMemoBySym = new Map<string, { key: string; snap: OrderBookMicroSnapshot }>();
 
@@ -415,6 +417,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
   let oiPollTimer: ReturnType<typeof setInterval> | null = null;
   let fundingTimer: ReturnType<typeof setInterval> | null = null;
   let paperStateTimer: ReturnType<typeof setInterval> | null = null;
+  let precisionTimer: ReturnType<typeof setInterval> | null = null;
 
   const oiRestClient = new BinanceRestClient({
     apiKey: cfg.BINANCE_API_KEY ?? '',
@@ -519,6 +522,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     if (anyFixed) {
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
+        if (clientSnapshotting.has(client)) continue;
         client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
       log.info('candle_store_resynced', { reason: 'periodic_validation' });
@@ -543,6 +547,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     if (anyFixed) {
       for (const client of wss.clients) {
         if (client.readyState !== WebSocket.OPEN) continue;
+        if (clientSnapshotting.has(client)) continue;
         if (getSym(client) !== sym) continue;
         client.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(client) }));
       }
@@ -555,6 +560,12 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       const raw = JSON.stringify(msg);
       for (const client of wss.clients) {
         if (client.readyState === WebSocket.OPEN) {
+          if (clientSnapshotting.has(client)) continue;
+          const msgSym = (msg as any).symbol;
+          if (msgSym != null && typeof msgSym === 'string') {
+            const clientSym = getSym(client);
+            if (msgSym.toUpperCase() !== clientSym.toUpperCase()) continue;
+          }
           try {
             client.send(raw);
           } catch (e) {
@@ -590,6 +601,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
   const broadcastSignalsPerClient = (): void => {
         for (const client of wss.clients) {
           if (client.readyState !== WebSocket.OPEN) continue;
+          if (clientSnapshotting.has(client)) continue;
           const tf = refTfByClient.get(client) ?? defaultChartRefTf();
           const payload = computeSignalsForClient(client, tf);
           client.send(JSON.stringify({ type: 'signals', ...payload }));
@@ -684,6 +696,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
               // Only broadcast if this is still an active symbol for some client
               let anyClientActive = false;
               for (const client of wss.clients) {
+                if (clientSnapshotting.has(client)) continue;
                 if (getSym(client) === watchSymbol) {
                   anyClientActive = true;
                   break;
@@ -879,6 +892,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         const raw = JSON.stringify(payload);
         for (const client of wss.clients) {
           if (client.readyState !== WebSocket.OPEN) continue;
+          if (clientSnapshotting.has(client)) continue;
           if (getSym(client) !== sym) continue;
           client.send(raw);
         }
@@ -1169,6 +1183,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
             const endRaw = JSON.stringify({ type: 'history_end', tf, symbol: sym });
             for (const client of wss.clients) {
               if (client.readyState !== WebSocket.OPEN) continue;
+              if (clientSnapshotting.has(client)) continue;
               if (getSym(client) !== sym) continue;
               client.send(endRaw);
             }
@@ -1182,6 +1197,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           });
           for (const client of wss.clients) {
             if (client.readyState !== WebSocket.OPEN) continue;
+            if (clientSnapshotting.has(client)) continue;
             if (getSym(client) !== sym) continue;
             client.send(chunkRaw);
             client.send(indRaw);
@@ -1248,9 +1264,15 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           watchlistSymbols.push(next);
         }
 
+        clientSnapshotting.add(ws);
         watchSymbolByClient.set(ws, next);
-        ws.send(JSON.stringify({ type: 'snapshot', ...await buildSnapshot(ws) }));
-        sendStoredAiBrief(ws, next);
+        try {
+          const snap = await buildSnapshot(ws);
+          ws.send(JSON.stringify({ type: 'snapshot', ...snap }));
+          sendStoredAiBrief(ws, next);
+        } finally {
+          clientSnapshotting.delete(ws);
+        }
         return;
       }
       if (dashboardMsg.type === 'set_chart_tf' && typeof dashboardMsg.tf === 'string') {
@@ -1278,6 +1300,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     });
 
     ws.on('close', () => {
+      clientSnapshotting.delete(ws);
       refTfByClient.delete(ws);
       watchSymbolByClient.delete(ws);
       log.info('dashboard_client_disconnected', { clients: wss.clients.size });
@@ -1523,6 +1546,15 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
 
         oiPollTimer = setInterval(broadcastOiRegime, OI_POLL_INTERVAL_SEC * 1000);
         fundingTimer = setInterval(broadcastFunding, 15_000);
+        precisionTimer = setInterval(() => {
+          for (const client of wss.clients) {
+            if (client.readyState === WebSocket.OPEN && !clientSnapshotting.has(client)) {
+              const sym = getSym(client);
+              const precPayload = buildInstrumentPrecisionPayload(sym);
+              client.send(JSON.stringify({ type: 'precision_update', symbol: sym, ...precPayload }));
+            }
+          }
+        }, 10_000);
 
         heartbeatTimer = setInterval(() => {
           broadcast({ type: 'heartbeat', ts: Date.now(), clients: wss.clients.size });
@@ -1586,6 +1618,10 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         if (fundingTimer) {
           clearInterval(fundingTimer);
           fundingTimer = null;
+        }
+        if (precisionTimer) {
+          clearInterval(precisionTimer);
+          precisionTimer = null;
         }
         if (paperStateTimer) {
           clearInterval(paperStateTimer);

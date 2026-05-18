@@ -292,6 +292,19 @@ body::before {
   50% { opacity: 0.4; }
 }
 
+/* Telegram Telemetry Badge */
+.telegram-badge { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--bg-input); border: 1px solid var(--border); color: var(--text-secondary); transition: all 0.3s ease; cursor: pointer; }
+.telegram-badge svg { color: var(--text-dim); transition: all 0.3s ease; }
+.telegram-badge.active { border-color: var(--bull); color: var(--bull); background: rgba(0, 187, 109, 0.08); }
+.telegram-badge.active svg { color: var(--bull); filter: drop-shadow(0 0 6px var(--bull-glow)); }
+.telegram-badge.flash-send { animation: telegram-flash 0.6s cubic-bezier(0.1, 1, 0.1, 1); }
+
+@keyframes telegram-flash {
+  0% { transform: scale(1); background: var(--bull); color: #000; }
+  50% { transform: scale(1.08); background: var(--bull); color: #000; }
+  100% { transform: scale(1); background: rgba(0, 187, 109, 0.08); color: var(--bull); }
+}
+
 .icon-btn {
   background: var(--bg-input);
   border: 1px solid var(--border);
