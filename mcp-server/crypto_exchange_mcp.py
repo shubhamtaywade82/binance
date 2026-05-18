@@ -131,13 +131,21 @@ def _http(ctx: Context) -> httpx.AsyncClient:
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Uppercase, strip, and validate a Binance symbol like BTCUSDT."""
+    """Uppercase, strip, and validate a Binance symbol like BTCUSDT.
+    Automatically handles common suffixes like .P, .PERP, -PERP.
+    """
     if symbol is None:
         raise ValueError("symbol is required")
+    # Clean common futures suffixes that LLMs often include
     cleaned = symbol.strip().upper()
+    for suffix in [".P", ".PERP", "-PERP", "-P"]:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[:-len(suffix)]
+            break
+
     if not cleaned or not SYMBOL_RE.match(cleaned):
         raise ValueError(
-            f"Invalid symbol '{symbol}'. Use alphanumeric symbols like BTCUSDT. "
+            f"Invalid symbol '{symbol}' (cleaned: '{cleaned}'). Use alphanumeric symbols like BTCUSDT. "
             "Call binance_get_exchange_info to list valid symbols."
         )
     return cleaned
@@ -529,7 +537,7 @@ class RecentTradesInput(_Base):
 
 class KlinesInput(_Base):
     symbol: str = Field(..., description="Symbol like 'BTCUSDT'")
-    interval: str = Field(..., description="Kline interval (1m,5m,1h,1d,...)")
+    interval: str = Field(default="1h", description="Kline interval (1m,5m,1h,1d,...)")
     limit: int = Field(default=500, ge=1, le=1500)
     startTime: Optional[int] = Field(default=None, description="Start time in ms")
     endTime: Optional[int] = Field(default=None, description="End time in ms")
@@ -572,7 +580,7 @@ class FundingHistoryInput(_Base):
 
 class OiHistInput(_Base):
     symbol: str = Field(..., description="Futures symbol like 'BTCUSDT'")
-    period: str = Field(..., description="Aggregation period (5m,15m,30m,1h,2h,4h,6h,12h,1d)")
+    period: str = Field(default="1h", description="Aggregation period (5m,15m,30m,1h,2h,4h,6h,12h,1d)")
     limit: int = Field(default=30, ge=1, le=500)
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
