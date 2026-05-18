@@ -205,6 +205,14 @@ export class BinanceMultiplexWs {
   private connections = new Map<BinanceWsRoute, RouteConnection>();
   private subscriptions: Set<string>;
   private readonly reconnectAfterMs: number;
+  /**
+   * M-9: per-symbol last seen bookTicker updateId. Binance's `@bookTicker`
+   * stream is push-monotonic and not gap-free across reconnects; an out-of-
+   * order or stale tick (updateId <= last seen) gets discarded so paper
+   * fills against the book ticker don't fill on the wrong side of an
+   * already-superseded quote.
+   */
+  private bookTickerLastUpdateId = new Map<string, number>();
 
   constructor(
     private readonly opts: MultiplexOptions,
@@ -457,9 +465,20 @@ export class BinanceMultiplexWs {
     const bid = Number(data.b);
     const ask = Number(data.a);
     if (!symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
+    // M-9: drop ticks whose updateId is <= the last accepted one. Binance
+    // bookTicker carries `u` (updateId); on rare reconnect-replay it can
+    // re-emit old quotes, which would otherwise overwrite a fresher
+    // in-memory bid/ask and cause paper fills on the wrong side of the
+    // book. Missing `u` (legacy spot variants) is treated as fresh.
+    const updateId = Number(data.u ?? 0);
+    if (Number.isFinite(updateId) && updateId > 0) {
+      const last = this.bookTickerLastUpdateId.get(symbol) ?? 0;
+      if (updateId <= last) return;
+      this.bookTickerLastUpdateId.set(symbol, updateId);
+    }
     this.cb.onBookTicker?.({
       symbol,
-      updateId: Number(data.u ?? 0) || undefined,
+      updateId: updateId || undefined,
       bestBid: bid,
       bestBidQty: Number(data.B),
       bestAsk: ask,

@@ -40,7 +40,13 @@ export class MultiTimeframeStore {
 
   applyKline(symbol: string, tf: string, candle: Candle, isFinal: boolean): boolean {
     const arr = this.bucket(symbol, tf);
-    if (this.checkAnomaly(symbol, tf, candle, arr)) return false;
+    // M-12: anomalous-bar detection LOGS but no longer DROPS. Dropping made
+    // the bot blind to exactly the bars where the highest-edge trades live
+    // (Fed announcements, liquidation cascades — multi-sigma range, real
+    // events). The callback still fires so an operator can correlate
+    // signals with anomalies. Strategy logic can opt out by checking
+    // `candle.anomalous` if it cares.
+    this.checkAnomaly(symbol, tf, candle, arr);
     // C-10: tag the bar with its seal state before insert so downstream
     // indicators / replay logic can distinguish closed bars from the live tip.
     const stamped: Candle = candle.sealed === undefined
