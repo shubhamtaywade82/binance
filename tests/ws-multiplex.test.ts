@@ -227,14 +227,17 @@ describe('BinanceMultiplexWs', () => {
     void mx.stop();
   });
 
-  it('schedules a 23h rotation timer on connect', () => {
+  it('schedules a ~23h rotation timer on connect (±15% jitter, C-7)', () => {
     vi.useFakeTimers();
     try {
       const onReconnect = vi.fn();
       const { mx, sockets } = build({ onReconnect });
       mx.start();
       for (const { sock } of sockets) sock.emit('open');
-      vi.advanceTimersByTime(23 * 60 * 60 * 1000 + 100);
+      // C-7 added ±15% jitter to the rotation interval, so the worst-case
+      // upper bound is 23h × 1.15 ≈ 26.45h. Advance past that to ensure
+      // every randomised window has fired.
+      vi.advanceTimersByTime(27 * 60 * 60 * 1000);
       expect(onReconnect).toHaveBeenCalled();
       void mx.stop();
     } finally {

@@ -14,12 +14,28 @@ const noopLog: ControlHttpLogger = {
   warn: () => undefined,
 };
 
+export interface HealthReport {
+  ok: boolean;
+  /** Free-form structured status (last kline ts, ws connectivity, etc). */
+  details: Record<string, unknown>;
+  /** Reasons the bot is considered unhealthy. Empty when ok=true. */
+  reasons: string[];
+}
+
 export interface ControlHttpOptions {
   /** Shared-secret bearer token. When set, every request must present
    *  `Authorization: Bearer <token>`. When undefined, the server runs
    *  unauthenticated and logs a warning on every request. */
   authToken?: string;
   log?: ControlHttpLogger;
+  /**
+   * M-13: optional health probe. When set, GET /health returns 200/503
+   * based on report.ok. /health is UN-authenticated by design so a
+   * container probe (Docker / k8s liveness) doesn't need to know the
+   * token. Returns a minimal `{ ok }` body when called without auth and
+   * the full report when called with valid auth.
+   */
+  healthProbe?: () => HealthReport | Promise<HealthReport>;
 }
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -71,6 +87,7 @@ export class ControlHttpServer {
   private redisSub: Redis | null = null;
   private readonly authToken: string | undefined;
   private readonly log: ControlHttpLogger;
+  private readonly healthProbe?: () => HealthReport | Promise<HealthReport>;
 
   constructor(
     private readonly redis: Redis | null,
@@ -80,6 +97,7 @@ export class ControlHttpServer {
   ) {
     this.authToken = opts.authToken;
     this.log = opts.log ?? noopLog;
+    this.healthProbe = opts.healthProbe;
     this.server = http.createServer((req, res) => {
       this.dispatch(req, res).catch((err: Error) => {
         sendJson(res, 500, { ok: false, error: err.message });
@@ -152,6 +170,26 @@ export class ControlHttpServer {
     const url = req.url ?? '/';
     const method = req.method?.toUpperCase() ?? 'GET';
     const ip = remoteIp(req);
+
+    // M-13: /health is intentionally UN-authenticated so container probes
+    // (Docker HEALTHCHECK, k8s liveness/readiness) don't need to know the
+    // bearer token. Status 200 = healthy, 503 = unhealthy. With auth the
+    // full structured report is returned; without auth only `{ ok }`.
+    if (method === 'GET' && url === '/health') {
+      const probe = this.healthProbe;
+      if (!probe) {
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      try {
+        const report = await probe();
+        const authed = this.isAuthorized(req);
+        sendJson(res, report.ok ? 200 : 503, authed ? report : { ok: report.ok });
+      } catch (err) {
+        sendJson(res, 503, { ok: false, error: (err as Error).message });
+      }
+      return;
+    }
 
     if (!this.isAuthorized(req)) {
       this.log.warn('control_http_unauthorized', { method, url, ip });

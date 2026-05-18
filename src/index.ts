@@ -147,6 +147,17 @@ const main = async (): Promise<void> => {
   const eventPublisher = new MarketEventPublisher(defaultEventBus);
   const eventPublisherCallbacks = eventPublisher.getCallbacks() as any;
 
+  // M-13: lightweight freshness counters consumed by the /health probe. We
+  // track last observed timestamp per source so a container healthcheck can
+  // detect a stuck bot (no kline in N seconds) without coupling to the full
+  // FreshnessWatchdog API.
+  let healthLastKlineTs = 0;
+  let healthLastBookTickerTs = 0;
+  let healthLastFillTs = 0;
+  defaultEventBus.subscribe('market.kline.closed', () => { healthLastKlineTs = Date.now(); });
+  defaultEventBus.subscribe('market.bookticker', () => { healthLastBookTickerTs = Date.now(); });
+  defaultEventBus.subscribe('execution.order.filled', () => { healthLastFillTs = Date.now(); });
+
   selfLearning = new SelfLearningRuntime({
     enabled: cfg.SELF_LEARNING_ENABLED,
     paperOnly: cfg.SELF_LEARNING_PAPER_ONLY,
@@ -638,6 +649,38 @@ const main = async (): Promise<void> => {
     controlServer = new ControlHttpServer(redis, router, () => orch!.hasPosition(), {
       authToken,
       log,
+      // M-13: health probe — green when at least one source has fired
+      // recently. Threshold tracks STALE_FEED_THRESHOLD_MS so /health is
+      // consistent with the RiskEngine's stale-feed veto.
+      healthProbe: () => {
+        const now = Date.now();
+        const threshold = Number((cfg as any).STALE_FEED_THRESHOLD_MS) || 30_000;
+        const klineAgeMs = healthLastKlineTs === 0 ? Infinity : now - healthLastKlineTs;
+        const bookTickerAgeMs = healthLastBookTickerTs === 0 ? Infinity : now - healthLastBookTickerTs;
+        const reasons: string[] = [];
+        // During the boot window (no kline events yet) we treat the bot as
+        // healthy for up to 5 minutes so containers don't restart-loop while
+        // the kline backfill is still flowing.
+        const bootWindowMs = 5 * 60_000;
+        const uptimeMs = now - (process.uptime() * 1000 ? Math.max(0, now - process.uptime() * 1000) : now);
+        const inBootWindow = uptimeMs < bootWindowMs;
+        if (!inBootWindow && klineAgeMs > threshold * 2 && bookTickerAgeMs > threshold * 2) {
+          reasons.push(`no_market_data: kline_age=${Number.isFinite(klineAgeMs) ? klineAgeMs : 'never'}ms bookticker_age=${Number.isFinite(bookTickerAgeMs) ? bookTickerAgeMs : 'never'}ms`);
+        }
+        return {
+          ok: reasons.length === 0,
+          reasons,
+          details: {
+            uptimeSec: Math.floor(process.uptime()),
+            klineAgeMs: Number.isFinite(klineAgeMs) ? klineAgeMs : null,
+            bookTickerAgeMs: Number.isFinite(bookTickerAgeMs) ? bookTickerAgeMs : null,
+            lastFillAgeMs: healthLastFillTs === 0 ? null : now - healthLastFillTs,
+            hasPosition: orch!.hasPosition(),
+            executionMode: cfg.EXECUTION_MODE,
+            adapter: router.currentConfig(),
+          },
+        };
+      },
     });
 
     // Subscribe to Redis pub/sub config changes (separate connection required for sub mode).

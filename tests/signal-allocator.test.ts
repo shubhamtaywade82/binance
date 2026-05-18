@@ -48,10 +48,12 @@ describe('SignalAllocator', () => {
     bus.subscribeAll((e) => captured.push(e));
   });
 
-  it('picks top N by ADX×ATR score, rejects losers with reason', () => {
+  it('picks top N by ADX×ATR score; losers go to carryover queue (M-18)', () => {
     const c = cfg({ MAX_OPEN_SYMBOLS: 2 });
     const risk = new RiskEngine(c, bus);
-    new SignalAllocator(c, bus, risk, { flushDelayMs: 100 });
+    // carryoverCapacity=0 reproduces the pre-M-18 reject-losers behaviour
+    // for this regression test.
+    new SignalAllocator(c, bus, risk, { flushDelayMs: 100, carryoverCapacity: 0 });
 
     // Three candidates in the same close-window bar
     bus.publish(mkRequest('BTCUSDT', 35, 0.010, 1000)); // score = 1.5 × 3.33 = 5.0
