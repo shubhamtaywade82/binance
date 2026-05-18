@@ -18,6 +18,13 @@ export const Node = {
     opts,
     ...loc,
   }),
+  FunctionDecl: (name: string, params: string[], body: Expr, loc?: SourceLoc): Statement => ({
+    type: 'FunctionDecl',
+    name,
+    params,
+    body,
+    ...loc,
+  }),
   InputDecl: (name: string, kind: InputKind, args: Expr[], kwargs: KwArg[], loc?: SourceLoc): Statement => ({
     type: 'InputDecl',
     name,
