@@ -189,7 +189,7 @@ export class ChartManager {
     this.ema9Series = null;
     this.ema21Series = null;
     this.ema50Series = null;
-    this.stSeries = null;
+    this.stSeriesList = [];
     this.currentTf = readStoredChartTf() ?? '5m';
     this.candleMap = {}; // tf → candle[] cache
     this.indicMap = {}; // tf → indicators cache
@@ -1355,7 +1355,7 @@ export class ChartManager {
       this._fundingPriceLine = null;
     }
     if (!this._lastFunding || !this.candleSeries) return;
-    const { rate, zscore, extreme, crowdedSide } = this._lastFunding;
+    const { rate, extreme } = this._lastFunding;
     if (!Number.isFinite(rate)) return;
 
     const pctStr = (rate * 100).toFixed(4) + '%';
@@ -1743,7 +1743,7 @@ export class ChartManager {
     if (this.ema9Series) this.ema9Series.applyOptions({ priceFormat: pf });
     if (this.ema21Series) this.ema21Series.applyOptions({ priceFormat: pf });
     if (this.ema50Series) this.ema50Series.applyOptions({ priceFormat: pf });
-    if (this.stSeries) this.stSeries.applyOptions({ priceFormat: pf });
+    this.stSeriesList.forEach((s) => s.applyOptions({ priceFormat: pf }));
     if (this._vwapSeries) this._vwapSeries.applyOptions({ priceFormat: pf });
   }
 
@@ -1845,14 +1845,8 @@ export class ChartManager {
     this.ema21Series = this._addLineSeries(COLORS.ema21, 1, 'EMA21');
     this.ema50Series = this._addLineSeries(COLORS.ema50, 1.5, 'EMA50');
 
-    this.stSeries = this.chart.addLineSeries({
-      color: COLORS.bull,
-      lineWidth: 1.5,
-      lineStyle: 2,
-      priceScaleId: 'right',
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
+    // Supertrend series are dynamically allocated per continuous segment in _paintIndicators
+    this.stSeriesList = [];
 
     this._vwapSeries = this.chart.addLineSeries({
       color: '#e040fb',
@@ -1967,7 +1961,7 @@ export class ChartManager {
     document.getElementById('toggle-supertrend').addEventListener('change', (e) => {
       this.showSupertrend = e.target.checked;
       storeIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, this.showSupertrend);
-      this.stSeries.applyOptions({ visible: this.showSupertrend });
+      this.stSeriesList.forEach((s) => s.applyOptions({ visible: this.showSupertrend }));
     });
 
     const emaEl = document.getElementById('toggle-ema');
@@ -1975,7 +1969,7 @@ export class ChartManager {
     const stEl = document.getElementById('toggle-supertrend');
     if (stEl instanceof HTMLInputElement) stEl.checked = this.showSupertrend;
     this._toggleEma(this.showEma);
-    this.stSeries.applyOptions({ visible: this.showSupertrend });
+    this.stSeriesList.forEach((s) => s.applyOptions({ visible: this.showSupertrend }));
 
     const ctWrap = document.getElementById('candle-theme-wrap');
     const ctTrigger = document.getElementById('candle-theme-trigger');
@@ -2313,7 +2307,10 @@ export class ChartManager {
     this.ema9Series.setData([]);
     this.ema21Series.setData([]);
     this.ema50Series.setData([]);
-    this.stSeries.setData([]);
+    while (this.stSeriesList.length > 0) {
+      const s = this.stSeriesList.pop();
+      try { this.chart.removeSeries(s); } catch { /* ignore */ }
+    }
     this._vwapSeries?.setData([]);
     this._rsiSeries?.setData([]);
     this._tfiSeries?.setData([]);
@@ -2849,17 +2846,57 @@ export class ChartManager {
     if (ind.supertrend?.value && ind.supertrend?.dir) {
       const vals = ind.supertrend.value;
       const dirs = ind.supertrend.dir;
-      const stData = vals
-        .map((v, j) => {
-          if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
-          const i = vals.length === n ? j : n - vals.length + j;
-          if (i < 0 || i >= n) return null;
-          const col = dirs[j] === 'LONG' ? COLORS.bull : COLORS.bear;
-          return { time: candleTime(i), value: v, color: col };
-        })
-        .filter(Boolean);
-      const stPadded = this._padLineLikeToLastTime(stData, tLastCandle);
-      this.stSeries.setData(stPadded);
+
+      // Group into continuous segments
+      const segments = [];
+      let curSeg = null;
+      for (let j = 0; j < vals.length; j++) {
+        if (vals[j] == null || !Number.isFinite(vals[j])) continue;
+        const i = vals.length === n ? j : n - vals.length + j;
+        if (i < 0 || i >= n) continue;
+        const dir = dirs[j];
+        if (!curSeg || curSeg.dir !== dir) {
+          curSeg = { dir, data: [] };
+          segments.push(curSeg);
+        }
+        curSeg.data.push({ time: candleTime(i), value: vals[j] });
+      }
+
+      // Pad the very last segment to tLastCandle
+      if (segments.length > 0) {
+        const lastSeg = segments[segments.length - 1];
+        lastSeg.data = this._padLineLikeToLastTime(lastSeg.data, tLastCandle);
+      }
+
+      // Match segments to this.stSeriesList
+      while (this.stSeriesList.length < segments.length) {
+        const s = this.chart.addLineSeries({
+          lineWidth: 1.5,
+          lineStyle: 0, // Solid
+          priceScaleId: 'right',
+          lastValueVisible: false,
+          priceLineVisible: false,
+          visible: this.showSupertrend,
+        });
+        if (this.candleSeries) {
+          const pf = this.candleSeries.options().priceFormat;
+          if (pf) s.applyOptions({ priceFormat: pf });
+        }
+        this.stSeriesList.push(s);
+      }
+      while (this.stSeriesList.length > segments.length) {
+        const s = this.stSeriesList.pop();
+        try { this.chart.removeSeries(s); } catch { /* ignore */ }
+      }
+
+      // Update data and colors
+      for (let k = 0; k < segments.length; k++) {
+        const s = this.stSeriesList[k];
+        const seg = segments[k];
+        const col = seg.dir === 'LONG' ? COLORS.bull : COLORS.bear;
+        s.applyOptions({ color: col, visible: this.showSupertrend });
+        s.setData(seg.data);
+      }
     }
 
     if (ind.rsi && this._rsiEnabled) {

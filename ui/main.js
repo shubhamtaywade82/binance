@@ -910,14 +910,14 @@ const initSidebarToggle = () => {
     btn.classList.toggle('active', hidden);
     try {
       localStorage.setItem(SIDEBAR_STORAGE_KEY, hidden ? '1' : '0');
-    } catch (e) { /* ignore */ }
+    } catch (_e) { /* ignore */ }
   };
 
   // Restore state
   try {
     const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
     if (stored === '1') setHidden(true);
-  } catch (e) { /* ignore */ }
+  } catch (_e) { /* ignore */ }
 
   btn.addEventListener('click', () => {
     const isHidden = grid.classList.contains('sidebar-hidden');

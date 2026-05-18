@@ -79,6 +79,10 @@ export class ExecutionBridge {
   private async handleAccepted(event: DomainEvent<OrderValidatedPayload>): Promise<void> {
     const p = event.payload;
     if (!p.symbol || !p.price) return;
+    if (this.cfg.PLACE_ORDER === false) {
+      this.publishRejected(p, 'PLACE_ORDER_DISABLED', marketClock.now());
+      return;
+    }
 
     const leverageHint = Number((p as any).leverageHint);
     const leverage = Number.isFinite(leverageHint) && leverageHint > 0

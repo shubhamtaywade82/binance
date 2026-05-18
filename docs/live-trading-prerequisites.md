@@ -95,7 +95,7 @@ TRADE_LOG_PATH=./logs/trades.csv
 LOG_HEARTBEAT_SEC=60
 ```
 
-> **Testnet API keys are separate from mainnet.** Create them at:  
+> **Testnet API keys are separate from mainnet.** Create them at:
 > `https://testnet.binancefuture.com` → Login → API Management
 
 ### Step 3 — Mainnet config (after testnet validation)
@@ -246,8 +246,8 @@ No cleanup runs — cancel orders and close positions manually on Binance as abo
 
 | Use case | Suggested starting values |
 |----------|--------------------------|
-| Testnet validation | `CAPITAL_PER_TRADE_USDT=50`, `LEVERAGE=5` |
-| Conservative live | `CAPITAL_PER_TRADE_USDT=100`, `LEVERAGE=5` |
+| Testnet validation | `CAPITAL_PER_TRADE_USDT=50`, `LEVERAGE=10` |
+| Conservative live | `CAPITAL_PER_TRADE_USDT=100`, `LEVERAGE=10` |
 | Standard (1.5% playbook) | `CAPITAL_PER_TRADE_USDT=200`, `LEVERAGE=10` |
 | Max recommended | `CAPITAL_PER_TRADE_USDT=500`, `LEVERAGE=10` |
 

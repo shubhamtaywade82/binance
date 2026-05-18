@@ -70,6 +70,23 @@ describe('event-bus execution chain', () => {
     expect(adapter.calls[0].pair).toBe('BTCUSDT');
   });
 
+  it('honors PLACE_ORDER=false before adapter submission', async () => {
+    const cfg = fakeCfg({ PLACE_ORDER: false });
+    new RiskEngine(cfg, bus);
+    new SignalToOrderBridge(cfg, bus, { lastPrice: () => 100 }, { cooldownMs: 0 });
+    new ExecutionBridge(cfg, bus, adapter);
+
+    bus.publish({
+      id: 'sig-1', type: 'strategy.signal', ts: 1, source: 'test', symbol: 'BTCUSDT', payload: { strategyId: 'test', signal: 'LONG', confidence: 0.9 },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    expect(adapter.calls).toHaveLength(0);
+    const reject = captured.find((e) => e.type === 'execution.order.rejected');
+    expect(reject?.payload).toMatchObject({ reason: 'PLACE_ORDER_DISABLED' });
+  });
+
   it('rejects when order notional exceeds MAX_NOTIONAL_USDT', async () => {
     const cfg = fakeCfg({ MAX_NOTIONAL_USDT: 50 }); // 100 capital * 5 lev = 500 notional > 50
     new RiskEngine(cfg, bus);
