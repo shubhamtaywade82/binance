@@ -144,6 +144,32 @@ export class RiskEngine {
       const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
       if (sym) this.staleSymbols.delete(sym);
     });
+    // M-3: runtime correlation matrix updates. Publishers (a Redis pubsub
+    // bridge, a nightly scheduled job, an operator REST call) emit
+    // `risk.correlations.update` with `{ pairs: CorrelationPair[],
+    // threshold?: number }` to refresh the guard without restarting the bot.
+    // Market-regime shifts can invalidate baked-in correlations in hours.
+    this.eventBus.subscribe('risk.correlations.update', (e: DomainEvent<any>) => {
+      this.updateCorrelations(e.payload?.pairs ?? [], e.payload?.threshold);
+    });
+  }
+
+  /**
+   * M-3: replace the current correlation matrix at runtime. Creates a guard
+   * if one didn't exist (allows initialising correlations after boot). When
+   * `pairs` is empty the existing guard is left in place — call with an
+   * explicit `[]` and `threshold:Infinity` to disable.
+   */
+  public updateCorrelations(pairs: CorrelationPair[], threshold?: number): void {
+    if (!pairs || pairs.length === 0) return;
+    const t = Number.isFinite(threshold) && (threshold as number) > 0
+      ? (threshold as number)
+      : Number((this.cfg as any).CORRELATION_THRESHOLD) || 0.7;
+    if (!this.correlationGuard) {
+      (this as any).correlationGuard = new CorrelationGuard(pairs, { threshold: t });
+    } else {
+      this.correlationGuard.updateCorrelations(pairs);
+    }
   }
 
   private validate(event: DomainEvent<OrderRequestedPayload>): void {
