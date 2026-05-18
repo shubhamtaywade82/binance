@@ -1304,8 +1304,13 @@ export class HybridOrchestrator {
       if (!binanceAdapter) return;
       const fillPrice = Number(o.ap) || Number(o.L) || this.lastMark || 0;
       if (fillPrice > 0) {
-        const result = binanceAdapter.notifyFilled(o.si, fillPrice);
-        if (result?.fullyFilled) {
+        // notifyFilled is now async (H-1): cancellation of TP/SL siblings is
+        // awaited so the close event is only published once the bracket is
+        // verifiably clean. Fire-and-forget here is intentional — the WS
+        // callback contract is synchronous; errors are logged inside the
+        // adapter, never bubble.
+        void binanceAdapter.notifyFilled(o.si, fillPrice).then((result) => {
+          if (!result?.fullyFilled) return;
           const sym = this.pairs.binanceSymbol.toUpperCase();
           clearPosition(this.redis, sym);
           publish(this.redis, CHANNELS.POSITIONS, {
@@ -1317,7 +1322,9 @@ export class HybridOrchestrator {
             ts: Date.now(),
           });
           void this.positionManager.notifyExchangeClose(sym, result.closed.exitPrice, result.closed.reason as CloseReason);
-        }
+        }).catch((err: Error) => {
+          this.log.warn('binance_notify_filled_failed', { strategyId: o.si, err: err.message });
+        });
       }
     }
   }

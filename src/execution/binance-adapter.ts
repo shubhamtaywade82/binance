@@ -411,10 +411,19 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
   /**
    * Called by the orchestrator when a TP or SL algo order is FILLED by the exchange.
-   * Cancels sibling orders and removes internal state without sending a new market order.
-   * Returns the ClosedPosition for the position manager to log, or null if unknown.
+   * Awaits the cancellation of sibling algo / regular orders before resolving so
+   * downstream consumers can assume the bracket is fully cleaned. Returns the
+   * ClosedPosition for the position manager to log, or null when the strategyId
+   * is unknown / already handled.
+   *
+   * H-1 guarantees:
+   *   • If TP2 and SL fire near-simultaneously on the exchange, the second
+   *     notifyFilled() observes `closingIds.has(internalId)` and returns null
+   *     instead of double-processing.
+   *   • Cancellation of siblings is awaited; the returned Promise resolves
+   *     only after Binance has acknowledged the cancel calls.
    */
-  notifyFilled(strategyId: number, fillPrice: number): { closed: ClosedPosition; internalId: string; fullyFilled: boolean } | null {
+  async notifyFilled(strategyId: number, fillPrice: number): Promise<{ closed: ClosedPosition; internalId: string; fullyFilled: boolean } | null> {
     const internalId = this.algoIdToInternal.get(strategyId);
     if (!internalId) return null;
     const trade = this.trades.get(internalId);
@@ -426,6 +435,7 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
 
     if (isTp1) {
       // Partial close — 60% qty filled. Update remaining, leave position open.
+      // SL stays armed (closePosition=true so it scales to remaining qty).
       const tp1Qty = floorToStep(trade.quantity * 0.6, trade.stepSize);
       trade.remainingQty = floorToStep(trade.quantity - tp1Qty, trade.stepSize);
       trade.tp1StrategyId = null;
@@ -435,13 +445,29 @@ export class BinanceLiveExecutionAdapter implements ExecutionAdapter {
     }
 
     if (isTp2 || isSl) {
-      // Full close — remove trade and cancel siblings.
+      // H-1: serialize against a concurrent sibling fill. If a TP2/SL fill is
+      // already in flight for this internalId, the second call returns null
+      // rather than racing the cancel-all dispatch.
+      if (this.closingIds.has(internalId)) {
+        this.log('binance_exchange_close_already_in_progress', { id: internalId, strategyId });
+        return null;
+      }
+      this.closingIds.add(internalId);
+      // Remove the trade up-front so a concurrent unrelated handler can't
+      // mutate it while cancellation is in flight.
       this.trades.delete(internalId);
       this.cleanAlgoIndex(trade);
-      void Promise.allSettled([
-        cancelAllAlgoOrders(this.opts.client, trade.symbol),
-        cancelAllOrders(this.opts.client, trade.symbol),
-      ]);
+      try {
+        // Await cancellation so the caller can rely on a clean bracket state
+        // by the time the close event is published. Errors are tolerated
+        // (the position is already closed on the exchange).
+        await Promise.allSettled([
+          cancelAllAlgoOrders(this.opts.client, trade.symbol),
+          cancelAllOrders(this.opts.client, trade.symbol),
+        ]);
+      } finally {
+        this.closingIds.delete(internalId);
+      }
       const reason: CloseReason = isSl ? 'SL' : 'TP';
       this.log('binance_exchange_close', { id: internalId, strategyId, reason, fillPrice });
       return { closed: this.buildClosedPosition(trade, fillPrice, reason), internalId, fullyFilled: true };
