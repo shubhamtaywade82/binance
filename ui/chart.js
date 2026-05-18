@@ -190,6 +190,7 @@ export class ChartManager {
     this.ema21Series = null;
     this.ema50Series = null;
     this.stSeriesList = [];
+    this._supertrendMarkers = [];
     this.currentTf = readStoredChartTf() ?? '5m';
     this.candleMap = {}; // tf → candle[] cache
     this.indicMap = {}; // tf → indicators cache
@@ -1108,7 +1109,8 @@ export class ChartManager {
     const smcMarkers = this._lastSmcMarkers ?? [];
     const liqMarkers = this._liquidationsEnabled ? this._liquidationMarkers : [];
     const posMarkers = this._positionMarkers ?? [];
-    const all = [...smcMarkers, ...liqMarkers, ...posMarkers].sort((a, b) => a.time - b.time);
+    const stMarkers = this.showSupertrend ? (this._supertrendMarkers ?? []) : [];
+    const all = [...smcMarkers, ...liqMarkers, ...posMarkers, ...stMarkers].sort((a, b) => a.time - b.time);
     try {
       this.candleSeries.setMarkers(all);
     } catch (e) {
@@ -1962,6 +1964,7 @@ export class ChartManager {
       this.showSupertrend = e.target.checked;
       storeIndicatorOn(CHART_SHOW_ST_STORAGE_KEY, this.showSupertrend);
       this.stSeriesList.forEach((s) => s.applyOptions({ visible: this.showSupertrend }));
+      this._paintAllMarkers();
     });
 
     const emaEl = document.getElementById('toggle-ema');
@@ -2311,6 +2314,8 @@ export class ChartManager {
       const s = this.stSeriesList.pop();
       try { this.chart.removeSeries(s); } catch { /* ignore */ }
     }
+    this._supertrendMarkers = [];
+    this._paintAllMarkers();
     this._vwapSeries?.setData([]);
     this._rsiSeries?.setData([]);
     this._tfiSeries?.setData([]);
@@ -2897,6 +2902,79 @@ export class ChartManager {
         s.applyOptions({ color: col, visible: this.showSupertrend });
         s.setData(seg.data);
       }
+
+      // Calculate Entry, 1%, and 1.5% target markers for Supertrend flips
+      const stMarkers = [];
+      const dp = getMinTickDecimalPlaces();
+      const fmt = (v) => v.toFixed(dp);
+
+      for (let j = 1; j < vals.length; j++) {
+        if (dirs[j] !== dirs[j - 1] && vals[j] != null) {
+          const flipIdx = vals.length === n ? j : n - vals.length + j;
+          if (flipIdx < 0 || flipIdx >= n) continue;
+          const basePrice = candles[flipIdx].close;
+          if (!basePrice || !Number.isFinite(basePrice)) continue;
+
+          const isLong = dirs[j] === 'LONG';
+          const t1Price = isLong ? basePrice * 1.01 : basePrice * 0.99;
+          const t2Price = isLong ? basePrice * 1.015 : basePrice * 0.985;
+          let hitT1 = false;
+          let hitT2 = false;
+
+          const cFlip = candles[flipIdx];
+          stMarkers.push({
+            time: Math.floor(cFlip.openTime / 1000),
+            position: isLong ? 'belowBar' : 'aboveBar',
+            shape: isLong ? 'arrowUp' : 'arrowDown',
+            color: isLong ? COLORS.bull : COLORS.bear,
+            text: `${isLong ? '🟢 LONG' : '🔴 SHORT'} @ ${fmt(basePrice)}`,
+            size: 1,
+            id: `st-entry-${cFlip.openTime}`,
+          });
+
+          // Scan forward within the same trend phase to find where targets are met
+          for (let scan = j; scan < vals.length; scan++) {
+            if (dirs[scan] !== dirs[j]) break; // trend ended
+            const scanIdx = vals.length === n ? scan : n - vals.length + scan;
+            if (scanIdx < 0 || scanIdx >= n) continue;
+            const c = candles[scanIdx];
+
+            if (!hitT1) {
+              const metT1 = isLong ? c.high >= t1Price : c.low <= t1Price;
+              if (metT1) {
+                hitT1 = true;
+                stMarkers.push({
+                  time: Math.floor(c.openTime / 1000),
+                  position: isLong ? 'aboveBar' : 'belowBar',
+                  shape: isLong ? 'arrowDown' : 'arrowUp',
+                  color: isLong ? COLORS.bull : COLORS.bear,
+                  text: `🎯 +1.0% @ ${fmt(t1Price)}`,
+                  size: 1,
+                  id: `st-t1-${c.openTime}`,
+                });
+              }
+            }
+            if (!hitT2) {
+              const metT2 = isLong ? c.high >= t2Price : c.low <= t2Price;
+              if (metT2) {
+                hitT2 = true;
+                stMarkers.push({
+                  time: Math.floor(c.openTime / 1000),
+                  position: isLong ? 'aboveBar' : 'belowBar',
+                  shape: isLong ? 'arrowDown' : 'arrowUp',
+                  color: isLong ? COLORS.bull : COLORS.bear,
+                  text: `🚀 +1.5% @ ${fmt(t2Price)}`,
+                  size: 1,
+                  id: `st-t2-${c.openTime}`,
+                });
+              }
+            }
+            if (hitT1 && hitT2) break; // both targets achieved for this trend phase
+          }
+        }
+      }
+      this._supertrendMarkers = stMarkers;
+      this._paintAllMarkers();
     }
 
     if (ind.rsi && this._rsiEnabled) {
