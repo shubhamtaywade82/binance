@@ -413,6 +413,16 @@ export const AppConfigSchema = z.object({
     .default(120)
     .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
     .pipe(z.number().int().min(30).max(3600)),
+  /**
+   * Hard floor between brief calls per symbol, even when an "event" (BOS,
+   * CHoCH, supertrend flip) forces a refresh. Stops chatter when LTF
+   * indicators oscillate around a flip threshold and fire every kline close.
+   */
+  AI_BRIEF_FORCED_COOLDOWN_SEC: z
+    .union([z.number(), z.string()])
+    .default(45)
+    .transform((v) => (typeof v === 'number' ? v : Number.parseInt(String(v), 10)))
+    .pipe(z.number().int().min(5).max(3600)),
   /** When true, Ollama extended thinking is on (`think: true`); uses more tokens. */
   AI_BRIEF_THINK_ENABLED: boolFromString(false),
   /** When true, stream the brief over the dashboard WebSocket (partial `ai_brief` updates). */

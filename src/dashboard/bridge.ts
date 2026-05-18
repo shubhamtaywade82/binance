@@ -674,9 +674,13 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     const candles = store.getSeries(sym, tf);
     if (candles.length < 21) return undefined;
     const closes = candles.map((c) => c.close);
-    const last = (arr: number[]): number | undefined => {
+    const px = closes[closes.length - 1] ?? 0;
+    // Decimal precision adapted to price magnitude — keep ~4 significant figs.
+    const dp = px >= 1000 ? 2 : px >= 10 ? 3 : px >= 1 ? 4 : 6;
+    const fix = (v: number, places: number = dp): number => +v.toFixed(places);
+    const last = (arr: number[], places: number = dp): number | undefined => {
       for (let i = arr.length - 1; i >= 0; i--) {
-        if (Number.isFinite(arr[i])) return +arr[i].toFixed(6);
+        if (Number.isFinite(arr[i])) return fix(arr[i], places);
       }
       return undefined;
     };
@@ -691,7 +695,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       out.emaBias = e20 > e50 ? 'LONG' : e20 < e50 ? 'SHORT' : 'NONE';
     }
     if (candles.length >= 15) {
-      const r = last(rsi(closes, 14));
+      const r = last(rsi(closes, 14), 2);
       if (r !== undefined) out.rsi14 = r;
     }
     if (candles.length >= 35) {
@@ -713,7 +717,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       const v = st.value[lastIdx];
       const d = st.dir[lastIdx];
       if (Number.isFinite(v) && d) {
-        out.supertrend = { value: +v.toFixed(6), direction: d };
+        out.supertrend = { value: fix(v), direction: d };
       }
     }
     if (candles.length >= 20) {
@@ -728,6 +732,22 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       }
     }
     return Object.keys(out).length > 0 ? out : undefined;
+  };
+
+  /**
+   * Optional microstructure block — best-bid/ask + spread bps from the live
+   * bookTicker cache. Lets the LLM cite real spread / mid instead of guessing.
+   */
+  const computeBriefMicrostructure = (sym: string): { bestBid: number; bestAsk: number; mid: number; spreadBps: number } | undefined => {
+    const bt = lastBookBySym.get(sym);
+    if (!bt) return undefined;
+    const bid = Number(bt.bid);
+    const ask = Number(bt.ask);
+    if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return undefined;
+    const mid = (bid + ask) / 2;
+    const spread = ((ask - bid) / mid) * 10_000;
+    const dp = mid >= 1000 ? 2 : mid >= 10 ? 3 : mid >= 1 ? 4 : 6;
+    return { bestBid: +bid.toFixed(dp), bestAsk: +ask.toFixed(dp), mid: +mid.toFixed(dp), spreadBps: +spread.toFixed(2) };
   };
 
   const maybeRefreshAiBrief = (signals: DashboardSignalsPayload, watchSymbol: string, force = false): void => {
@@ -759,15 +779,25 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
     }
 
     const gapMs = cfg.AI_BRIEF_INTERVAL_SEC * 1000;
+    const forcedFloorMs = (cfg.AI_BRIEF_FORCED_COOLDOWN_SEC ?? 45) * 1000;
     const now = Date.now();
     const last = lastAiBriefAtBySym.get(watchSymbol) ?? 0;
 
     if (aiBriefInflightBySym.has(watchSymbol)) return;
-    // When forced by an event (flip/SMC), we still respect a minimal cooldown to prevent loop spam,
-    // but the intention is that events trigger it immediately if the gap has passed.
     if (!force && last > 0 && now - last < gapMs) return;
+    // Forced events still respect a hard floor to stop flip-flopping
+    // supertrend / BOS chatter from triggering an LLM call every kline close.
+    if (force && last > 0 && now - last < forcedFloorMs) {
+      log.info('dashboard_ai_brief_forced_throttled', {
+        symbol: watchSymbol,
+        sinceLastMs: now - last,
+        floorMs: forcedFloorMs,
+      });
+      return;
+    }
 
     const indicators = computeBriefIndicators(watchSymbol, signals.refPriceTf || ltfTf);
+    const microstructure = computeBriefMicrostructure(watchSymbol);
     const snapshot: MarketSignalsSnapshot = {
       symbol: watchSymbol,
       refPrice: signals.refPrice,
@@ -781,6 +811,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       knnArchitecture: signals.knnArchitecture,
       solMtf: signals.solMtf,
       indicators,
+      microstructure,
     };
 
     aiBriefInflightBySym.add(watchSymbol);

@@ -40,6 +40,13 @@ export interface MarketSignalsSnapshot {
     atr14?: number;
     volZScore?: number;
   };
+  /** Live order-book microstructure from bookTicker stream. */
+  microstructure?: {
+    bestBid: number;
+    bestAsk: number;
+    mid: number;
+    spreadBps: number;
+  };
 }
 
 export interface MarketBriefConfig {
@@ -145,6 +152,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     knnArchitecture: snapshot.knnArchitecture,
     solMtf: snapshot.solMtf,
     indicators: snapshot.indicators,
+    microstructure: snapshot.microstructure,
   });
 };
 
