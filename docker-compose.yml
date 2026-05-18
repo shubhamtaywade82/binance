@@ -72,6 +72,8 @@ services:
       MCP_PORT: 4003
       MCP_TRANSPORT: http
       LOG_LEVEL: INFO
+    volumes:
+      - ./mcp-server/crypto_exchange_mcp.py:/app/crypto_exchange_mcp.py
     restart: unless-stopped
 
   api:

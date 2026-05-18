@@ -22,6 +22,7 @@ from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
 import httpx
 import websockets
+from starlette.middleware.cors import CORSMiddleware
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -1234,19 +1235,28 @@ def main(argv: Optional[list[str]] = None) -> None:
         mcp.run()
         return
 
-    # Apply host/port to the FastMCP settings before run().
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
+    # For HTTP/SSE, enable CORS support for browser-based UIs (like MCP Inspector/llama.cpp UI).
+    import uvicorn
+
     log.info(
-        "starting crypto_exchange_mcp transport=%s host=%s port=%s",
+        "starting crypto_exchange_mcp transport=%s host=%s port=%s with CORS",
         transport, args.host, args.port,
     )
-    try:
-        mcp.run(transport=transport)
-    except ValueError:
-        # Older mcp[cli] may not implement streamable-http; fall back to SSE.
-        log.warning("transport=%s unsupported; falling back to sse", transport)
-        mcp.run(transport="sse")
+
+    if transport == "sse":
+        app = mcp.sse_app()
+    else:
+        app = mcp.streamable_http_app()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["mcp-session-id"],
+    )
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
