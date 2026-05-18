@@ -791,6 +791,55 @@ body::before {
   line-height: 1.35;
   color: var(--text-secondary);
 }
+
+.chart-supertrend-hud {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  min-width: 190px;
+  max-width: min(340px, 40vw);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+.st-hud-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 4px;
+}
+.st-hud-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.st-hud-label {
+  color: var(--text-secondary);
+}
+.st-hud-val {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-main);
+}
+.st-hud-val.bull {
+  color: var(--bull);
+}
+.st-hud-val.bear {
+  color: var(--bear);
+}
 .chart-signal-hud--bull .chart-signal-hud-verdict {
   color: var(--bull);
   border-color: var(--bull-glow);
