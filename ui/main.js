@@ -265,6 +265,7 @@ const selectWatchSymbol = (sym) => {
   lastLtpTarget = null;
 
   chart.resetForSymbolSwitch();
+  chart.setSymbol(activeWatchSymbol);
   obMgr.resetForSymbol(0.01);
   obMgr.update({ bids: [], asks: [] });
   tape.loadHistory([]);
@@ -468,6 +469,7 @@ const dispatch = (msg) => {
         localStorage.setItem(STORAGE_KEY_SYMBOL, activeWatchSymbol);
         syncUiWithSymbol(activeWatchSymbol);
         updateUrlWithSymbol(activeWatchSymbol);
+        chart.setSymbol(activeWatchSymbol);
       }
       initWatchlistBar(msg);
 

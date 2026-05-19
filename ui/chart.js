@@ -31,6 +31,7 @@ import {
 } from './chart-strategy-hud.js';
 import { SmcZoneBoxesPrimitive } from './chart-smc-zone-primitive.js';
 import { PartialPriceLinesPrimitive } from './chart-partial-price-lines.js';
+import { DrawingsPrimitive } from './chart-drawings-primitive.js';
 
 const BOOK_TOP_STORAGE_KEY = 'qt_chart_book_top';
 
@@ -309,6 +310,12 @@ export class ChartManager {
     this._microChart = null;
     this._microCandleSeries = null;
     this._microEnabled = readStoredIndicatorOn(MICRO_CHART_STORAGE_KEY, false);
+
+    this.activeSymbol = null;
+    this._watermarkEnabled = localStorage.getItem('qt_chart_watermark') !== '0';
+    this._logScaleEnabled = localStorage.getItem('qt_chart_log_scale') === '1';
+    this._crosshairActive = false;
+    this._drawingsPrimitive = null;
   }
 
   _readSmcOverlayEnabled() {
@@ -405,13 +412,13 @@ export class ChartManager {
   _paintSmcFromStoredSignals() {
     this._clearSmcChartVisuals();
     if ((!this._smcSignalsOverlayEnabled && !this._knnArchitectureEnabled) || !this._lastSignalsForChart || !this.candleSeries) return;
-    
+
     const s = this._lastSignalsForChart;
     const refTf = s.smcTf || s.refPriceTf || this.currentTf;
 
     const smc = this._smcSignalsOverlayEnabled ? s.smc : null;
     const knn = (this._knnArchitectureEnabled && s.knnArchitecture) ? s.knnArchitecture : null;
-    
+
     const markers = [];
     /** @type {{ t1: number; t2: number; top: number; bottom: number; fill: string; stroke?: string; text?: string; textColor?: string }[]} */
     const smcZones = [];
@@ -462,7 +469,7 @@ export class ChartManager {
             const alpha = isHighValue ? 0.35 : 0.20;
             smcZones.push({
               t1: tFvgStart, t2: tFvgEnd ?? lastT, top: fvg.high, bottom: fvg.low,
-              fill: `rgba(255,193,7,${alpha})`, 
+              fill: `rgba(255,193,7,${alpha})`,
               stroke: `rgba(255,193,7,${isHighValue ? 0.6 : 0.4})`,
               text: isHighValue ? 'Propulsion FVG' : 'FVG',
               textColor: 'rgba(255,236,179,0.9)',
@@ -474,7 +481,7 @@ export class ChartManager {
       // 3. Dealing Range
       if (smc.dealingRange && lastT != null) {
         const dr = smc.dealingRange;
-        const startT = lastT - 3600 * 4; 
+        const startT = lastT - 3600 * 4;
         smcZones.push({ t1: startT, t2: lastT, top: dr.high, bottom: dr.equilibrium, fill: 'rgba(239,83,80,0.06)', text: 'PREMIUM', textColor: 'rgba(239,83,80,0.4)' });
         smcZones.push({ t1: startT, t2: lastT, top: dr.equilibrium, bottom: dr.low, fill: 'rgba(38,166,154,0.06)', text: 'DISCOUNT', textColor: 'rgba(38,166,154,0.4)' });
         smcStructLines.push({ t1: startT, t2: lastT, price: dr.equilibrium, color: 'rgba(176,190,197,0.5)', label: 'EQ', lineWidth: 1 });
@@ -503,23 +510,23 @@ export class ChartManager {
           const t2 = this._signalBarTimeSec(refTf, blk.endIndex) || lastT;
           if (t1 != null && t2 != null) {
             let fill = 'rgba(144,164,174,0.2)', stroke = 'rgba(144,164,174,0.5)', textColor = 'rgba(207,216,220,0.95)';
-            if (blk.type === 'LIQUIDITY') { 
-              fill = 'rgba(0,188,212,0.25)'; 
-              stroke = 'rgba(0,188,212,0.6)'; 
-              textColor = 'rgba(178,235,242,0.95)'; 
-            } else if (blk.type === 'SESSION') { 
+            if (blk.type === 'LIQUIDITY') {
+              fill = 'rgba(0,188,212,0.25)';
+              stroke = 'rgba(0,188,212,0.6)';
+              textColor = 'rgba(178,235,242,0.95)';
+            } else if (blk.type === 'SESSION') {
               if (blk.subType === 'LONDON') {
-                fill = 'rgba(149,117,205,0.15)'; 
-                stroke = 'rgba(149,117,205,0.4)'; 
+                fill = 'rgba(149,117,205,0.15)';
+                stroke = 'rgba(149,117,205,0.4)';
                 textColor = 'rgba(209,196,233,0.95)';
               } else if (blk.subType === 'NY') {
-                fill = 'rgba(255,183,77,0.15)'; 
-                stroke = 'rgba(255,183,77,0.4)'; 
+                fill = 'rgba(255,183,77,0.15)';
+                stroke = 'rgba(255,183,77,0.4)';
                 textColor = 'rgba(255,224,130,0.95)';
               } else {
-                fill = 'rgba(100,181,246,0.15)'; 
-                stroke = 'rgba(100,181,246,0.4)'; 
-                textColor = 'rgba(187,222,251,0.95)'; 
+                fill = 'rgba(100,181,246,0.15)';
+                stroke = 'rgba(100,181,246,0.4)';
+                textColor = 'rgba(187,222,251,0.95)';
               }
             }
             smcZones.push({ t1, t2, top: blk.high, bottom: blk.low, fill, stroke, text: blk.subType, textColor });
@@ -1845,6 +1852,117 @@ export class ChartManager {
       try { this.candleSeries.removePriceLine(this._fundingPriceLine); } catch { /* ignore */ }
       this._fundingPriceLine = null;
     }
+    this._updateOhlcLegend(null, null);
+  }
+
+  setSymbol(symbol) {
+    this.activeSymbol = symbol;
+    if (this._drawingsPrimitive) {
+      this._drawingsPrimitive.setSymbol(symbol);
+    }
+    this._updateWatermark();
+    this._updateOhlcLegendToLatest();
+  }
+
+  _updateWatermark() {
+    if (!this.chart) return;
+    this.chart.applyOptions({
+      watermark: {
+        visible: this._watermarkEnabled,
+        fontSize: 32,
+        horzAlign: 'center',
+        vertAlign: 'center',
+        color: 'rgba(255, 255, 255, 0.05)',
+        text: `${this.activeSymbol || ''} ${this.currentTf}`.toUpperCase(),
+        fontFamily: "'JetBrains Mono', monospace",
+      }
+    });
+  }
+
+  _updateLogScale() {
+    if (!this.chart) return;
+    this.chart.priceScale('right').applyOptions({
+      mode: this._logScaleEnabled ? 1 : 0
+    });
+  }
+
+  _updateOhlcLegend(candleData, volumeVal) {
+    const symbolEl = document.getElementById('chart-ohlc-symbol-tf');
+    const oEl = document.getElementById('chart-ohlc-o');
+    const hEl = document.getElementById('chart-ohlc-h');
+    const lEl = document.getElementById('chart-ohlc-l');
+    const cEl = document.getElementById('chart-ohlc-c');
+    const vEl = document.getElementById('chart-ohlc-v');
+    const changeEl = document.getElementById('chart-ohlc-change');
+
+    if (!oEl || !hEl || !lEl || !cEl) return;
+
+    if (symbolEl) {
+      symbolEl.textContent = `${this.activeSymbol || ''} · ${this.currentTf}`.toUpperCase();
+    }
+
+    if (!candleData || candleData.open == null) {
+      oEl.textContent = '—';
+      hEl.textContent = '—';
+      lEl.textContent = '—';
+      cEl.textContent = '—';
+      if (vEl) vEl.textContent = '—';
+      if (changeEl) {
+        changeEl.textContent = '—';
+        changeEl.className = 'ohlc-val ohlc-change';
+      }
+      return;
+    }
+
+    const fmt = (val) => {
+      if (val == null) return '—';
+      if (this._lastPrecision != null) {
+        return val.toFixed(this._lastPrecision);
+      }
+      return String(val);
+    };
+
+    const o = candleData.open;
+    const h = candleData.high;
+    const l = candleData.low;
+    const c = candleData.close;
+    const changePct = ((c - o) / o) * 100;
+    const isUp = c >= o;
+    const colorClass = isUp ? 'bull' : 'bear';
+
+    oEl.textContent = fmt(o);
+    hEl.textContent = fmt(h);
+    lEl.textContent = fmt(l);
+    cEl.textContent = fmt(c);
+    cEl.className = `ohlc-val ${colorClass}`;
+
+    if (vEl) {
+      if (volumeVal != null) {
+        vEl.textContent = volumeVal >= 1000000
+          ? (volumeVal / 1000000).toFixed(2) + 'M'
+          : volumeVal >= 1000
+            ? (volumeVal / 1000).toFixed(2) + 'K'
+            : String(Math.round(volumeVal));
+      } else {
+        vEl.textContent = '—';
+      }
+    }
+
+    if (changeEl) {
+      changeEl.textContent = `${changePct.toFixed(2)}%`;
+      changeEl.className = `ohlc-val ohlc-change ${colorClass}`;
+    }
+  }
+
+  _updateOhlcLegendToLatest() {
+    const raw = this.candleMap[this.currentTf] || [];
+    const len = raw.length;
+    if (len === 0) {
+      this._updateOhlcLegend(null, null);
+      return;
+    }
+    const latestCandle = raw[len - 1];
+    this._updateOhlcLegend(latestCandle, latestCandle.volume);
   }
 
   init() {
@@ -1856,6 +1974,8 @@ export class ChartManager {
       height: container.clientHeight,
     });
     this._syncPriceLocalization();
+    this._updateWatermark();
+    this._updateLogScale();
 
     const initialTheme = getCandleTheme(readStoredCandleThemeId());
     const initialVol = getHistogramBarColors(initialTheme);
@@ -1869,6 +1989,9 @@ export class ChartManager {
     });
     this._smcZonePrimitive = new SmcZoneBoxesPrimitive();
     this.candleSeries.attachPrimitive(this._smcZonePrimitive);
+
+    this._drawingsPrimitive = new DrawingsPrimitive(this.activeSymbol || 'DEFAULT');
+    this.candleSeries.attachPrimitive(this._drawingsPrimitive);
 
     this.volumeSeries = this.chart.addHistogramSeries({
       color: initialTheme.volumeUp,
@@ -1933,7 +2056,7 @@ export class ChartManager {
 
     const scrollLiveBtn = document.getElementById('btn-chart-scroll-live');
     const scrollRealtimeBtn = document.getElementById('btn-scroll-realtime');
-    
+
     const scrollToLive = () => {
       if (this.chart) {
         const raw = this.candleMap[this.currentTf] || [];
@@ -2210,6 +2333,81 @@ export class ChartManager {
       });
     });
 
+    // Watermark toggle listener
+    const watermarkToggle = document.getElementById('toggle-watermark');
+    if (watermarkToggle instanceof HTMLInputElement) {
+      watermarkToggle.checked = this._watermarkEnabled;
+      watermarkToggle.addEventListener('change', () => {
+        this._watermarkEnabled = watermarkToggle.checked;
+        localStorage.setItem('qt_chart_watermark', this._watermarkEnabled ? '1' : '0');
+        this._updateWatermark();
+      });
+    }
+
+    // Logarithmic scale toggle listener
+    const logScaleToggle = document.getElementById('toggle-log-scale');
+    if (logScaleToggle instanceof HTMLInputElement) {
+      logScaleToggle.checked = this._logScaleEnabled;
+      logScaleToggle.addEventListener('change', () => {
+        this._logScaleEnabled = logScaleToggle.checked;
+        localStorage.setItem('qt_chart_log_scale', this._logScaleEnabled ? '1' : '0');
+        this._updateLogScale();
+      });
+    }
+
+    // Fit Content button listener
+    const fitBtn = document.getElementById('btn-scroll-fit');
+    if (fitBtn) {
+      fitBtn.addEventListener('click', () => {
+        if (this.chart) {
+          this.chart.timeScale().fitContent();
+        }
+      });
+    }
+
+    // Take Screenshot button listener
+    const screenshotBtn = document.getElementById('btn-take-screenshot');
+    if (screenshotBtn) {
+      screenshotBtn.addEventListener('click', () => {
+        if (this.chart) {
+          const canvas = this.chart.takeScreenshot();
+          const link = document.createElement('a');
+          link.download = `chart_${this.activeSymbol || 'screenshot'}_${this.currentTf}.png`;
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        }
+      });
+    }
+
+    // Drawings Toolbar Event Listeners
+    const toolbar = document.getElementById('chart-drawing-toolbar');
+    if (toolbar) {
+      const buttons = toolbar.querySelectorAll('.draw-btn[data-tool]');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tool = btn.getAttribute('data-tool');
+          buttons.forEach(b => b.classList.remove('active'));
+
+          if (tool === 'select') {
+            this._drawingsPrimitive.setTool(null);
+            btn.classList.add('active');
+          } else {
+            this._drawingsPrimitive.setTool(tool);
+            btn.classList.add('active');
+          }
+        });
+      });
+
+      const clearBtn = document.getElementById('btn-clear-drawings');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          if (confirm(`Clear all drawings for ${this.activeSymbol || 'this symbol'}?`)) {
+            this._drawingsPrimitive.clear();
+          }
+        });
+      }
+    }
+
     this._initCandleTooltip(container);
   }
 
@@ -2238,14 +2436,19 @@ export class ChartManager {
     this.chart.subscribeCrosshairMove((param) => {
       if (!param.time || param.point.x < 0 || param.point.y < 0 || !param.seriesData) {
         tooltip.hidden = true;
+        this._crosshairActive = false;
+        this._updateOhlcLegendToLatest();
         return;
       }
       const candleData = param.seriesData.get(this.candleSeries);
       if (!candleData || candleData.open == null) {
         tooltip.hidden = true;
+        this._crosshairActive = false;
+        this._updateOhlcLegendToLatest();
         return;
       }
 
+      this._crosshairActive = true;
       tooltip.hidden = false;
 
       let timeStr = String(param.time);
@@ -2284,12 +2487,15 @@ export class ChartManager {
       cEl.className = 'chart-candle-tooltip-val ' + (c >= o ? 'bull' : 'bear');
 
       const volData = this.volumeSeries ? param.seriesData.get(this.volumeSeries) : null;
+      const volVal = volData ? volData.value : null;
       if (volData != null && volData.value != null) {
         volRow.style.display = 'flex';
         volEl.textContent = volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : volData.value >= 1000 ? (volData.value / 1000).toFixed(2) + 'K' : String(Math.round(volData.value));
       } else {
         volRow.style.display = 'none';
       }
+
+      this._updateOhlcLegend(candleData, volVal);
 
       const containerWidth = container.clientWidth;
       const tooltipWidth = tooltip.offsetWidth || 130;
@@ -2520,7 +2726,7 @@ export class ChartManager {
 
   _applyTimeScaleForTf(tf) {
     const dailyLike = tf === '1d';
-    // Preserve current zoom level across timeframe switches. 
+    // Preserve current zoom level across timeframe switches.
     // If not set (initial boot), default to 4.
     const currentSpacing = this.chart ? this.chart.timeScale().options().barSpacing : 4;
     const ts = {
@@ -2690,6 +2896,9 @@ export class ChartManager {
       if (sameBar) this._smoothLtpTo(tail.close);
       else this._snapLtpTo(tail.close);
       this._refreshFormingCandleFromCtx();
+      if (!this._crosshairActive) {
+        this._updateOhlcLegendToLatest();
+      }
     } catch (e) {
       console.warn('[chart] candle update failed, resyncing series', e);
       this._loadTf(tf, { preserveVisibleRange: true });
@@ -2812,6 +3021,7 @@ export class ChartManager {
     this._tfiBarMap.clear();
     this._tfiSeries?.setData([]);
     this._syncDepthPressureZones();
+    this._updateOhlcLegendToLatest();
   }
 
   _computeSessionVwap(candles) {

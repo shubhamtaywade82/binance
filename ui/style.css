@@ -2432,3 +2432,111 @@ body::before {
 .toggle-switch input:checked + .switch-slider { background-color: var(--accent); }
 .toggle-switch input:checked + .switch-slider:before { transform: translateX(16px); }
 .toggle-switch input:disabled + .switch-slider { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Drawing Toolbar ── */
+.chart-drawing-toolbar {
+  position: absolute;
+  top: 60px;
+  left: 12px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 11, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  gap: 4px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.chart-drawing-toolbar:hover {
+  border-color: rgba(124, 77, 255, 0.3);
+  box-shadow: 0 8px 32px rgba(124, 77, 255, 0.1);
+}
+.draw-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.draw-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  transform: scale(1.05);
+}
+.draw-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(0, 194, 255, 0.3);
+}
+.draw-btn-sep {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 2px 4px;
+}
+.draw-btn-danger:hover {
+  background: rgba(239, 83, 80, 0.15);
+  color: #ef5350;
+}
+
+/* ── Fixed OHLC Legend Overlay ── */
+.chart-ohlc-legend {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 90;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: rgba(8, 11, 20, 0.75);
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+.ohlc-symbol-tf {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.2px;
+}
+.ohlc-item {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.ohlc-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-left: 2px;
+}
+.ohlc-val.bull {
+  color: var(--bull);
+}
+.ohlc-val.bear {
+  color: var(--bear);
+}
+.ohlc-change {
+  font-size: 10px;
+}
+.ohlc-change.bull::before {
+  content: '+';
+}
+

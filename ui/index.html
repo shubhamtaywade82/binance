@@ -102,6 +102,7 @@
           <div class="panel-controls">
             <div class="chart-nav-group">
               <button id="btn-scroll-start" class="tf-btn tf-btn-nav" title="Scroll to oldest bar">⇤ Start</button>
+              <button id="btn-scroll-fit" class="tf-btn tf-btn-nav" title="Fit all data to screen">🔍 Fit</button>
               <button id="btn-scroll-realtime" class="tf-btn tf-btn-nav" title="Scroll to most recent bar">▶ Recent</button>
             </div>
             <div class="candle-theme-wrap" id="candle-theme-wrap">
@@ -121,6 +122,10 @@
               </button>
               <div id="candle-theme-menu" class="candle-theme-menu" role="listbox" hidden></div>
             </div>
+            <button type="button" id="btn-chart-screenshot" class="chart-settings-btn" title="Save Chart Image">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+              <span class="chart-settings-btn-text">Screenshot</span>
+            </button>
             <button type="button" id="btn-chart-settings" class="chart-settings-btn" title="Indicators & Overlays (Ctrl+I)">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
               <span class="chart-settings-btn-text">Indicators</span>
@@ -128,8 +133,42 @@
           </div>
         </div>
         <div class="chart-surface" id="chart-surface">
+          <!-- Drawing Toolbar -->
+          <div id="chart-drawing-toolbar" class="chart-drawing-toolbar" role="toolbar" aria-label="Drawing tools">
+            <button class="draw-btn active" data-tool="select" title="Cursor / Pan">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 3 10.07 19.97 12.58 12.58 19.97 10.07 3 3"></polygon></svg>
+            </button>
+            <button class="draw-btn" data-tool="trendline" title="Trendline">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle></svg>
+            </button>
+            <button class="draw-btn" data-tool="hline" title="Horizontal Line">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><circle cx="12" cy="12" r="3"></circle></svg>
+            </button>
+            <button class="draw-btn" data-tool="rect" title="Rectangle">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect></svg>
+            </button>
+            <button class="draw-btn" data-tool="fib" title="Fibonacci Retracement">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="10" x2="20" y2="10"></line><line x1="4" y1="14" x2="20" y2="14"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+            </button>
+            <div class="draw-btn-sep"></div>
+            <button class="draw-btn draw-btn-danger" id="btn-clear-drawings" title="Clear All Drawings">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+            </button>
+          </div>
           <div id="chart-signal-hud" class="chart-signal-hud" hidden aria-live="polite"></div>
           <div id="chart-supertrend-hud" class="chart-supertrend-hud" hidden aria-live="polite"></div>
+          
+          <!-- Fixed OHLC Legend Overlay -->
+          <div id="chart-ohlc-legend" class="chart-ohlc-legend">
+            <span id="chart-ohlc-symbol-tf" class="ohlc-symbol-tf">SOLUSDT · 5m</span>
+            <span class="ohlc-item">O <span id="chart-ohlc-o" class="ohlc-val">—</span></span>
+            <span class="ohlc-item">H <span id="chart-ohlc-h" class="ohlc-val">—</span></span>
+            <span class="ohlc-item">L <span id="chart-ohlc-l" class="ohlc-val">—</span></span>
+            <span class="ohlc-item">C <span id="chart-ohlc-c" class="ohlc-val">—</span></span>
+            <span class="ohlc-item">V <span id="chart-ohlc-v" class="ohlc-val">—</span></span>
+            <span id="chart-ohlc-change" class="ohlc-val ohlc-change">—</span>
+          </div>
+
           <div id="chart-container"></div>
           <div id="micro-chart-container" style="width:100%; height:100px; display:none; border-top: 1px solid rgba(255,255,255,0.06);"></div>
           <button id="btn-chart-scroll-live" class="chart-scroll-live-btn" hidden title="Scroll to most recent bar">
@@ -487,6 +526,74 @@
                     <span class="setting-desc">Volume-weighted average price (Midnight UTC)</span>
                   </div>
                   <div class="toggle-switch"><input type="checkbox" id="toggle-vwap" /><span class="switch-slider"></span></div>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-group">
+              <h4 class="settings-group-title">Sub-panes & Microstructure</h4>
+              <div class="settings-items-list">
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">RSI Panel</span>
+                    <span class="setting-desc">Relative Strength Index sub-pane (14 period)</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-rsi" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Micro Candle Chart</span>
+                    <span class="setting-desc">5-second sub-pane at the bottom</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-micro" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">TFI Lane</span>
+                    <span class="setting-desc">Trade Flow Imbalance histogram overlay</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-tfi" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Spread Heatmap</span>
+                    <span class="setting-desc">Color volume bars based on current spread</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-spread-heatmap" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Depth Pressure Line</span>
+                    <span class="setting-desc">Draw pressure zone lines from order book</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-depth-pressure" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Weighted OBI Wick Tinting</span>
+                    <span class="setting-desc">Color wicks based on order book imbalance</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-obi-tint" /><span class="switch-slider"></span></div>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-group">
+              <h4 class="settings-group-title">Chart Style & Scaling</h4>
+              <div class="settings-items-list">
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Logarithmic Scale</span>
+                    <span class="setting-desc">Toggle logarithmic price scaling on Y-axis</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-log-scale" /><span class="switch-slider"></span></div>
+                </label>
+                <label class="setting-row">
+                  <div class="setting-info">
+                    <span class="setting-label">Chart Watermark</span>
+                    <span class="setting-desc">Background watermark showing Symbol & Timeframe</span>
+                  </div>
+                  <div class="toggle-switch"><input type="checkbox" id="toggle-watermark" checked /><span class="switch-slider"></span></div>
                 </label>
               </div>
             </div>
