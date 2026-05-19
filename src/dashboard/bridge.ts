@@ -1754,8 +1754,22 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
           void runPeriodicValidation();
         }, VALIDATION_INTERVAL_MS);
 
-        const bootSignals = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
-        void maybeRefreshAiBrief(bootSignals, symbolUpper);
+        // Defer first brief until pipeline warm — at boot, signals.htfBias /
+        // ltfDirection / smc are commonly NONE because the dashboard's
+        // analyzeTrend/biasFromCandles run on a still-propagating store, and
+        // a brief at that instant produces "everything unknown" output that
+        // contradicts the actual indicators visible in the UI seconds later.
+        setTimeout(() => {
+          const bootSignals = computeSignalsForSymbol(symbolUpper, defaultChartRefTf());
+          if (
+            String(bootSignals.htfBias) === 'NONE' &&
+            String(bootSignals.ltfDirection) === 'NONE'
+          ) {
+            log.info('dashboard_ai_brief_boot_skipped', { symbol: symbolUpper, reason: 'pipeline_warming' });
+            return;
+          }
+          void maybeRefreshAiBrief(bootSignals, symbolUpper);
+        }, 15_000);
       }
 
   let stopped = false;

@@ -102,11 +102,14 @@ export interface MarketBriefResult {
 
 const FACTUAL_RULES = `
 STRICT FACTUAL RULES (anti-hallucination):
-- Only reference data that appears in the user JSON payload. Never name indicators (e.g. EMA, MACD, RSI, Supertrend, Bollinger, volume cues) unless that indicator's key is literally present in the payload.
+- Only reference data that appears literally in the user JSON payload.
+- Never name an indicator (EMA, MACD, RSI, Supertrend, Bollinger, ATR, volume, ADX, etc.) unless that indicator's key is present in the \`indicators\` object OR in \`ltfSignals\`. If \`indicators\` is missing/undefined, do NOT list indicator names at all — omit that paragraph.
+- Never characterize indicators as "NONE", "false", or "no signal" unless the payload literally contains that value for that specific indicator. Quote the actual boolean / value from \`ltfSignals\` instead.
 - Never invent prices, levels, percentages, or candle patterns.
-- If a payload field is missing, null, "NONE", or empty, write the word "unknown" instead of guessing.
+- If a payload field is missing, null, "NONE", or empty, write the word "unknown" for that single field instead of guessing or generalizing.
 - If you need a fact not in the payload, call the available MCP tools (Binance / CoinDCX market data, klines, depth, ticker). Do not fabricate the answer.
-- Quote exact numeric values from the payload or tool result; do not round dramatically or paraphrase numbers.`;
+- Quote exact numeric values from the payload or tool result; do not round dramatically or paraphrase numbers.
+- Do NOT contradict the payload. If \`smc.signalVerdict\` = "BUY" you must reflect that, not say "no clear setup".`;
 
 const SYSTEM_PROMPT_THINKING_ALLOWED = `You are a concise market-structure analyst assistant.
 You receive JSON with indicator outputs from a local trading dashboard (HTF bias, LTF trend, SMC heuristics, optional multi-timeframe stack, and optional concrete indicator values).
