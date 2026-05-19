@@ -52,9 +52,9 @@ const PURIFY_WITH_SPAN = {
   ALLOW_DATA_ATTR: false,
 };
 
-/** Direction / sentiment / structure tokens (word-boundary matches). */
+/** Direction / sentiment / verdict / structure tokens (word-boundary matches). */
 const HIGHLIGHT_RE =
-  /\b(SHORT|LONG|BULLISH|BEARISH|NEUTRAL|BUY|SELL)\b|\b(HTF|LTF|SMC|BOS|FVG|CHoCH|OB)\b|(\d+(?:\.\d+)?%)/gi;
+  /\b(NO TRADE|ENTER NOW|WAIT FOR ENTRY|SCALE IN|SHORT|LONG|BULLISH|BEARISH|NEUTRAL|BUY|SELL)\b|\b(HTF|LTF|SMC|BOS|FVG|CHoCH|OB|SETUP VALID)\b|(\d+(?:\.\d+)?%)/gi;
 
 const SKIP_ANCESTOR = new Set(['CODE', 'PRE', 'SCRIPT', 'STYLE', 'KBD', 'SAMP']);
 
@@ -87,10 +87,11 @@ const fragmentWithHighlights = (doc, text) => {
     const raw = m[0];
     if (m[1]) {
       const u = m[1].toUpperCase();
-      if (u === 'SHORT' || u === 'SELL') span.className = 'ai-hl-dir ai-hl-short';
-      else if (u === 'LONG' || u === 'BUY') span.className = 'ai-hl-dir ai-hl-long';
+      if (u === 'SHORT' || u === 'SELL' || u === 'NO TRADE') span.className = 'ai-hl-dir ai-hl-short';
+      else if (u === 'LONG' || u === 'BUY' || u === 'ENTER NOW' || u === 'SCALE IN') span.className = 'ai-hl-dir ai-hl-long';
       else if (u === 'BULLISH') span.className = 'ai-hl-sent ai-hl-bull';
       else if (u === 'BEARISH') span.className = 'ai-hl-sent ai-hl-bear';
+      else if (u === 'WAIT FOR ENTRY') span.className = 'ai-hl-sent ai-hl-neutral ai-hl-wait';
       else span.className = 'ai-hl-sent ai-hl-neutral';
     } else if (m[2]) {
       span.className = 'ai-hl-acro';

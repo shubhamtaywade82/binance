@@ -798,6 +798,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
 
     const indicators = computeBriefIndicators(watchSymbol, signals.refPriceTf || ltfTf);
     const microstructure = computeBriefMicrostructure(watchSymbol);
+    const knn = signals.knnArchitecture;
     const snapshot: MarketSignalsSnapshot = {
       symbol: watchSymbol,
       refPrice: signals.refPrice,
@@ -808,10 +809,18 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       ltfScore: signals.ltfScore,
       ltfSignals: signals.ltfSignals,
       smc: signals.smc,
-      knnArchitecture: signals.knnArchitecture,
+      knnArchitecture: knn,
       solMtf: signals.solMtf,
       indicators,
       microstructure,
+      dealingRange: (signals.smc as any)?.dealingRange ?? null,
+      poc: (knn?.volumeProfile as any[])?.find((p: any) => p.isPoc)?.price ?? null,
+      keyLevels: knn ? {
+        stHigh: knn.stLines?.high ?? null,
+        stLow: knn.stLines?.low ?? null,
+        ltHigh: knn.ltLines?.high ?? null,
+        ltLow: knn.ltLines?.low ?? null,
+      } : null,
     };
 
     aiBriefInflightBySym.add(watchSymbol);
