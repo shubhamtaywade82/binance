@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chart Studio</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Chart Studio</div>
+      <button id="search-btn" class="search-trigger" type="button">
+        <span class="kbd">⌘ K</span>
+        <span id="active-symbol-label">No symbol</span>
+      </button>
+      <div class="intervals" id="interval-bar"></div>
+      <div class="topbar-actions">
+        <button id="indicators-btn" class="ghost">Indicators</button>
+        <button id="scripts-btn" class="ghost">Scripts</button>
+        <button id="alerts-add-btn" class="ghost">+ Alert</button>
+      </div>
+      <div class="providers" id="providers-bar"></div>
+      <button id="settings-btn" class="ghost">Providers</button>
+    </header>
+
+    <main class="layout">
+      <aside class="left-rail">
+        <div class="rail-section">
+          <header><h3>Watchlist</h3><button id="watchlist-add" class="ghost">+</button></header>
+          <div id="watchlist" class="watchlist"></div>
+        </div>
+      </aside>
+
+      <section class="chart-area">
+        <div class="drawing-toolbar">
+          <button data-tool="cursor" class="tool-btn active" title="Cursor">↖</button>
+          <button data-tool="hline" class="tool-btn" title="Horizontal line">―</button>
+          <button data-tool="trendline" class="tool-btn" title="Trend line">╱</button>
+          <button id="drawings-clear" class="tool-btn" title="Clear drawings">⌫</button>
+        </div>
+        <div id="chart-container"></div>
+      </section>
+
+      <aside class="side-panels">
+        <div class="panel">
+          <header><h3>Order Book</h3><span id="ob-spread"></span></header>
+          <div id="orderbook" class="orderbook"></div>
+        </div>
+        <div class="panel">
+          <header><h3>Trades</h3></header>
+          <div id="trade-tape" class="trade-tape"></div>
+        </div>
+        <div class="panel">
+          <header><h3>Sentiment</h3></header>
+          <div id="sentiment" class="sentiment"></div>
+        </div>
+        <div class="panel">
+          <header><h3>Alerts</h3></header>
+          <div id="alerts-panel" class="alerts-panel"></div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="search-overlay" class="overlay hidden">
+      <div class="search-modal">
+        <input id="search-input" type="text" placeholder="Search across providers (e.g. BTC, RELIANCE, NIFTY)…" autocomplete="off" />
+        <div class="search-hint">Enter = open · ⇧Enter = add to watchlist · Esc = close</div>
+        <div id="search-results" class="search-results"></div>
+      </div>
+    </div>
+
+    <div id="settings-overlay" class="overlay hidden">
+      <div class="settings-modal">
+        <h2>Data Providers</h2>
+        <p class="hint">Live provider status. Configure adapters via environment variables.</p>
+        <ul id="provider-list" class="provider-list"></ul>
+        <button class="ghost" id="close-settings">Close</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
