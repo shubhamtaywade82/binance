@@ -167,6 +167,14 @@ export const AppConfigSchema = z.object({
   TAKER_FEE: numFromString(0.0005),
   MAKER_FEE: numFromString(0.0002),
   FUNDING_FEE_EST: numFromString(0.0001),
+  /**
+   * Round-trip fee buffer subtracted from gross price-PnL% before comparing
+   * against any exit target (trail activation, watermark, TP ladder rungs).
+   * Without this, an exit fires at gross 1.5% but the trader nets 1.5% −
+   * 2 × taker = ~1.4%, undershooting the configured target. Default is a
+   * conservative 2× taker (paper). Override per environment.
+   */
+  EXIT_FEE_BUFFER_PCT: numFromString(0.001),
   MARGIN_CURRENCY: z.string().default('USDT'),
   USE_SMC: boolFromString(true),
 
@@ -516,11 +524,12 @@ export const AppConfigSchema = z.object({
 
   /**
    * Route strategy signals through the event-bus path
-   *   actor → strategy.signal → SignalToOrderBridge → RiskEngine → ExecutionBridge → adapter.
-   * Default false to avoid double-firing alongside the legacy orchestrator.
-   * Recommended for paper-trading and replay; keep false in live until cutover.
+   *   actor → strategy.signal → SignalToOrderBridge → TradePlanner → OMS → RiskEngine → ExecutionBridge → adapter.
+   * Default true. When true the legacy HybridOrchestrator execution branches are gated off
+   * (see TODO_CLEANUP_LEGACY_EXECUTION markers) so the two paths never compete.
+   * Live mode requires this to be true and will throw on startup if it is false.
    */
-  EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  EVENT_BUS_EXECUTION_ENABLED: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
 
   /**
    * C-7: stale-feed risk-off thresholds. The FreshnessWatchdog publishes
@@ -595,11 +604,12 @@ export const AppConfigSchema = z.object({
 
   // ── Signal allocator (best-of-bar) ──────────────────────────────────────
   /**
-   * Buffer simultaneous strategy candidates per 5m close, score by ADX × ATR
-   * strength, allocate slots to top N until MAX_OPEN_SYMBOLS hit. Required
-   * for fair multi-symbol selection — without this, first-come-first-served.
+   * Buffer simultaneous strategy candidates per 5m close, score by quality
+   * (RR × confidence × regime fit from TradePlanner) and allocate slots to
+   * top N until MAX_OPEN_SYMBOLS hit. Default true — without this, the first
+   * signal to arrive wins regardless of conviction.
    */
-  SIGNAL_ALLOCATOR_ENABLED: z.preprocess((v) => v === undefined ? false : (v === 'true' || v === true), z.boolean()),
+  SIGNAL_ALLOCATOR_ENABLED: z.preprocess((v) => v === undefined ? true : (v === 'true' || v === true), z.boolean()),
   /**
    * Allocation policy:
    *   `score` (default) — buffer SIGNAL_ALLOCATOR_FLUSH_MS, pick top N by ADX×ATR strength.

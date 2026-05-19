@@ -121,7 +121,7 @@ export interface DashboardSignalsPayload {
     signalReasons: string[];
   };
   knnArchitecture: KnnArchitectureResult | null;
-  solMtf: { pass: boolean; direction: string; reasons: string[] } | null;
+  mtfSmc: { pass: boolean; direction: string; reasons: string[] } | null;
   signalMeta: { trendSeriesTf: string; htf: string; executionLtf: string };
 }
 
@@ -253,8 +253,8 @@ export const createDashboardBridge = (cfg: AppConfig, log: AppLogger, feeds: Das
       const k = s.knnArchitecture;
       parts.push(`kNN: bias=${k.bias}, confidence=${k.confidence?.toFixed(2)}, stH=${k.stLines?.high}, stL=${k.stLines?.low}, ltH=${k.ltLines?.high}, ltL=${k.ltLines?.low}, deltaTanks=${k.deltaTanks?.length ?? 0}`);
     }
-    if (s.solMtf) {
-      parts.push(`SOL MTF: pass=${s.solMtf.pass}, direction=${s.solMtf.direction}`);
+    if (s.mtfSmc) {
+      parts.push(`MTF-SMC: pass=${s.mtfSmc.pass}, direction=${s.mtfSmc.direction}`);
     }
 
     parts.push(`Watchlist Prices: ${JSON.stringify(watchlistPrices)}`);
@@ -810,7 +810,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
       ltfSignals: signals.ltfSignals,
       smc: signals.smc,
       knnArchitecture: knn,
-      solMtf: signals.solMtf,
+      mtfSmc: signals.mtfSmc,
       indicators,
       microstructure,
       dealingRange: (signals.smc as any)?.dealingRange ?? null,
@@ -1122,12 +1122,12 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
         const smc = analyzeSmc(candlesSmc, refPrice, htfBiasRaw, { timeframe: effectiveTf });
         const knnArchitecture = analyzeKnnArchitecture(candlesSmc);
 
-        let solMtf = null;
+        let mtfSmc = null;
         const c5 = rows['5m'];
         const c1d = rows['1d'];
         if (c5.length >= 30 && c1d.length >= 22) {
           try {
-            solMtf = evaluateSolMtfStrategy({
+            mtfSmc = evaluateSolMtfStrategy({
               candles: {
                 '1d': rows['1d'],
                 '4h': rows['4h'],
@@ -1239,7 +1239,7 @@ Be precise with syntax. Do not explain things unless asked. Focus on generating 
             signalReasons,
           },
           knnArchitecture,
-          solMtf: solMtf ? { pass: solMtf.pass, direction: solMtf.direction, reasons: solMtf.reasons } : null,
+          mtfSmc: mtfSmc ? { pass: mtfSmc.pass, direction: mtfSmc.direction, reasons: mtfSmc.reasons } : null,
           signalMeta: {
             trendSeriesTf: effectiveTf,
             htf: htfTf,

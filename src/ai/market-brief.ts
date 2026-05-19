@@ -26,7 +26,7 @@ export interface MarketSignalsSnapshot {
     choch?: string;
   };
   knnArchitecture?: any;
-  solMtf?: { pass: boolean; direction: string; reasons: string[] } | null;
+  mtfSmc?: { pass: boolean; direction: string; reasons: string[] } | null;
   /** Optional concrete indicator values computed from local candles. Present
    *  when caller has enough bars; absent fields signal "not enough data" and
    *  the model is instructed to say `unknown` rather than invent numbers. */
@@ -209,7 +209,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     ltfSignals: snapshot.ltfSignals,
     smc: snapshot.smc,
     knnArchitecture: snapshot.knnArchitecture,
-    solMtf: snapshot.solMtf,
+    mtfSmc: snapshot.mtfSmc,
     indicators: snapshot.indicators,
     microstructure: snapshot.microstructure,
     dealingRange: snapshot.dealingRange ?? null,
@@ -233,8 +233,8 @@ const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
 
 const MAX_THINKING_FALLBACK_CHARS = 12_000;
 
-/** Token budget for the structured execution plan output. */
-const BRIEF_NUM_PREDICT = 1400;
+/** Token budget for the structured execution plan output. Increased to support reasoning models. */
+const BRIEF_NUM_PREDICT = 4096;
 
 const sliceThinking = (raw: string): string => {
   const t = raw.trim();

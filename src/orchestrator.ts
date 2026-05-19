@@ -912,7 +912,7 @@ export class HybridOrchestrator {
     return buildFeatureVector(src);
   }
 
-  /** Daily bias when SOL MTF strategy is on; else HTF EMA bias from the secondary candle buffer. */
+  /** Daily bias when MTF-SMC strategy is on; else HTF EMA bias from the secondary candle buffer. */
   private reversalTrendBias(): TrendBias {
     if (this.cfg.USE_SOL_MTF_STRATEGY) {
       return biasFromCandles(this.store.getSeries(this.pairs.binanceSymbol, '1d'));
@@ -1554,7 +1554,7 @@ export class HybridOrchestrator {
         minConfidence: this.cfg.MIN_CONFIDENCE,
       });
 
-      this.log.info('sol_mtf_strategy', {
+      this.log.info('mtf_smc_strategy', {
         pass: sol.pass,
         direction: sol.direction,
         reasons: sol.reasons,
@@ -1595,7 +1595,7 @@ export class HybridOrchestrator {
         return;
       }
       if (!(await this.correlationGuardAllowsEntry(smcSide))) return;
-      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'sol_mtf', ts: Date.now() });
+      publish(this.redis, CHANNELS.SIGNALS, { symbol: sym, direction: smcSide, source: 'mtf_smc', ts: Date.now() });
       const prec = this.precision ?? extractPrecisionFromInstrument(null);
       const opened = await this.positionManager.open(smcSide, refPrice, prec, sym, this.pairs.coindcxPair, tierFor(sym) ?? undefined);
       if (opened) {

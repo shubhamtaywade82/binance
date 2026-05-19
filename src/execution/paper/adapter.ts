@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { randomUUID } from 'crypto';
 import type {
   CloseReason,
@@ -42,6 +44,14 @@ export interface PaperAdapterOptions {
    *   0  → disable JSONL equity writes entirely (Redis stream becomes the source of truth)
    */
   equityJsonlEveryN?: number;
+  /**
+   * Disk path for open-position persistence. Without this, the in-memory
+   * `positions` map is lost on every restart while wallet.json survives —
+   * MAX_OPEN_POSITIONS/MAX_OPEN_SYMBOLS gates then start from 0 even though
+   * the dashboard (Redis) still shows the prior positions. Result: caps
+   * silently exceeded across restarts.
+   */
+  positionsPath?: string;
 }
 
 interface OpenPaperPosition {
@@ -67,11 +77,59 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   private lastSnapshotTs = 0;
   private snapshotCount = 0;
 
-  constructor(private readonly opts: PaperAdapterOptions) {}
+  constructor(private readonly opts: PaperAdapterOptions) {
+    this.loadPositionsFromDisk();
+  }
+
+  /**
+   * Restore open positions from disk. Re-tracks liquidation + funding for
+   * each restored position and rebuilds wallet.usedMargin so cap accounting
+   * resumes accurately. Wallet intentionally clears usedMargin on its own
+   * loadFromDisk (see wallet.ts); we re-apply it here from the authoritative
+   * positions snapshot.
+   */
+  private loadPositionsFromDisk(): void {
+    const p = this.opts.positionsPath;
+    if (!p || !fs.existsSync(p)) return;
+    try {
+      const raw = fs.readFileSync(p, 'utf8');
+      const arr = JSON.parse(raw) as OpenPaperPosition[];
+      if (!Array.isArray(arr)) return;
+      for (const pos of arr) {
+        this.positions.set(pos.orderId, pos);
+        // Re-track ancillary engines so liquidation/funding work post-restart.
+        this.opts.liquidation.track(pos.orderId, pos.side, pos.entryPrice, pos.leverage);
+        this.opts.funding.trackPosition({
+          positionId: pos.orderId,
+          symbol: pos.symbol,
+          side: pos.side,
+          notional: () => pos.entryPrice * pos.quantity,
+        });
+        // Re-reserve margin so subsequent reserveMargin checks reflect reality.
+        this.opts.wallet.reserveMargin(pos.marginUsdt);
+      }
+    } catch {
+      // Corrupt snapshot — ignore; positions start empty.
+    }
+  }
+
+  private flushPositionsToDisk(): void {
+    const p = this.opts.positionsPath;
+    if (!p) return;
+    try {
+      const dir = path.dirname(p);
+      if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const tmp = `${p}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Array.from(this.positions.values()), null, 2));
+      fs.renameSync(tmp, p);
+    } catch {
+      // Disk full / permissions — best-effort.
+    }
+  }
 
   async placeOrder(req: OrderRequest): Promise<OrderResult> {
     const symbol = this.opts.symbolFor(req.pair).toUpperCase();
-    
+
     // Check for existing position to allow pyramiding or reversal
     for (const [id, p] of this.positions.entries()) {
       if (p.symbol === symbol) {
@@ -79,28 +137,29 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
           // SAME SIDE: Pyramiding — add to existing position
           if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
           const fill = await this.calculateFill(req, symbol);
-          
+
           const addedMargin = (fill.price * fill.quantity) / p.leverage;
           const totalRequired = addedMargin + fill.feeUsdt;
-          
+
           if (!this.opts.wallet.reserveMargin(totalRequired)) {
             return { ok: false, orderId: id, fill, error: 'insufficient_margin' };
           }
-          
+
           const newQty = p.quantity + fill.quantity;
           const newNotional = (p.entryPrice * p.quantity) + (fill.price * fill.quantity);
           const newEntry = newNotional / newQty;
-          
+
           p.entryPrice = newEntry;
           p.quantity = newQty;
           p.marginUsdt += addedMargin;
           p.entryFeeUsdt += fill.feeUsdt;
-          
+
           this.positions.set(id, p);
+          this.flushPositionsToDisk();
           void this.opts.redisState?.upsertPosition(id, this.snapshotPosition(p));
           void this.opts.redisState?.setWallet(this.opts.wallet.state());
           void this.opts.redisState?.publishUpdate('position', { event: 'update', orderId: id, symbol });
-          
+
           return { ok: true, orderId: id, fill };
         }
         // Opposite side: REJECT. The event-bus path (RiskEngine
@@ -126,7 +185,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
 
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
     const fill = await this.calculateFill(req, symbol);
-    
+
     const notional = fill.price * req.quantity;
     const margin = notional / req.leverage;
 
@@ -154,6 +213,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       openedAt,
     };
     this.positions.set(orderId, pos);
+    this.flushPositionsToDisk();
     void this.opts.redisState?.upsertPosition(orderId, this.snapshotPosition(pos));
     void this.opts.redisState?.setWallet(this.opts.wallet.state());
     void this.opts.redisState?.publishUpdate('position', { event: 'open', orderId, symbol });
@@ -297,7 +357,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const pos = this.positions.get(orderId);
     if (!pos) throw new Error(`paper_close_unknown_order:${orderId}`);
     if (this.opts.latencyMs > 0) await sleep(this.opts.latencyMs);
-    
+
     const qtyToClose = (quantity && quantity > 0 && quantity < pos.quantity) ? quantity : pos.quantity;
     const isPartial = qtyToClose < pos.quantity;
 
@@ -327,11 +387,11 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     const gross = (exitPrice - pos.entryPrice) * qtyToClose * sideMul;
     const exitNotional = exitPrice * qtyToClose;
     const exitFee = computeFee(exitNotional, true, this.opts.takerFee, this.opts.makerFee);
-    
+
     // For partials, we only attribute a fraction of the entry fee.
     const entryFeeAttributed = isPartial ? (pos.entryFeeUsdt * (qtyToClose / pos.quantity)) : pos.entryFeeUsdt;
     const totalFees = entryFeeAttributed + exitFee;
-    
+
     // Funding is tracked per orderId; for partials we accrue everything so far
     // and potentially keep tracking the remainder.
     const funding = this.opts.funding.accruedFor(orderId);
@@ -342,7 +402,7 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
     this.opts.wallet.releaseMargin(marginReleased + entryFeeAttributed);
     this.opts.wallet.applyRealized(net);
     this.opts.wallet.setUnrealized(0);
-    
+
     if (isPartial) {
       pos.quantity -= qtyToClose;
       pos.marginUsdt -= marginReleased;
@@ -355,12 +415,13 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       this.unrealizedByOrder.delete(orderId);
       void this.opts.redisState?.removePosition(orderId);
     }
+    this.flushPositionsToDisk();
 
     void this.opts.redisState?.setWallet(this.opts.wallet.state());
-    void this.opts.redisState?.publishUpdate('position', { 
-      event: isPartial ? 'partial_close' : 'close', 
-      orderId, 
-      symbol: pos.symbol 
+    void this.opts.redisState?.publishUpdate('position', {
+      event: isPartial ? 'partial_close' : 'close',
+      orderId,
+      symbol: pos.symbol
     });
 
     const closed: ClosedPosition = {

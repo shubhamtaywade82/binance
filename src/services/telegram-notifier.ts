@@ -245,7 +245,16 @@ export class TelegramNotifier {
 
   private onAiBrief(event: DomainEvent<any>): void {
     const { symbol, payload } = event;
-    const text = String(payload?.text ?? '').slice(0, 3500);
+    let text = String(payload?.text ?? '');
+    
+    if (text.includes('Model produced reasoning only') && payload?.thinking) {
+      const th = String(payload.thinking).trim();
+      // Take the last 2000 chars of reasoning, as the end usually contains the final conclusion.
+      const snippet = th.length > 2000 ? '...' + th.slice(-2000) : th;
+      text += `\n\n<b>Reasoning Snapshot:</b>\n<i>${snippet}</i>`;
+    }
+    
+    text = text.slice(0, 3500);
     if (!text) return;
     void this.sendCategory('ai',
       `${verdictEmoji(text)} <b>AI Brief</b> · ${escape(symbol ?? '*')}\n\n${mdToHtml(text)}`,

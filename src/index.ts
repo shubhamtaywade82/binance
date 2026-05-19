@@ -41,6 +41,7 @@ import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
 import { SelfLearningRuntime } from './self-learning/runtime';
+import { OrderStateRegistry } from './core/oms/order-state-machine';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
@@ -182,6 +183,16 @@ const main = async (): Promise<void> => {
     lifecycle.register('event_store', () => eventStore.stop(), { timeoutMs: 500 });
   }
 
+  log.info('risk_caps_parsed', {
+    MAX_OPEN_POSITIONS: Number(cfg.MAX_OPEN_POSITIONS) || null,
+    MAX_OPEN_SYMBOLS: Number((cfg as any).MAX_OPEN_SYMBOLS) || null,
+    MAX_TOTAL_EXPOSURE_USDT: Number((cfg as any).MAX_TOTAL_EXPOSURE_USDT) || null,
+    MAX_NOTIONAL_USDT: Number(cfg.MAX_NOTIONAL_USDT) || null,
+    SIGNAL_ALLOCATOR_ENABLED: Boolean((cfg as any).SIGNAL_ALLOCATOR_ENABLED),
+    SIGNAL_ALLOCATOR_MODE: (cfg as any).SIGNAL_ALLOCATOR_MODE ?? null,
+    EVENT_BUS_EXECUTION_ENABLED: cfg.EVENT_BUS_EXECUTION_ENABLED,
+  });
+
   actorSystem = new ActorSystem(cfg, defaultEventBus);
   const allSymbols = multiplexBinanceSymbols(cfg);
   for (const sym of allSymbols) {
@@ -266,9 +277,15 @@ const main = async (): Promise<void> => {
           lastPriceBySymbol.set(e.symbol, (e.payload.bestBidPrice + e.payload.bestAskPrice) / 2);
         }
       });
+      // Shared OMS registry — wired to EventBus so it auto-advances
+      // state on fills, rejections, and closes without polling.
+      const orderStateRegistry = new OrderStateRegistry(defaultEventBus);
       new SignalToOrderBridge(cfg, defaultEventBus, {
         lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
-      }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
+      }, {
+        cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS,
+        oms: orderStateRegistry,
+      });
       if ((cfg as any).SIGNAL_ALLOCATOR_ENABLED) {
         const allocMode = ((cfg as any).SIGNAL_ALLOCATOR_MODE as 'score' | 'fcfs') ?? 'score';
         new SignalAllocator(cfg, defaultEventBus, actorSystem.getRiskEngine(), {
@@ -356,7 +373,10 @@ const main = async (): Promise<void> => {
       // TpLadderManager fires partial closes at strategy-defined absolute price
       // targets. AdaptiveStrategy uses it; SeykotaTrendModule's inline partialTpR
       // path (inside TrailingStopManager) remains for the swing-only profile.
-      new TpLadderManager(defaultEventBus, { intrabar: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR) });
+      new TpLadderManager(defaultEventBus, {
+        intrabar: Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR),
+        feeBufferPct: Number((cfg as any).EXIT_FEE_BUFFER_PCT) || 0,
+      });
 
       if ((cfg as any).SEYKOTA_ENABLED || (cfg as any).ADAPTIVE_STRATEGY_ENABLED) {
         const intrabar = Boolean((cfg as any).SEYKOTA_TRAIL_INTRABAR);
@@ -370,6 +390,7 @@ const main = async (): Promise<void> => {
           watermarkActivationPct: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
           dropFromPeakPct: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
           trailActivationPct: Number((cfg as any).TRAIL_ACTIVATION_PCT) || 0.005,
+          feeBufferPct: Number((cfg as any).EXIT_FEE_BUFFER_PCT) || 0,
         });
 
         if ((cfg as any).STRUCTURE_EXIT_ENABLED) {

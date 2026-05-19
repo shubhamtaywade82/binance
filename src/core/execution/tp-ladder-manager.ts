@@ -14,6 +14,7 @@ interface Tracked {
   orderId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
+  entry: number;
   originalQty: number;
   remainingQty: number;
   rungs: LadderRung[];
@@ -26,6 +27,13 @@ interface Tracked {
 export interface TpLadderOptions {
   /** Also react to bookticker mid-price (not only kline close). */
   intrabar: boolean;
+  /**
+   * Round-trip fee buffer (fraction of entry price). Each rung's hit price
+   * is pushed outward by this amount before comparison so a rung fires only
+   * when the trader nets the rung's target after fees. Default 0 keeps the
+   * legacy gross-target behavior.
+   */
+  feeBufferPct?: number;
 }
 
 const DEFAULTS: TpLadderOptions = { intrabar: true };
@@ -75,10 +83,13 @@ export class TpLadderManager {
     const qty = Number(p?.quantity) || 0;
     if (qty <= 0) return;
 
+    const entry = Number(p?.price) || 0;
+    if (entry <= 0) return;
     this.positions.set(symbol, {
       orderId: String(p?.orderId ?? ''),
       symbol,
       side,
+      entry,
       originalQty: qty,
       remainingQty: qty,
       rungs: ladder
@@ -131,9 +142,16 @@ export class TpLadderManager {
   }
 
   private checkRungs(t: Tracked, ref: number, source: string): void {
+    // Push each rung's trigger price outward by the round-trip fee buffer so
+    // a rung fires only when the trader nets the configured target after
+    // fees. LONG needs a higher price, SHORT a lower price.
+    const feeBuf = this.opts.feeBufferPct ?? 0;
+    const dir = t.side === 'LONG' ? 1 : -1;
+    const buffer = t.entry * feeBuf;
     for (const r of t.rungs) {
       if (r.hit) continue;
-      const hit = t.side === 'LONG' ? ref >= r.price : ref <= r.price;
+      const adjusted = r.price + dir * buffer;
+      const hit = t.side === 'LONG' ? ref >= adjusted : ref <= adjusted;
       if (!hit) continue;
       r.hit = true;
       this.firePartial(t, r, ref, source);

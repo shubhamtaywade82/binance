@@ -25,9 +25,13 @@ interface BufferedCandidate {
  *      rejecting losers with reason WORSE_THAN_TOP_CANDIDATES.
  *   4. N = max(0, MAX_OPEN_SYMBOLS - currentlyOpen).
  *
- * Score formula (Seykota-style trend strength):
- *   score = ((adx - adxThreshold) / 10) × (atrPct / minAtrPct)
- * Higher ADX + higher relative ATR = stronger, more tradeable trend.
+ * Score formula (quality-aware):
+ *   When the payload carries a qualityScore from TradePlanner:
+ *     score = qualityScore   (0-1, accounts for RR, confidence, regime fit)
+ *   Legacy fallback (no qualityScore in payload):
+ *     score = ((adx - adxThreshold) / 10) × (atrPct / minAtrPct)
+ *
+ * Regime weights applied on top: TRENDING×1.0, VOLATILE×0.85, RANGING×0.5, CHOP×0.1
  *
  * Implementation note: this works by re-publishing forwarded candidates onto
  * a separate channel `execution.order.requested.allocated` that the RiskEngine
@@ -175,11 +179,30 @@ export class SignalAllocator {
     }
   }
 
+  private static readonly REGIME_WEIGHT: Record<string, number> = {
+    TRENDING: 1.00,
+    VOLATILE: 0.85,
+    RANGING:  0.50,
+    CHOP:     0.10,
+  };
+
   private computeScore(p: OrderRequestedPayload): number {
-    if (!p.score) return 0;
-    const adxStrength = Math.max(0, p.score.adx - this.adxThreshold) / 10;
-    const atrStrength = p.score.atrPct / Math.max(this.minAtrPct, 1e-9);
-    return adxStrength * atrStrength;
+    const s = p.score as (typeof p.score & { qualityScore?: number; rr?: number; regime?: string }) | undefined;
+    if (!s) return 0;
+
+    const regimeWeight = SignalAllocator.REGIME_WEIGHT[
+      (s.regime ?? 'UNKNOWN').toUpperCase()
+    ] ?? 0.3;
+
+    // Quality-aware path: TradePlanner attaches a composite qualityScore.
+    if (typeof s.qualityScore === 'number' && s.qualityScore > 0) {
+      return s.qualityScore * regimeWeight;
+    }
+
+    // Legacy fallback: Seykota-style ADX × ATR strength.
+    const adxStrength = Math.max(0, s.adx - this.adxThreshold) / 10;
+    const atrStrength = s.atrPct / Math.max(this.minAtrPct, 1e-9);
+    return adxStrength * atrStrength * regimeWeight;
   }
 
   private flushBucket(closeTime: number): void {

@@ -2,9 +2,8 @@ import { EventBus } from '../events/event-bus';
 import { SymbolActor } from './symbol-actor';
 import { RiskEngine } from '../risk/risk-engine';
 import { AppConfig } from '../../config';
-import { SmcStrategyModule } from '../../strategy/smc-module';
+import { MtfSmcStrategyModule } from '../../strategy/mtf-smc-module';
 import { AdaptiveStrategy } from '../../strategy/adaptive-strategy';
-import { SolMtfStrategyModule } from '../../strategy/sol-mtf-strategy-module';
 import { SeykotaTrendModule } from '../../strategy/seykota-module';
 
 export class ActorSystem {
@@ -37,10 +36,11 @@ export class ActorSystem {
   }
 
   /**
-   * Attach default strategies for a symbol. SOL gets the multi-TF module;
-   * everything else gets SMC. Users can call `actor.addStrategy(...)` to extend.
+   * Attach default strategies for a symbol. All watchlist futures use the unified
+   * MtfSmcStrategyModule (5-TF SMC cascade + ADST gate + confluence scoring).
+   * AdaptiveStrategy or SeykotaTrendModule take precedence when enabled via config.
    */
-  private attachDefaultStrategies(symbol: string, actor: SymbolActor): void {
+  private attachDefaultStrategies(_symbol: string, actor: SymbolActor): void {
     const cfg = this.cfg as any;
     if (cfg.ADAPTIVE_STRATEGY_ENABLED) {
       let modeOverrides: any = undefined;
@@ -76,11 +76,7 @@ export class ActorSystem {
       }));
       return;
     }
-    if (symbol.toUpperCase().startsWith('SOL')) {
-      actor.addStrategy((ctx) => new SolMtfStrategyModule(ctx));
-    } else {
-      actor.addStrategy((ctx) => new SmcStrategyModule(ctx));
-    }
+    actor.addStrategy((ctx) => new MtfSmcStrategyModule(ctx));
   }
 
   public getActor(symbol: string): SymbolActor | undefined {

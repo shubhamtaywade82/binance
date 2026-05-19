@@ -54,6 +54,14 @@ export class RiskEngine {
    * every mark-move position update) don't double-count notional.
    */
   private readonly processedFillIds = new Set<string>();
+  /**
+   * Accepted-but-not-yet-filled symbols. Closes the race where multiple
+   * signals arrive within the adapter latency window (≈150ms for paper):
+   * without a reservation each validate() sees positions.size unchanged
+   * and all N pass through the cap. Released on `execution.order.filled`,
+   * `execution.order.rejected`, or `execution.position.closed`.
+   */
+  private readonly pendingSymbols = new Set<string>();
   private static readonly REDUCE_REASONS = new Set([
     'PARTIAL_TP', 'TP', 'TP1', 'TP2', 'SL', 'TRAIL', 'SMC_EXIT', 'TIME_STOP',
     'FUNDING_KICK', 'LIQUIDATION', 'MANUAL', 'REVERSAL', 'EXCHANGE_CLOSE',
@@ -123,15 +131,26 @@ export class RiskEngine {
 
   private subscribe(): void {
     // When SignalAllocator is wired it republishes accepted candidates onto
-    // `execution.order.requested.allocated`. Subscribing only to that channel
-    // would break the strategies that don't go through the allocator (no
-    // score field). Subscribe to both; the allocator forwards short-circuit
-    // for unscored payloads, so we'll never see the same payload twice.
+    // `execution.order.requested.allocated`. Allocator forwards unscored
+    // payloads onto the same channel as well, so this single subscription
+    // covers both scored and unscored signals without double-validating.
     const useAllocated = Boolean((this.cfg as any).SIGNAL_ALLOCATOR_ENABLED);
     const channel = useAllocated ? 'execution.order.requested.allocated' : 'execution.order.requested';
     this.eventBus.subscribe<OrderRequestedPayload>(channel, (e) => this.validate(e));
-    this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => this.onFilled(e.payload));
-    this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => this.onClosed(e.payload));
+    this.eventBus.subscribe('execution.order.filled', (e: DomainEvent<any>) => {
+      const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
+      if (sym) this.pendingSymbols.delete(sym);
+      this.onFilled(e.payload);
+    });
+    this.eventBus.subscribe('execution.order.rejected', (e: DomainEvent<any>) => {
+      const sym = (e.symbol ?? e.payload?.requested?.symbol ?? e.payload?.symbol) as string | undefined;
+      if (sym) this.pendingSymbols.delete(sym);
+    });
+    this.eventBus.subscribe('execution.position.closed', (e: DomainEvent<any>) => {
+      const sym = (e.symbol ?? e.payload?.symbol) as string | undefined;
+      if (sym) this.pendingSymbols.delete(sym);
+      this.onClosed(e.payload);
+    });
     // C-7: stale-feed risk-off. FreshnessWatchdog publishes system.stale when
     // no market data has arrived for a symbol within the staleness threshold,
     // and system.fresh when data flow recovers. Orders for stale symbols are
@@ -210,11 +229,16 @@ export class RiskEngine {
       this.reject(payload, 'MAX_TOTAL_EXPOSURE_EXCEEDED');
       return;
     }
-    if (!this.positions.has(symbol) && this.positions.size >= maxSymbols) {
+    // Count pending (accepted-but-not-yet-filled) symbols toward both caps so
+    // signals arriving inside the adapter latency window can't all slip
+    // through against an unchanged positions.size.
+    const isNewSymbol = !this.positions.has(symbol) && !this.pendingSymbols.has(symbol);
+    const effectiveSymbolCount = this.positions.size + this.pendingSymbols.size;
+    if (isNewSymbol && effectiveSymbolCount >= maxSymbols) {
       this.reject(payload, 'MAX_OPEN_SYMBOLS_EXCEEDED');
       return;
     }
-    if (this.positions.size >= maxPositions && !this.positions.has(symbol)) {
+    if (isNewSymbol && effectiveSymbolCount >= maxPositions) {
       this.reject(payload, 'MAX_OPEN_POSITIONS_EXCEEDED');
       return;
     }
@@ -234,6 +258,10 @@ export class RiskEngine {
         return;
       }
     }
+
+    // Reserve a slot for this symbol so concurrent in-flight signals see the
+    // updated effective count. Released on filled/rejected/closed.
+    if (!this.positions.has(symbol)) this.pendingSymbols.add(symbol);
 
     const ts = marketClock.now();
     this.seq += 1;
