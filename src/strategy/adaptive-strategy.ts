@@ -15,6 +15,14 @@ export interface AdaptiveStrategyConfig {
   minBars: number;
   /** Cooldown between consecutive entries per actor (ms). */
   cooldownMs: number;
+  /**
+   * Hard per-order notional cap (USDT). When risk-based sizing
+   * (`riskPct × equity / (atrMult × ATR)`) produces a quantity whose
+   * notional exceeds this, quantity is shrunk to fit. Without this,
+   * tight-ATR regimes on high-priced assets blow past the RiskEngine cap
+   * and every order rejects as MAX_PER_ORDER_NOTIONAL_EXCEEDED.
+   */
+  maxNotionalUsdt?: number;
 }
 
 export const DEFAULT_ADAPTIVE_CFG: AdaptiveStrategyConfig = {
@@ -92,8 +100,18 @@ export class AdaptiveStrategy extends StrategyModule {
     const stopDistance = mode.atrStopMult * atrLast;
     if (stopDistance <= 0) return null;
     const riskUsdt = this.cfg.equityUsdt * mode.riskPct;
-    const quantity = riskUsdt / stopDistance;
+    let quantity = riskUsdt / stopDistance;
     if (quantity <= 0) return null;
+
+    // Cap qty to honour the RiskEngine MAX_PER_ORDER notional. Tight ATR on a
+    // high-priced asset (BTC, ETH) otherwise produces ~$20–30k notional from a
+    // $50–100 risk budget and every order rejects with
+    // MAX_PER_ORDER_NOTIONAL_EXCEEDED.
+    const maxNot = this.cfg.maxNotionalUsdt;
+    if (Number.isFinite(maxNot) && (maxNot as number) > 0 && candle.close > 0) {
+      const qtyCap = (maxNot as number) / candle.close;
+      if (quantity > qtyCap) quantity = qtyCap;
+    }
 
     const side = ltfSig.direction;
     const dirMul = side === 'LONG' ? 1 : -1;

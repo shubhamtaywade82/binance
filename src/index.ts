@@ -369,6 +369,7 @@ const main = async (): Promise<void> => {
           smcExitEnabled: false, // handled by StructureExitManager below
           watermarkActivationPct: Number((cfg as any).WATERMARK_ACTIVATION_PCT) || 0.005,
           dropFromPeakPct: Number((cfg as any).DROP_FROM_PEAK_PCT) || 0.4,
+          trailActivationPct: Number((cfg as any).TRAIL_ACTIVATION_PCT) || 0.005,
         });
 
         if ((cfg as any).STRUCTURE_EXIT_ENABLED) {

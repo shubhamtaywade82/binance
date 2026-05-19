@@ -54,6 +54,7 @@ export class ActorSystem {
         minBars: Number(cfg.SEYKOTA_MIN_BARS) || 80,
         cooldownMs: Number(cfg.ADAPTIVE_COOLDOWN_MS) || 5 * 60_000,
         modeOverrides,
+        maxNotionalUsdt: Number(cfg.MAX_NOTIONAL_USDT) || undefined,
       }));
       return;
     }

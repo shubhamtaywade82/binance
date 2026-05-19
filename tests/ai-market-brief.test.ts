@@ -65,7 +65,7 @@ describe('requestMarketBrief', () => {
         options: {
           temperature: 0.25,
           num_ctx: 2048,
-          num_predict: 1024,
+          num_predict: 1400,
         },
       }),
     );

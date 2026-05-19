@@ -44,6 +44,15 @@ export interface TrailingStopOptions {
    * Default 0.4 = exit if 40% of peak unrealized gains are given back.
    */
   dropFromPeakPct?: number;
+  /**
+   * Don't ratchet the chandelier trail past `initialStop` until peak favorable
+   * PnL has reached this fraction of entry price. Without this, a single
+   * favorable wick at bar 1 shifts the trail up to (high - atrDist) which sits
+   * just below entry; the next adverse tick closes the position at a small
+   * loss before the setup has any room to play out. Default 0.005 (+0.5%) —
+   * matches the watermark activation gate. Set to 0 to disable.
+   */
+  trailActivationPct?: number;
 }
 
 const DEFAULTS: TrailingStopOptions = { atrMult: 3, defaultAtrPct: 0.005, klineOnly: true };
@@ -218,9 +227,12 @@ export class TrailingStopManager {
       }
     }
 
+    const activation = this.opts.trailActivationPct ?? 0.005;
+    const trailArmed = activation <= 0 || pos.peakPnlPct >= activation;
+
     if (pos.side === 'LONG') {
       if (Number.isFinite(high) && high > pos.highWater) pos.highWater = high;
-      
+
       // Partial TP Check
       if (this.opts.partialTpR && !pos.partialDone) {
         const target = pos.entry + this.opts.partialTpR * pos.atr;
@@ -229,7 +241,11 @@ export class TrailingStopManager {
         }
       }
 
-      trail = Math.max(pos.initialStop, pos.highWater - atrDist);
+      // Until peak gain ≥ activation, stop stays at initialStop (gives the
+      // setup room to breathe instead of trailing in on first wick).
+      trail = trailArmed
+        ? Math.max(pos.initialStop, pos.highWater - atrDist)
+        : pos.initialStop;
       this.emitTrailUpdate(pos, trail);
       if (ref <= trail) this.requestClose(pos, ref, 'TRAIL', source);
     } else {
@@ -243,7 +259,9 @@ export class TrailingStopManager {
         }
       }
 
-      trail = Math.min(pos.initialStop, pos.lowWater + atrDist);
+      trail = trailArmed
+        ? Math.min(pos.initialStop, pos.lowWater + atrDist)
+        : pos.initialStop;
       this.emitTrailUpdate(pos, trail);
       if (ref >= trail) this.requestClose(pos, ref, 'TRAIL', source);
     }
