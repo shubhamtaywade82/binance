@@ -5,13 +5,14 @@
   "description": "Multi-provider charting platform — separate app, designed to be extracted into its own repo.",
   "workspaces": [
     "packages/adapter-core",
+    "packages/indicator-runtime",
     "packages/adapter-binance",
     "packages/adapter-dhanhq",
     "packages/gateway",
     "ui"
   ],
   "scripts": {
-    "build": "npm run -w @chart-studio/adapter-core build && npm run -w @chart-studio/gateway build && npm run -w @chart-studio/adapter-binance build && npm run -w @chart-studio/adapter-dhanhq build",
+    "build": "npm run -w @chart-studio/adapter-core build && npm run -w @chart-studio/indicator-runtime build && npm run -w @chart-studio/gateway build && npm run -w @chart-studio/adapter-binance build && npm run -w @chart-studio/adapter-dhanhq build",
     "dev:gateway": "npm run -w @chart-studio/gateway dev",
     "dev:binance": "npm run -w @chart-studio/adapter-binance dev",
     "dev:dhanhq": "npm run -w @chart-studio/adapter-dhanhq dev",

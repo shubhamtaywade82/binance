@@ -36,9 +36,14 @@ services:
       dockerfile: packages/adapter-dhanhq/Dockerfile
     environment:
       REDIS_URL: redis://redis:6379
-      DHAN_CLIENT_ID: ${DHAN_CLIENT_ID}
-      DHAN_ACCESS_TOKEN: ${DHAN_ACCESS_TOKEN}
+      ALGO_SCALPER_URL: ${ALGO_SCALPER_URL:-}
+      ALGO_SCALPER_API_KEY: ${ALGO_SCALPER_API_KEY:-}
+      DHAN_CLIENT_ID: ${DHAN_CLIENT_ID:-}
+      DHAN_ACCESS_TOKEN: ${DHAN_ACCESS_TOKEN:-}
       DHAN_FEED_MODE: ${DHAN_FEED_MODE:-full}
+    extra_hosts:
+      # Allow reaching algo_scalper_api running on the host machine.
+      - "host.docker.internal:host-gateway"
     depends_on:
       - redis
     restart: unless-stopped

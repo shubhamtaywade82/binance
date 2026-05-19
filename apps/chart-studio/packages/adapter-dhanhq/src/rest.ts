@@ -1,24 +1,36 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { Candle, OrderBookSnapshot } from '@chart-studio/adapter-core';
 import type { DhanInstrument } from './instruments';
+import type { TokenProvider } from './token-provider';
+export type { DhanCreds } from './token-provider';
 
 const BASE_URL = 'https://api.dhan.co';
 
-export interface DhanCreds {
-  clientId: string;
-  accessToken: string;
-}
-
-export const createClient = (creds: DhanCreds): AxiosInstance => axios.create({
-  baseURL: BASE_URL,
-  timeout: 30_000,
-  headers: {
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-    'access-token': creds.accessToken,
-    'client-id': creds.clientId,
-  },
-});
+/**
+ * Build an Axios instance whose Authorization headers are stamped from
+ * the TokenProvider on every request. On 401 we invalidate and let the
+ * caller retry with fresh creds.
+ */
+export const createClient = (tokens: TokenProvider): AxiosInstance => {
+  const client = axios.create({
+    baseURL: BASE_URL,
+    timeout: 30_000,
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+  });
+  client.interceptors.request.use(async (cfg) => {
+    const creds = await tokens.get();
+    cfg.headers.set('access-token', creds.accessToken);
+    cfg.headers.set('client-id', creds.clientId);
+    return cfg;
+  });
+  client.interceptors.response.use(undefined, async (err) => {
+    if (err?.response?.status === 401) {
+      tokens.invalidate();
+    }
+    throw err;
+  });
+  return client;
+};
 
 interface HistoricalResponse {
   open?: number[];

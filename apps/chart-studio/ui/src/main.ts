@@ -5,6 +5,12 @@ import { TradeTapePanel } from './panels/trade-tape';
 import { SentimentPanel } from './panels/sentiment';
 import { GlobalSearch } from './search/global-search';
 import { ProviderSettings } from './settings/providers';
+import { WatchlistPanel } from './watchlist/watchlist';
+import { IndicatorPicker } from './indicators/picker';
+import { AlertEngine } from './alerts/alerts';
+import { AlertsPanel } from './alerts/panel';
+import { ScriptManager } from './scripts/editor';
+import { DrawingLayer, type DrawingTool } from './drawings/drawings';
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
@@ -29,22 +35,45 @@ const writeHash = (s: AppState): void => {
 
 const main = (): void => {
   const client = new ProviderClient();
-  const chartContainer = document.getElementById('chart-container')!;
+  const chartContainer = document.getElementById('chart-container')! as HTMLDivElement;
   const obRoot = document.getElementById('orderbook')!;
   const obSpread = document.getElementById('ob-spread')!;
   const tapeRoot = document.getElementById('trade-tape')!;
   const sentimentRoot = document.getElementById('sentiment')!;
   const intervalBar = document.getElementById('interval-bar')!;
   const symbolLabel = document.getElementById('active-symbol-label')!;
+  const watchlistRoot = document.getElementById('watchlist')!;
 
   const chart = new ChartView(chartContainer);
   const ob = new OrderBookPanel(obRoot, obSpread);
   const tape = new TradeTapePanel(tapeRoot);
   const sentiment = new SentimentPanel(sentimentRoot);
   const settings = new ProviderSettings(client);
+  const watchlist = new WatchlistPanel(watchlistRoot, client);
+  const indicatorPicker = new IndicatorPicker();
+  const alertEngine = new AlertEngine(client);
+  const scriptManager = new ScriptManager(chart, client);
+  const drawings = new DrawingLayer(chart, chartContainer);
 
   let activeState: AppState | null = parseHash();
+  let currentCandles: Candle[] = [];
   const unsubs: Array<() => void> = [];
+
+  new AlertsPanel(alertEngine, () => (activeState ? { provider: activeState.provider, symbol: activeState.symbol } : null));
+
+  // Indicator changes re-apply to the chart immediately.
+  indicatorPicker.onChange((list) => chart.setIndicators(list));
+
+  // Drawing tool buttons.
+  document.querySelectorAll<HTMLButtonElement>('.tool-btn[data-tool]').forEach((btn) => {
+    btn.addEventListener('click', () => drawings.setTool(btn.dataset.tool as DrawingTool));
+  });
+  document.getElementById('drawings-clear')?.addEventListener('click', () => drawings.clear());
+  drawings.onToolChange((tool) => {
+    document.querySelectorAll<HTMLButtonElement>('.tool-btn[data-tool]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.tool === tool);
+    });
+  });
 
   const renderIntervals = (): void => {
     intervalBar.innerHTML = INTERVALS.map((i) =>
@@ -67,16 +96,31 @@ const main = (): void => {
     activeState = state;
     writeHash(state);
     symbolLabel.textContent = `${state.provider} · ${state.symbol} · ${state.interval}`;
+    watchlist.setActive(state.provider, state.symbol);
+    drawings.setSymbol(state.provider, state.symbol);
     renderIntervals();
     tearDown();
     ob.reset({ lastUpdateId: 0, bids: [], asks: [], ts: 0 });
     tape.reset();
     sentiment.reset();
+    currentCandles = [];
+    scriptManager.setCandles([]);
 
     unsubs.push(client.streamCandles(
       state.provider, state.symbol, state.interval,
-      (history) => chart.setHistory(history),
-      (upd) => chart.updateCandle(upd.candle),
+      (history) => {
+        currentCandles = history;
+        chart.setHistory(history);
+        chart.setIndicators(indicatorPicker.current());
+        scriptManager.setCandles(history);
+      },
+      (upd) => {
+        chart.updateCandle(upd.candle);
+        const last = currentCandles[currentCandles.length - 1];
+        if (last && last.openTime === upd.candle.openTime) currentCandles[currentCandles.length - 1] = upd.candle;
+        else currentCandles.push(upd.candle);
+        if (upd.isFinal) scriptManager.updateCandle(upd.candle, currentCandles);
+      },
     ));
     unsubs.push(client.streamDepth(
       state.provider, state.symbol,
@@ -89,7 +133,13 @@ const main = (): void => {
     }));
   };
 
-  new GlobalSearch(client, (ref: SymbolRef) => {
+  new GlobalSearch(
+    client,
+    (ref) => applyState({ provider: ref.provider, symbol: ref.symbol, interval: activeState?.interval ?? '1m' }),
+    (ref) => watchlist.add(ref),
+  );
+
+  watchlist.onSelect((ref: SymbolRef) => {
     applyState({ provider: ref.provider, symbol: ref.symbol, interval: activeState?.interval ?? '1m' });
   });
 

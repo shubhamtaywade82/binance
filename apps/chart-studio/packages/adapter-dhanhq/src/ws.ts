@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { DhanCreds } from './rest';
+import type { TokenProvider } from './token-provider';
 
 /**
  * Dhan v2 Live Market Feed binary protocol.
@@ -137,7 +137,7 @@ export class DhanStreamPool {
   private closed = false;
   private mode: number;
 
-  constructor(private readonly creds: DhanCreds, mode: 'ticker' | 'quote' | 'full' = 'full') {
+  constructor(private readonly tokens: TokenProvider, mode: 'ticker' | 'quote' | 'full' = 'full') {
     this.mode = mode === 'ticker' ? REQ_TICKER : mode === 'quote' ? REQ_QUOTE : REQ_FULL;
   }
 
@@ -175,12 +175,28 @@ export class DhanStreamPool {
   private ensureConnected(): void {
     if (this.closed) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
-    this.connect();
+    void this.connect();
   }
 
-  private connect(): void {
+  private scheduleReconnectAfterError(): void {
     if (this.closed) return;
-    const url = `${FEED_BASE}?version=2&token=${encodeURIComponent(this.creds.accessToken)}&clientId=${encodeURIComponent(this.creds.clientId)}&authType=2`;
+    const attempt = ++this.reconnectAttempts;
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+    this.reconnectTimer = setTimeout(() => void this.connect(), delay);
+  }
+
+  private async connect(): Promise<void> {
+    if (this.closed) return;
+    let creds;
+    try {
+      creds = await this.tokens.get();
+    } catch (err) {
+      console.error('[adapter-dhanhq] token resolve failed', err);
+      this.scheduleReconnectAfterError();
+      return;
+    }
+    if (this.closed) return;
+    const url = `${FEED_BASE}?version=2&token=${encodeURIComponent(creds.accessToken)}&clientId=${encodeURIComponent(creds.clientId)}&authType=2`;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -208,13 +224,13 @@ export class DhanStreamPool {
 
     ws.on('error', () => { /* let close handler schedule reconnect */ });
 
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       if (this.ws !== ws) return;
       this.ws = null;
       if (this.closed) return;
-      const attempt = ++this.reconnectAttempts;
-      const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
-      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      // 401-equivalent close codes — refresh token before next reconnect.
+      if (code === 1008 || code === 4001 || code === 4003) this.tokens.invalidate();
+      this.scheduleReconnectAfterError();
     });
   }
 

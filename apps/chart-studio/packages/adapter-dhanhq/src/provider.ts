@@ -18,13 +18,14 @@ import {
   toSymbolRef,
   type DhanInstrument,
 } from './instruments';
-import { createClient, fetchCandles, fetchMarketDepth, type DhanCreds } from './rest';
+import { createClient, fetchCandles, fetchMarketDepth } from './rest';
 import { DhanStreamPool, type DhanTick } from './ws';
+import type { TokenProvider } from './token-provider';
 
 export interface DhanProviderConfig {
   id?: string;
   displayName?: string;
-  creds: DhanCreds;
+  tokens: TokenProvider;
   /** Override the scrip master URL (e.g. for testing). */
   scripMasterUrl?: string;
   /** "ticker" | "quote" | "full" — default "full" for depth + LTP. */
@@ -41,8 +42,8 @@ export class DhanProvider implements MarketDataProvider {
   constructor(private readonly cfg: DhanProviderConfig) {
     this.id = cfg.id ?? 'dhanhq';
     this.displayName = cfg.displayName ?? 'DhanHQ';
-    this.client = createClient(cfg.creds);
-    this.pool = new DhanStreamPool(cfg.creds, cfg.feedMode ?? 'full');
+    this.client = createClient(cfg.tokens);
+    this.pool = new DhanStreamPool(cfg.tokens, cfg.feedMode ?? 'full');
   }
 
   async init(): Promise<void> {
@@ -51,6 +52,7 @@ export class DhanProvider implements MarketDataProvider {
 
   async shutdown(): Promise<void> {
     this.pool.shutdown();
+    this.cfg.tokens.shutdown();
   }
 
   // ── Discovery ────────────────────────────────────────────────────────
