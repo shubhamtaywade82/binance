@@ -26,7 +26,7 @@ export interface MarketSignalsSnapshot {
     choch?: string;
   };
   knnArchitecture?: any;
-  solMtf?: { pass: boolean; direction: string; reasons: string[] } | null;
+  mtfSmc?: { pass: boolean; direction: string; reasons: string[] } | null;
   /** Optional concrete indicator values computed from local candles. Present
    *  when caller has enough bars; absent fields signal "not enough data" and
    *  the model is instructed to say `unknown` rather than invent numbers. */
@@ -209,7 +209,7 @@ const buildUserContent = (snapshot: MarketSignalsSnapshot): string => {
     ltfSignals: snapshot.ltfSignals,
     smc: snapshot.smc,
     knnArchitecture: snapshot.knnArchitecture,
-    solMtf: snapshot.solMtf,
+    mtfSmc: snapshot.mtfSmc,
     indicators: snapshot.indicators,
     microstructure: snapshot.microstructure,
     dealingRange: snapshot.dealingRange ?? null,

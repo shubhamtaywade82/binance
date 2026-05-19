@@ -40,7 +40,7 @@ export class ActorSystem {
    * MtfSmcStrategyModule (5-TF SMC cascade + ADST gate + confluence scoring).
    * AdaptiveStrategy or SeykotaTrendModule take precedence when enabled via config.
    */
-  private attachDefaultStrategies(symbol: string, actor: SymbolActor): void {
+  private attachDefaultStrategies(_symbol: string, actor: SymbolActor): void {
     const cfg = this.cfg as any;
     if (cfg.ADAPTIVE_STRATEGY_ENABLED) {
       let modeOverrides: any = undefined;

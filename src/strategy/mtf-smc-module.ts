@@ -2,6 +2,7 @@ import { StrategyModule, StrategyContext } from '../core/strategy/strategy-modul
 import type { Candle } from '../types';
 import { evaluateMtfSmcStrategy, type MtfSmcTf } from './mtf-smc-strategy';
 import { evaluateSmcConfluence } from './smc-confluence';
+import { atr as computeAtr, supertrend } from './indicators';
 import type { SignalPayload, OrderRequestedPayload } from '@coindcx/contracts';
 
 /**
@@ -11,6 +12,9 @@ import type { SignalPayload, OrderRequestedPayload } from '@coindcx/contracts';
  * Runs the full 5-TF cascade (1d → 4h → 1h → 15m → 5m), applies the
  * Adaptive Supertrend (ADST) directional gate on the execution timeframe,
  * then gates on SMC confluence scoring before emitting a signal.
+ *
+ * Emits enriched metadata (atrValue, regime, closeTime) consumed by the
+ * TradePlanner and SignalAllocator downstream.
  */
 export class MtfSmcStrategyModule extends StrategyModule {
   constructor(ctx: StrategyContext) {
@@ -52,6 +56,14 @@ export class MtfSmcStrategyModule extends StrategyModule {
 
     if (!confluence.pass) return null;
 
+    // ── Enrich metadata for TradePlanner + Allocator ─────────────────────
+    const atrSeries = computeAtr(m5, 14);
+    const atrValue = atrSeries[atrSeries.length - 1] ?? undefined;
+
+    const st = supertrend(m5, 10, 3);
+    const n = st.regime.length - 1;
+    const regime = n >= 0 ? st.regime[n] : 'CHOP';
+
     return {
       strategyId: this.getName(),
       signal: result.direction === 'LONG' ? 'LONG' : result.direction === 'SHORT' ? 'SHORT' : 'FLAT',
@@ -60,6 +72,11 @@ export class MtfSmcStrategyModule extends StrategyModule {
         reasons: result.reasons,
         confluenceScore: confluence.score,
         confluenceReasons: confluence.reasons,
+        // Consumed by TradePlanner for ATR-based SL/TP
+        atrValue: Number.isFinite(atrValue) ? atrValue : undefined,
+        regime,
+        // Consumed by SignalAllocator for best-of-bar bucketing
+        closeTime: candle.openTime,
       },
     };
   }

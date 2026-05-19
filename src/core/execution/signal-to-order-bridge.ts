@@ -6,6 +6,8 @@ import {
 } from '@coindcx/contracts';
 import { AppConfig } from '../../config';
 import { marketClock } from '../time/market-clock';
+import { computeTradePlan, type TradePlannerConfig } from '../planning/trade-planner';
+import { OrderStateRegistry } from '../oms/order-state-machine';
 
 interface LastPriceProvider {
   lastPrice(symbol: string): number | null;
@@ -13,12 +15,15 @@ interface LastPriceProvider {
 
 /**
  * SignalToOrderBridge — converts `strategy.signal` events into
- * `execution.order.requested` events. Applies basic sizing from config
- * (USDT notional / last price / leverage), attaches TP / SL.
+ * `execution.order.requested` events.
  *
- * The bridge runs OUT-OF-LOOP from the actor: the actor publishes the signal,
- * the bridge picks it up, the risk engine validates the resulting order. This
- * decoupling lets strategies stay pure (no sizing logic).
+ * Upgrades over the original flat-% version:
+ *  1. Calls TradePlanner to compute ATR-based SL, TP ladder, and RR.
+ *  2. Drops signals where RR < minimum (soft reject before RiskEngine).
+ *  3. Checks OrderStateRegistry so one symbol can't hold multiple concurrent
+ *     order intents.
+ *  4. Passes the full TP ladder in the payload for TpLadderManager.
+ *  5. Passes qualityScore for the SignalAllocator best-of-bar ranking.
  */
 export class SignalToOrderBridge {
   private seq = 0;
@@ -30,14 +35,22 @@ export class SignalToOrderBridge {
    * inside the cooldown window.
    */
   private readonly lastEmit = new Map<string, number>();
+  private readonly oms: OrderStateRegistry;
+  private readonly plannerCfg: Partial<TradePlannerConfig>;
 
   constructor(
     private readonly cfg: AppConfig,
     private readonly eventBus: EventBus,
     private readonly priceProvider: LastPriceProvider,
-    opts: { cooldownMs?: number } = {},
+    opts: {
+      cooldownMs?: number;
+      oms?: OrderStateRegistry;
+      plannerCfg?: Partial<TradePlannerConfig>;
+    } = {},
   ) {
     this.cooldownMs = opts.cooldownMs ?? 60_000;
+    this.oms = opts.oms ?? new OrderStateRegistry(eventBus);
+    this.plannerCfg = opts.plannerCfg ?? {};
     this.subscribe();
   }
 
@@ -57,6 +70,9 @@ export class SignalToOrderBridge {
     if (!symbol || sig.signal === 'FLAT') return;
     if (sig.confidence < ((this.cfg as any).MIN_SIGNAL_CONFIDENCE ?? 0.5)) return;
 
+    // OMS gate: block new intents while this symbol is already in-flight.
+    if (!this.oms.get(symbol).isAvailable()) return;
+
     const now = marketClock.now();
     const key = this.cooldownKey(symbol, sig.signal, sig.strategyId);
     const last = this.lastEmit.get(key) ?? 0;
@@ -68,27 +84,75 @@ export class SignalToOrderBridge {
     const capitalUsdt = Number(this.cfg.CAPITAL_PER_TRADE_USDT) || 0;
     if (capitalUsdt <= 0) return;
     const leverage = Number(this.cfg.LEVERAGE) || 1;
+
+    // ── Trade Planning ────────────────────────────────────────────────────
+    const meta = sig.metadata as Record<string, unknown> | undefined;
+    const plan = computeTradePlan(
+      {
+        symbol,
+        side: sig.signal as 'LONG' | 'SHORT',
+        entryPrice: price,
+        confidence: sig.confidence,
+        regime: (meta?.regime as string | undefined) ?? 'UNKNOWN',
+        atrValue: typeof meta?.atrValue === 'number' ? meta.atrValue : undefined,
+      },
+      this.plannerCfg,
+    );
+
+    // Soft reject: plan did not meet RR minimum or could not be computed.
+    if (!plan) {
+      this.eventBus.publish({
+        id: `plan-reject-${symbol}-${now}`,
+        type: 'execution.order.rejected',
+        ts: now,
+        source: 'signal-to-order-bridge',
+        symbol,
+        payload: { reason: 'PLAN_RR_BELOW_MINIMUM', requested: { symbol, side: sig.signal } },
+      });
+      return;
+    }
+
+    // Advance OMS to SIGNAL_CANDIDATE then PLAN_READY atomically.
+    const m = this.oms.get(symbol);
+    m.transition('SIGNAL_CANDIDATE', 'signal_received', plan.tradeId);
+    m.transition('PLAN_READY', 'plan_computed', plan.tradeId);
+
     const notional = capitalUsdt * leverage;
     const quantity = notional / price;
     if (quantity <= 0) return;
 
-    const tpPct = Number(this.cfg.TP_PRICE_PCT) || 0;
-    const slPct = Number(this.cfg.SL_PRICE_PCT) || 0;
-    const dir = sig.signal === 'LONG' ? 1 : -1;
-    const takeProfit = tpPct > 0 ? price * (1 + dir * tpPct) : undefined;
-    const stopLoss = slPct > 0 ? price * (1 - dir * slPct) : undefined;
+    // Build TP ladder for TpLadderManager (absolute prices + fractions).
+    const tpLadder = plan.targets.map((t) => ({
+      price: t.price,
+      fraction: t.fraction,
+    }));
 
     this.seq += 1;
-    const payload: OrderRequestedPayload = {
+    const closeTime = typeof meta?.closeTime === 'number' ? meta.closeTime : 0;
+    const payload: OrderRequestedPayload & Record<string, unknown> = {
       symbol,
-      side: sig.signal,
+      side: sig.signal as 'LONG' | 'SHORT',
       quantity,
       type: 'MARKET',
       price,
-      takeProfit,
-      stopLoss,
+      takeProfit: plan.targets[0]?.price,
+      stopLoss: plan.stopLoss,
       strategyId: sig.strategyId,
       correlationId: event.id,
+      // ── Extended fields consumed by downstream managers ──────────────────
+      tpLadder,
+      trailAfterLadder: true,
+      regime: plan.regime,
+      atrAtEntry: plan.atr,
+      // ── Allocator scoring ────────────────────────────────────────────────
+      score: {
+        adx: 0,          // legacy field kept for schema compat; allocator prefers qualityScore
+        atrPct: plan.atr / price,
+        closeTime,
+        qualityScore: plan.qualityScore,
+        rr: plan.rr,
+        regime: plan.regime,
+      },
     };
 
     this.eventBus.publish({

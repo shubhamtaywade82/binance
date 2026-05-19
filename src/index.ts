@@ -41,6 +41,7 @@ import { normalizeSymbol } from './mapping/symbol-normalize';
 import type { DomainEvent } from '@coindcx/contracts';
 import { TelegramNotifier } from './services/telegram-notifier';
 import { SelfLearningRuntime } from './self-learning/runtime';
+import { OrderStateRegistry } from './core/oms/order-state-machine';
 
 let orch: HybridOrchestrator | null = null;
 let actorSystem: ActorSystem | null = null;
@@ -266,9 +267,15 @@ const main = async (): Promise<void> => {
           lastPriceBySymbol.set(e.symbol, (e.payload.bestBidPrice + e.payload.bestAskPrice) / 2);
         }
       });
+      // Shared OMS registry — wired to EventBus so it auto-advances
+      // state on fills, rejections, and closes without polling.
+      const orderStateRegistry = new OrderStateRegistry(defaultEventBus);
       new SignalToOrderBridge(cfg, defaultEventBus, {
         lastPrice: (s) => lastPriceBySymbol.get(s) ?? null,
-      }, { cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS });
+      }, {
+        cooldownMs: cfg.EVENT_BUS_ORDER_COOLDOWN_MS,
+        oms: orderStateRegistry,
+      });
       if ((cfg as any).SIGNAL_ALLOCATOR_ENABLED) {
         const allocMode = ((cfg as any).SIGNAL_ALLOCATOR_MODE as 'score' | 'fcfs') ?? 'score';
         new SignalAllocator(cfg, defaultEventBus, actorSystem.getRiskEngine(), {

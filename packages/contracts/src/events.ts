@@ -80,6 +80,10 @@ export const OrderRequestedPayloadSchema = z.object({
     adx: z.number(),
     atrPct: z.number(),
     closeTime: z.number(),
+    /** Composite quality score from TradePlanner (0-1). Preferred by allocator. */
+    qualityScore: z.number().optional(),
+    rr: z.number().optional(),
+    regime: z.string().optional(),
   }).optional(),
 });
 export type OrderRequestedPayload = z.infer<typeof OrderRequestedPayloadSchema>;
