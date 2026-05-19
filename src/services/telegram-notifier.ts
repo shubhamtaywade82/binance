@@ -248,7 +248,7 @@ export class TelegramNotifier {
     const text = String(payload?.text ?? '').slice(0, 3500);
     if (!text) return;
     void this.sendCategory('ai',
-      `🤖 <b>AI Brief</b> · ${escape(symbol ?? '*')}\n\n${mdToHtml(text)}`,
+      `${verdictEmoji(text)} <b>AI Brief</b> · ${escape(symbol ?? '*')}\n\n${mdToHtml(text)}`,
     );
   }
 
@@ -351,6 +351,20 @@ const escape = (s: string): string =>
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+
+const verdictEmoji = (text: string): string => {
+  const m = text.match(/##[^\n]*—\s*(NO TRADE|WATCH|SETUP VALID[^\n]*)/i);
+  if (!m) return '🤖';
+  const v = m[1].toUpperCase();
+  if (v.includes('NO TRADE')) return '⛔';
+  if (v.includes('ENTER NOW')) return '🚀';
+  if (v.includes('SCALE IN')) return '📈';
+  if (v.includes('MANAGE') || v.includes('TRAIL')) return '🛡️';
+  if (v.includes('EXIT') || v.includes('REDUCE')) return '💰';
+  if (v.includes('WAIT FOR ENTRY')) return '⏳';
+  if (v.includes('WATCH')) return '👁';
+  return '🤖';
+};
 
 const mdToHtml = (s: string): string => {
   let t = escape(s);
