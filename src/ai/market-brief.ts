@@ -233,8 +233,8 @@ const createTimeoutFetch = (timeoutMs: number): typeof fetch => {
 
 const MAX_THINKING_FALLBACK_CHARS = 12_000;
 
-/** Token budget for the structured execution plan output. */
-const BRIEF_NUM_PREDICT = 1400;
+/** Token budget for the structured execution plan output. Increased to support reasoning models. */
+const BRIEF_NUM_PREDICT = 4096;
 
 const sliceThinking = (raw: string): string => {
   const t = raw.trim();
