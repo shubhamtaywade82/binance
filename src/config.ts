@@ -167,6 +167,14 @@ export const AppConfigSchema = z.object({
   TAKER_FEE: numFromString(0.0005),
   MAKER_FEE: numFromString(0.0002),
   FUNDING_FEE_EST: numFromString(0.0001),
+  /**
+   * Round-trip fee buffer subtracted from gross price-PnL% before comparing
+   * against any exit target (trail activation, watermark, TP ladder rungs).
+   * Without this, an exit fires at gross 1.5% but the trader nets 1.5% −
+   * 2 × taker = ~1.4%, undershooting the configured target. Default is a
+   * conservative 2× taker (paper). Override per environment.
+   */
+  EXIT_FEE_BUFFER_PCT: numFromString(0.001),
   MARGIN_CURRENCY: z.string().default('USDT'),
   USE_SMC: boolFromString(true),
 

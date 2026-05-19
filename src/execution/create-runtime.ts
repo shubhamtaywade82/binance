@@ -209,6 +209,7 @@ export const createExecutionRuntime = (cfg: AppConfig, cdcx: CoinDcxFuturesClien
     maxSlippageBps: cfg.PAPER_MAX_SLIPPAGE_BPS,
     redisState,
     equityJsonlEveryN: Number((cfg as any).PAPER_EQUITY_JSONL_EVERY_N ?? 12),
+    positionsPath: path.join(ledgerDir, 'positions.json'),
   });
   const paperRouter = new ExecutionRouter(cfg, cdcx, paperAdapter);
 

@@ -53,6 +53,14 @@ export interface TrailingStopOptions {
    * matches the watermark activation gate. Set to 0 to disable.
    */
   trailActivationPct?: number;
+  /**
+   * Round-trip fee buffer (entry + exit fees expressed as a fraction of entry
+   * price). Subtracted from gross price-PnL% before comparing to activation /
+   * watermark / R-target thresholds, so an exit fires only when the trader
+   * actually nets the configured target after fees. Default 0 keeps legacy
+   * behavior. Wire to `cfg.EXIT_FEE_BUFFER_PCT` at construction.
+   */
+  feeBufferPct?: number;
 }
 
 const DEFAULTS: TrailingStopOptions = { atrMult: 3, defaultAtrPct: 0.005, klineOnly: true };
@@ -208,10 +216,14 @@ export class TrailingStopManager {
     let trail: number;
     const atrDist = pos.atrMult * pos.atr;
 
-    // Track current PnL % for watermark logic
-    const currentPnlPct = pos.side === 'LONG'
+    // Track NET PnL % (gross price-pct minus round-trip fee buffer) so any
+    // activation/watermark threshold reflects what the trader actually nets
+    // after fees, not the raw price move.
+    const grossPnlPct = pos.side === 'LONG'
       ? (ref - pos.entry) / pos.entry
       : (pos.entry - ref) / pos.entry;
+    const feeBuf = this.opts.feeBufferPct ?? 0;
+    const currentPnlPct = grossPnlPct - feeBuf;
     if (currentPnlPct > pos.peakPnlPct) {
       pos.peakPnlPct = currentPnlPct;
     }
